@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
@@ -39,6 +39,7 @@ try {
     assert.equal(r.status, 200);
     return r.json();
   };
+  assert.equal((await get('/api/health')).version, JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
   const list = await get('/api/hosts/local/history?provider=claude');
   assert.equal(list.data.length, 1);
   assert.equal(list.data[0].provider, 'claude');

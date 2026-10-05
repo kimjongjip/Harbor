@@ -1,0 +1,52 @@
+# Harbor 사용자 설치·실행·업데이트
+
+## 처음 설치
+
+Windows 10/11 x64, Windows PowerShell 5.1, Git, 인터넷 연결이 필요합니다.
+
+```powershell
+git clone https://github.com/kimjongjip/Harbor.git
+cd Harbor
+.\Setup-Harbor.cmd
+```
+
+Node.js와 Electron 등은 저장소 안에 자동 다운로드·설치하고 빌드합니다. 관리자 권한은 필요하지 않습니다. Codex·Claude는 사용할 컴퓨터/서버에 별도 설치하고 본인 계정으로 로그인해야 합니다.
+
+다음 실행부터는 `Start-Harbor.cmd`를 더블클릭하거나 ` .\Start-Harbor.cmd`를 실행합니다. `Setup-Harbor.cmd -NoLaunch`는 설치·빌드만 합니다.
+
+## 새 버전 받기
+
+**반복해서 클론하지 않습니다.** 처음 받은 Harbor 폴더에서 다음 순서로 진행합니다.
+
+1. 터미널에서 하던 작업과 파일을 저장합니다.
+2. Harbor를 완전히 종료합니다. 마지막 앱 창을 닫으면 앱이 시작한 터미널 프로세스도 종료됩니다. CLI가 저장한 대화는 이후 기록에서 이어갈 수 있지만 실행 중 프로세스 자체가 유지되는 것은 아닙니다.
+3. 아래 명령을 실행합니다.
+
+```powershell
+cd <처음 클론한 Harbor 폴더>
+.\Update-Harbor.cmd
+```
+
+최신 main을 fast-forward로 받아 의존성을 다시 설치하고 빌드한 뒤 실행합니다. 자동 백그라운드 업데이트는 없으며 사용자가 명령을 실행해야 합니다. 창을 자동으로 열지 않으려면 ` .\Update-Harbor.cmd -NoLaunch`를 사용합니다.
+
+`.data` 사용자 설정은 삭제하지 않습니다. 업데이트를 위해 `.data`나 CLI의 기록 폴더를 지우지 마세요. 중요한 설정은 앱 종료 후 별도로 백업하고 외부에 공개하지 마세요. SSH 자격 증명은 OS 계정에 묶여 다른 컴퓨터에서 다시 입력해야 할 수 있습니다.
+
+## 문제가 생겼을 때
+
+| 상황 | 조치 |
+| --- | --- |
+| 실행 중이라고 표시됨 | 이 설치 폴더에서 실행한 Harbor와 관련 개발 작업을 종료하고 재시도합니다. 업데이트 도구가 강제로 종료하지 않습니다. |
+| local changes 오류 | `git status`로 직접 수정한 소스를 확인하고 별도 백업하거나 커밋합니다. 무작정 reset/clean하지 마세요. |
+| fast-forward 실패 | 별도 개발 커밋으로 main과 갈라졌을 수 있습니다. 개발자에게 이력 정리를 요청합니다. |
+| 다운로드/빌드 실패 | 오류를 확인하고 연결 문제 등을 해결한 뒤 `Setup-Harbor.cmd`를 다시 실행합니다. 사용자 데이터를 삭제하지 않습니다. |
+| 실행만 해도 이전 화면이 나옴 | 완전 종료 후 다시 실행했는지 확인합니다. 새로고침만으로 백엔드나 데스크톱 런타임은 교체되지 않습니다. |
+| ZIP으로 받았음 | Git 업데이트는 지원하지 않습니다. 새 ZIP은 별도 폴더에서 설치하거나 Git 클론 방식으로 전환합니다. |
+
+## 버전 확인
+
+```powershell
+git log -1 --oneline
+(Get-Content package.json -Raw | ConvertFrom-Json).version
+```
+
+이 값은 **받아 둔 소스 버전**입니다. 실행 중인 앱이 이전 프로세스라면 실제 실행 버전과 다를 수 있으므로 업데이트 후 재실행해야 합니다. 변경 사항은 [CHANGELOG](../CHANGELOG.md)를 확인하세요.

@@ -1,6 +1,6 @@
 {
   "name": "codex-harbor",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "private": true,
   "main": "desktop/main.cjs",
   "productName": "Harbor",

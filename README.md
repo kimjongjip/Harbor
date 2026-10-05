@@ -1,4 +1,9 @@
-# Harbor
+# Harbor 1.0
+
+- [사용자 설치·업데이트 안내](docs/user-guide.md)
+- [개발자 Git 게시·배포 절차](docs/maintainer-guide.md)
+- [변경 이력](CHANGELOG.md)
+- [에이전트 작업 시작 안내](AGENTS.md)
 
 Windows에서 로컬·SSH 터미널과 Codex·Claude Code 세션을 관리하는 데스크톱 앱입니다. 터미널에서 평소처럼 CLI를 실행하며, 별도의 AI 채팅 화면으로 전환하지 않습니다.
 

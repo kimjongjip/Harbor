@@ -3,6 +3,12 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/AGENTS.md
+!/CHANGELOG.md
+!/docs/
+/docs/*
+!/docs/user-guide.md
+!/docs/maintainer-guide.md
 !/package.json
 !/package-lock.json
 !/tsconfig.json
@@ -24,6 +30,7 @@
 !/scripts/make-desktop-icons.mjs
 !/scripts/harbor-image.py
 !/scripts/audit-publication.mjs
+!/scripts/set-version.mjs
 !/scripts/verify-claude-api.mjs
 !/scripts/verify-installed-replay.mjs
 **/node_modules/
