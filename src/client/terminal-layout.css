@@ -1,0 +1,274 @@
+/* Keep the shell area tall without changing its font or the hosts gallery. */
+.harbor-app .terminal-workspace.terminal-compact {
+  padding: 0 5px;
+}
+.terminal-compact .terminal-workspace-toolbar {
+  min-height: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  padding: 1px 4px;
+  gap: 6px;
+  border-top: 0;
+  border-radius: 0 0 4px 4px;
+}
+.harbor-app .terminal-compact .terminal-tabs {
+  gap: 2px;
+  scrollbar-width: thin;
+}
+.terminal-compact .terminal-tab {
+  flex-shrink: 0;
+}
+.harbor-app .terminal-compact .terminal-tab > button {
+  min-height: 25px;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+.terminal-compact .layout-options {
+  padding: 1px;
+}
+.terminal-compact .layout-options > button {
+  min-height: 24px;
+  padding: 3px 7px;
+}
+.terminal-compact .terminal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 2px;
+}
+.terminal-compact .terminal-grid {
+  gap: 4px;
+  padding-top: 2px;
+}
+.terminal-divider {
+  display: none;
+}
+.terminal-junction {
+  display: none;
+}
+.terminal-card[data-drop-active="true"],
+.terminal-add-pane[data-drop-active="true"],
+.terminal-welcome[data-drop-active="true"] {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+}
+.terminal-card-header[draggable="true"] {
+  cursor: grab;
+}
+.terminal-card[data-drop-active="true"] {
+  position: relative;
+}
+.terminal-card[data-drop-active="true"]::after {
+  content: "여기에 놓아 대화 열기 / 탭 이동";
+  position: absolute;
+  top: 34px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: none;
+  white-space: nowrap;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+}
+.terminal-layout-three {
+  font-size: 18px;
+  line-height: 14px;
+  font-weight: 700;
+}
+@media (min-width: 701px) {
+  .terminal-resizable-grid[data-layout="3"] > .terminal-divider-column {
+    grid-row: 1;
+  }
+  .terminal-resizable-grid > .terminal-junction {
+    display: block;
+    grid-column: 2;
+    grid-row: 2;
+    z-index: 5;
+    place-self: center;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    min-width: 0;
+    border: 2px solid var(--bg, white);
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: move;
+    touch-action: none;
+  }
+  .terminal-resizable-grid[data-resizing="both"],
+  .terminal-resizable-grid[data-resizing="both"] * {
+    cursor: move !important;
+    user-select: none !important;
+  }
+  .harbor-app .terminal-compact .terminal-resizable-grid {
+    grid-template-columns: var(--terminal-grid-columns);
+    grid-template-rows: var(--terminal-grid-rows);
+    gap: 0;
+  }
+  .terminal-resizable-grid > .terminal-card,
+  .terminal-resizable-grid > .terminal-add-pane {
+    grid-column: var(--terminal-pane-column);
+    grid-row: var(--terminal-pane-row);
+  }
+  .terminal-resizable-grid > .terminal-divider {
+    display: block;
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+    min-height: 0;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+    border-radius: 3px;
+  }
+  .terminal-divider::after {
+    content: "";
+    position: absolute;
+    border-radius: 2px;
+    background: var(--border);
+    transition: background 100ms ease;
+  }
+  .terminal-divider-column {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    cursor: col-resize;
+  }
+  .terminal-divider-column::after {
+    width: 2px;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+  }
+  .terminal-divider-row {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    cursor: row-resize;
+  }
+  .terminal-divider-row::after {
+    height: 2px;
+    left: 0;
+    right: 0;
+    top: 2px;
+  }
+  .terminal-divider:hover::after,
+  .terminal-divider:focus-visible::after,
+  .terminal-resizable-grid[data-resizing="column"]
+    > .terminal-divider-column::after,
+  .terminal-resizable-grid[data-resizing="row"] > .terminal-divider-row::after {
+    background: var(--accent);
+  }
+  .terminal-divider:focus-visible {
+    background: var(--accent-soft);
+  }
+  .terminal-resizable-grid[data-resizing="column"],
+  .terminal-resizable-grid[data-resizing="column"] * {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
+  .terminal-resizable-grid[data-resizing="row"],
+  .terminal-resizable-grid[data-resizing="row"] * {
+    cursor: row-resize !important;
+    user-select: none !important;
+  }
+}
+.terminal-compact .terminal-card {
+  border-radius: 4px;
+}
+.harbor-app .terminal-compact .terminal-card-header {
+  height: 28px;
+  padding: 0 6px;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.terminal-compact .terminal-card-header > svg,
+.terminal-compact .terminal-card-header > button {
+  flex-shrink: 0;
+}
+.terminal-compact .terminal-card-header .icon-button.compact,
+.terminal-compact .terminal-toolbar-actions .icon-button.compact {
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+}
+.harbor-app .terminal-compact .terminal-card-title {
+  min-width: 0;
+  gap: 7px;
+}
+.terminal-compact .terminal-card-title b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-compact .terminal-card-title span {
+  flex-shrink: 2;
+}
+.terminal-compact .terminal-agent-state {
+  padding: 2px 4px;
+}
+.terminal-compact .terminal-card .terminal-instance {
+  padding: 2px 6px;
+}
+.terminal-compact .terminal-attention {
+  padding: 4px 8px;
+}
+/* A stable footer outside xterm never covers text or captures selection drags. */
+.terminal-instance.terminal-with-footer.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.terminal-instance > .terminal-mount {
+  order: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+}
+.terminal-footer {
+  order: 2;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 26px;
+  height: 26px;
+  min-width: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.terminal-footer-status {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-footer-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-height: 22px;
+  height: 22px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.terminal-footer-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel);
+}
+@media (max-width: 700px) {
+  .harbor-app .terminal-workspace.terminal-compact {
+    padding: 0 3px;
+  }
+}

@@ -1,0 +1,195 @@
+.terminal-link-hint {
+  position: absolute;
+  bottom: 4px;
+  right: 17px;
+  z-index: 3;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-size: 9px;
+  max-width: calc(100% - 30px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.resource-preview-body {
+  padding: 18px 23px;
+  min-height: 150px;
+}
+.image-view-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.image-viewer {
+  overflow: auto;
+  max-height: 60dvh;
+  min-height: 80px;
+  background: repeating-conic-gradient(var(--panel) 0% 25%, var(--panel) 0% 50%)
+    0 0 / 20px 20px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: center;
+  padding: 10px;
+}
+.image-viewer img {
+  display: block;
+  height: auto;
+  object-fit: contain;
+  max-height: none;
+  margin: auto;
+}
+.preview-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 17px;
+  min-height: 180px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.preview-placeholder p {
+  line-height: 1.8;
+  text-align: center;
+}
+.text-file-preview pre {
+  max-height: 58dvh;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 12px 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.8;
+  white-space: pre;
+}
+.preview-line {
+  display: flex;
+  min-width: max-content;
+  padding: 0 12px 0 8px;
+  color: var(--text);
+}
+.preview-line > span {
+  flex-shrink: 0;
+  width: 40px;
+  user-select: none;
+  text-align: right;
+  color: var(--muted);
+  padding-right: 13px;
+}
+.preview-line > code {
+  white-space: pre;
+  flex: 1;
+  padding-right: 12px;
+}
+.preview-line.highlighted {
+  background: var(--panel);
+  color: var(--text);
+}
+.text-file-preview > p {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 10px;
+}
+.markdown-image-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  text-align: left;
+  max-width: 100%;
+  color: var(--text);
+}
+.markdown-image-link > span {
+  min-width: 0;
+}
+.markdown-image-link b {
+  display: block;
+  font-weight: 500;
+  font-size: 12px;
+}
+.markdown-image-link small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.markdown-image-link:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.markdown .code-file-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.markdown .katex {
+  font-size: 1.13em;
+  color: var(--text);
+}
+.markdown .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 14px 8px;
+  margin: 14px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.markdown .katex-display > .katex {
+  white-space: nowrap;
+  text-align: center;
+}
+.markdown .katex-error {
+  white-space: pre-wrap;
+  color: var(--red) !important;
+  font-size: 11px;
+}
+.markdown .katex .vlist-t {
+  border: 0;
+  display: inline-table;
+  overflow: visible;
+}
+.modal-header p {
+  overflow-wrap: anywhere;
+}
+.modal-header > div {
+  min-width: 0;
+}
+.modal-header h2 {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .resource-preview-body {
+    padding: 14px;
+  }
+  .terminal-link-hint {
+    font-size: 8px;
+    max-width: 90%;
+  }
+  .text-file-preview pre {
+    font-size: 10px;
+  }
+  .preview-line > span {
+    width: 32px;
+  }
+  .markdown .katex-display {
+    padding: 10px 5px;
+  }
+  .image-viewer {
+    max-height: 52dvh;
+  }
+}

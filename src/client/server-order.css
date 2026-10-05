@@ -1,0 +1,63 @@
+.host-reorder-row,
+.host-profile-card[draggable="true"] {
+  position: relative;
+}
+.harbor-host-row .host-reorder-grip,
+.host-card-top .host-reorder-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 28px;
+  padding: 3px;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+}
+.host-reorder-grip:hover,
+.host-reorder-grip:focus-visible {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.host-reorder-grip:active {
+  cursor: grabbing;
+}
+.host-card-top .host-reorder-grip {
+  margin-left: auto;
+  margin-right: 4px;
+}
+.host-reorder-row.is-dragging,
+.host-profile-card.is-dragging {
+  opacity: 0.5;
+}
+.host-reorder-row[data-drop-position]::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.host-reorder-row[data-drop-position="before"]::after {
+  top: 0;
+}
+.host-reorder-row[data-drop-position="after"]::after {
+  bottom: 0;
+}
+.host-profile-card[data-drop-position]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.host-profile-card[data-drop-position="before"]::after {
+  top: -5px;
+}
+.host-profile-card[data-drop-position="after"]::after {
+  bottom: -5px;
+}

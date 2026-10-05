@@ -1,0 +1,144 @@
+.terminal-annotation-shell .modal.wide {
+  width: 720px;
+}
+.terminal-annotation-shell .modal > form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.terminal-annotation-shell .modal-body {
+  overflow-y: auto;
+}
+.terminal-annotation-shell .modal-footer {
+  flex-shrink: 0;
+}
+.terminal-annotation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+.terminal-annotation-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.terminal-annotation-card > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.terminal-annotation-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 15px;
+  padding: 0 14px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.terminal-annotation-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.terminal-annotation-quote {
+  padding: 12px 14px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg);
+  border-block: 1px solid var(--border);
+}
+.terminal-annotation-origin {
+  padding: 9px 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.terminal-annotation-body summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.terminal-annotation-origin dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+}
+.terminal-annotation-origin dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.terminal-annotation-context {
+  font-size: 12px;
+  color: var(--text);
+}
+.terminal-annotation-context-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+  cursor: pointer;
+}
+.terminal-annotation-context-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+.terminal-annotation-context details {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+.terminal-annotation-context h4 {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 13px 0 5px;
+}
+.terminal-annotation-context pre {
+  max-height: 140px;
+  overflow: auto;
+}
+.terminal-annotation-question {
+  margin: 0;
+}
+.terminal-annotation-question textarea {
+  resize: vertical;
+  min-height: 95px;
+  max-height: 260px;
+}
+.terminal-annotation-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.terminal-annotation-footer {
+  flex-wrap: wrap;
+}
+.terminal-annotation-footer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.terminal-annotation-footer > div {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+@media (max-width: 520px) {
+  .terminal-annotation-footer > div {
+    width: 100%;
+  }
+  .terminal-annotation-footer button {
+    flex: 1;
+  }
+}

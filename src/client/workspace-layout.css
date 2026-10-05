@@ -1,0 +1,125 @@
+.harbor-app .harbor-sidebar {
+  width: 268px;
+}
+.harbor-app .harbor-sidebar.with-inbox {
+  width: 352px;
+}
+.harbor-app .harbor-brand {
+  height: 48px;
+  min-height: 48px;
+  padding: 9px 14px;
+}
+.harbor-app .harbor-brand img {
+  width: 25px;
+  height: 25px;
+}
+.harbor-app .harbor-brand b {
+  font-size: 19px;
+}
+.harbor-app .harbor-side-switch {
+  flex-shrink: 0;
+  margin: 0 8px 6px;
+}
+.harbor-app .harbor-side-switch button {
+  padding: 7px 0;
+}
+.harbor-app .harbor-host-tree {
+  flex: 0 1 auto;
+  min-height: 38px;
+  max-height: 29vh;
+  padding: 0 7px 7px;
+}
+.harbor-app .harbor-host-row > button:first-child {
+  padding: 8px;
+}
+.harbor-app .harbor-side-label {
+  padding: 4px 15px;
+  flex-shrink: 0;
+}
+.harbor-app .harbor-side-bottom {
+  padding: 9px 15px;
+  flex-shrink: 0;
+}
+.harbor-app .sidebar-collapse {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  flex-shrink: 0;
+}
+.harbor-app .connection-overview {
+  padding: 9px 14px;
+  flex-shrink: 0;
+}
+.harbor-app .connection-route {
+  margin: 7px 0 5px;
+}
+.harbor-app .connection-overview > p,
+.harbor-app .connection-overview details,
+.harbor-app .connection-message-link {
+  margin-top: 5px;
+}
+.harbor-app .harbor-topbar {
+  height: 44px;
+  gap: 9px;
+  padding: 0 10px;
+}
+.harbor-app .harbor-breadcrumb,
+.harbor-app .harbor-back {
+  flex: 1;
+  min-width: 0;
+}
+.harbor-app .sidebar-toggle {
+  flex-shrink: 0;
+}
+.harbor-app .harbor-top-actions {
+  flex-shrink: 0;
+  gap: 9px;
+}
+.harbor-app .harbor-top-actions .button {
+  min-height: 29px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+.harbor-app .harbor-statusbar {
+  min-height: 20px;
+  height: 20px;
+  padding: 0 12px;
+  font-size: 10px;
+}
+@media (max-width: 700px) {
+  .harbor-app .harbor-sidebar,
+  .harbor-app .harbor-sidebar.with-inbox {
+    position: absolute;
+    z-index: 12;
+    inset: 0 auto 0 0;
+    width: min(352px, calc(100vw - 40px));
+    box-shadow: 10px 0 35px var(--shadow-color);
+  }
+  .harbor-app .harbor-brand b,
+  .harbor-app .harbor-host-row > button:first-child span,
+  .harbor-app .harbor-explorer-host {
+    display: block;
+  }
+  .harbor-app .harbor-side-label,
+  .harbor-app .harbor-side-bottom,
+  .harbor-app .harbor-session-row,
+  .harbor-app .harbor-host-row > button:last-child,
+  .harbor-app .harbor-sidebar .directory-tree {
+    display: flex;
+  }
+  .harbor-app .harbor-host-row .harbor-online {
+    display: inline-block;
+  }
+  .harbor-app .harbor-side-switch {
+    flex-direction: row;
+    background: var(--surface);
+  }
+  .harbor-app .harbor-side-switch button {
+    font-size: 11px;
+    gap: 5px;
+  }
+  .harbor-app .harbor-top-actions {
+    gap: 4px;
+  }
+}

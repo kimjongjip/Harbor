@@ -1,0 +1,128 @@
+.terminal-file-drop {
+  position: absolute;
+  inset: 28px 8px 8px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 11px;
+  padding: 24px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  color: var(--text);
+  text-align: center;
+  pointer-events: none;
+}
+.terminal-file-drop svg {
+  color: var(--accent);
+}
+.terminal-file-drop span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.terminal-file-drop small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.terminal-upload-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  width: min(350px, calc(100% - 24px));
+  max-height: min(340px, calc(100% - 40px));
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 6px 24px var(--shadow-color);
+  font-size: 12px;
+}
+.terminal-upload-panel header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px 3px;
+}
+.terminal-upload-panel header > span {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
+}
+.terminal-upload-destination {
+  padding: 0 10px 7px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.terminal-upload-advice {
+  margin: 0;
+  padding: 0 10px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.terminal-upload-panel ul {
+  margin: 0;
+  padding: 0 10px 8px;
+  list-style: none;
+  max-height: 210px;
+  overflow: auto;
+}
+.terminal-upload-panel li {
+  border-top: 1px solid var(--border);
+  padding: 7px 0;
+}
+.terminal-upload-panel li > div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.terminal-upload-panel li > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-upload-panel li small {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.terminal-upload-panel li.transfer-done small {
+  color: var(--success);
+}
+.terminal-upload-panel li.transfer-error small,
+.terminal-upload-panel li p {
+  color: var(--red);
+}
+.terminal-upload-panel li p {
+  font-size: 10px;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.terminal-upload-panel progress {
+  width: 100%;
+  height: 4px;
+  display: block;
+  margin-top: 6px;
+  accent-color: var(--accent);
+}
+.terminal-copy-paths {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}

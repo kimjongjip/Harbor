@@ -1,0 +1,17 @@
+.terminal-tab[draggable="true"] {
+  cursor: grab;
+}
+.terminal-tab[draggable="true"] > button {
+  cursor: grab;
+}
+.terminal-tab.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+.terminal-detached-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 16px;
+}

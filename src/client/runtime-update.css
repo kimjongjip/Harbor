@@ -1,0 +1,32 @@
+.runtime-update-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 7px;
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 11px;
+  cursor: pointer;
+}
+.runtime-update-badge:hover,
+.runtime-update-badge:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.runtime-update-body {
+  line-height: 1.7;
+}
+.runtime-update-body p {
+  margin: 0 0 12px;
+}
+.runtime-update-body p:last-child {
+  margin-bottom: 0;
+}
+@media (max-width: 650px) {
+  .runtime-update-badge span {
+    display: none;
+  }
+}
