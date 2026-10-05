@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -12,7 +12,40 @@ import {
   ResourceContext,
   usePreview,
   type ResourceLocation,
+  fileUrl,
 } from "./ResourcePreview";
+import { api } from "./api";
+import { resolvePreviewBase } from "./previewPath";
+
+function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source?: ResourceLocation }) {
+  const open = usePreview();
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(""); setError("");
+    const link = classifyLink(src);
+    if (link.kind === "web") { setUrl(link.url); return; }
+    if (link.kind !== "file" || !source) { setError("이미지의 서버와 기준 폴더를 확인할 수 없습니다."); return; }
+    void (async () => {
+      const cwd = await resolvePreviewBase(source.hostId, source.cwd);
+      const result = await api<{ kind: string; path: string }>(`/hosts/${encodeURIComponent(source.hostId)}/files/preview?${new URLSearchParams({ path: link.path, cwd })}`, undefined, "GET");
+      if (result.kind !== "image") throw new Error("이미지로 미리볼 수 없는 파일입니다.");
+      if (!cancelled) setUrl(fileUrl(source.hostId, result.path, "image"));
+    })().catch(e => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [src, source?.hostId, source?.cwd]);
+  return <span className="markdown-inline-image">
+    {url && !error ? <img src={url} alt={alt || "이미지"} loading="lazy" referrerPolicy="no-referrer"
+      tabIndex={0} role="button" title="클릭하면 새 창으로 이미지 보기"
+      onClick={e => { e.stopPropagation(); open(src, source, true); }}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); open(src, source, true); } }}
+      onError={() => setError("이미지를 불러오지 못했습니다.")} />
+      : <button className="markdown-image-link" onClick={() => open(src, source, true)}>
+          <Image size={20} /><span><b>{alt || "이미지"}</b><small>{error || "이미지 불러오는 중…"}</small></span><ExternalLink size={13} />
+        </button>}
+  </span>;
+}
 
 export function Markdown({
   text,
@@ -90,17 +123,7 @@ export function Markdown({
           },
           img: ({ src, alt }) =>
             typeof src === "string" && classifyLink(src).kind !== "blocked" ? (
-              <button
-                className="markdown-image-link"
-                onClick={() => open(src, source, true)}
-              >
-                <Image size={20} />
-                <span>
-                  <b>{alt || "이미지"}</b>
-                  <small>클릭해서 이미지 보기</small>
-                </span>
-                <ExternalLink size={13} />
-              </button>
+              <MarkdownImage src={src} alt={alt} source={source} />
             ) : (
               <span>{alt || "[이미지]"}</span>
             ),

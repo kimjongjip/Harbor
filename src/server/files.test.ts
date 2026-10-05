@@ -23,6 +23,19 @@ async function setup(t: any) {
   });
   return { dir, host, files };
 }
+test("SVG figures resolve from the Markdown directory and use the image endpoint", async (t) => {
+  const { dir, host, files } = await setup(t);
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24"><rect width="32" height="24" fill="blue"/></svg>';
+  await fs.writeFile(join(dir, "figure.svg"), svg);
+  const preview = await files.preview(host, "figure.svg", dir);
+  assert.equal(preview.kind, "image");
+  const image = await files.image(host, preview.path);
+  assert.equal(image.mime, "image/svg+xml");
+  assert.equal(image.bytes.toString(), svg);
+  await fs.writeFile(join(dir, "not-image.svg"), '<html>not an image</html>');
+  await assert.rejects(files.image(host, join(dir, "not-image.svg")), /이미지 형식/);
+});
+
 test("file listing, UTF-8 names, binary upload/download and exclusive collision protection", async (t) => {
   const { dir, host, files } = await setup(t);
   const bytes = Buffer.from([0, 255, 13, 10, 128, 49]);

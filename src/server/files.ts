@@ -217,7 +217,7 @@ export class Files {
     };
     if (stat.isDirectory()) return { ...base, kind: "directory" };
     if (!stat.isFile()) throw new Error("일반 파일만 미리볼 수 있습니다.");
-    if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(resolved)) {
+    if (/\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(resolved)) {
       if (stat.size > 20 * 1024 * 1024)
         throw new Error("20MB보다 큰 이미지는 다운로드해서 확인해 주세요.");
       return { ...base, kind: "image" };
@@ -269,7 +269,9 @@ export class Files {
               ? "image/bmp"
               : bytes.subarray(4, 12).toString() === "ftypavif"
                 ? "image/avif"
-                : undefined;
+                : /\.svg$/i.test(filename) && /^\s*(?:<\?xml[^>]*>\s*)?(?:(?:<!--[\s\S]*?-->|<!DOCTYPE\s+svg[^>]*>)\s*)*<svg(?:\s|>)/i.test(bytes.toString("utf8"))
+                  ? "image/svg+xml"
+                  : undefined;
     if (!mime) throw new Error("미리보기를 지원하는 이미지 형식이 아닙니다.");
     return { bytes, mime };
   }

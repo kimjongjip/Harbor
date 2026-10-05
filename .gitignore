@@ -32,6 +32,7 @@
 !/scripts/audit-publication.mjs
 !/scripts/set-version.mjs
 !/scripts/verify-claude-api.mjs
+!/scripts/verify-inline-images.mjs
 !/scripts/verify-installed-replay.mjs
 **/node_modules/
 **/.env

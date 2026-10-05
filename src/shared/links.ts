@@ -18,7 +18,7 @@ export function classifyLink(value: string): LinkTarget {
       return {
         kind: "web",
         url: url.href,
-        image: /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(url.pathname),
+        image: /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i.test(url.pathname),
       };
     } catch {
       return { kind: "blocked" };
