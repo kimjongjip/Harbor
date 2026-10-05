@@ -33,6 +33,7 @@ import { usePreviewSize } from "./preview-size";
 import { useDocumentZoom } from "./useDocumentZoom";
 import { resolvePreviewBase } from "./previewPath";
 import { copyPreviewImage } from "./preview-clipboard";
+import { svgImageUrl } from "./svg-image";
 import "./resource-preview.css";
 
 export interface ResourceLocation {
@@ -216,9 +217,23 @@ function ResourcePreview({
       ignore = true;
     };
   }, [target, previewCwd]);
+  const [svgUrl, setSvgUrl] = useState("");
+  const svgPath = data && data.kind !== "directory" && /\.svg$/i.test(data.path) ? data.path : undefined;
+  useEffect(() => {
+    setSvgUrl("");
+    if (!svgPath || !target.hostId) return;
+    const controller = new AbortController();
+    let url = "";
+    void svgImageUrl(target.hostId, svgPath, controller.signal).then(value => {
+      url = value;
+      if (controller.signal.aborted) URL.revokeObjectURL(value);
+      else setSvgUrl(value);
+    }).catch(e => { if (!controller.signal.aborted) setError(e.message); });
+    return () => { controller.abort(); if (url) URL.revokeObjectURL(url); };
+  }, [svgPath, target.hostId]);
   const image =
     target.url ||
-    (data?.kind === "image"
+    svgUrl || (data?.kind === "image" && !svgPath
       ? fileUrl(target.hostId!, data.path, "image")
       : undefined);
   const download =
@@ -227,7 +242,7 @@ function ResourcePreview({
       ? fileUrl(target.hostId!, data.path)
       : undefined);
   const markdown = /\.(md|markdown)$/i.test(data?.name || "");
-  const documentZoom = useDocumentZoom(data?.kind === "text");
+  const documentZoom = useDocumentZoom(data?.kind === "text" && !svgPath);
   const delimited = /\.(csv|tsv)$/i.test(data?.name || "");
   return (
     <div

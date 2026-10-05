@@ -12,11 +12,12 @@ try {
   const url=new URL(req.url,'http://fixture');res.setHeader('Content-Type','application/json');
   if(url.pathname==='/api/bootstrap')return res.end(JSON.stringify({token:'fixture',state:{hosts:[{id:'fixture',name:'Fixture',kind:'ssh'}]}}));
   if(url.pathname.endsWith('/files/image')){assert.equal(url.searchParams.get('token'),'fixture');res.setHeader('Content-Type','image/svg+xml');return res.end(svg);}
+  if(url.pathname.endsWith('/files/download')){assert.equal(req.headers['x-harbor-token'],'fixture');res.setHeader('Content-Type','application/octet-stream');return res.end(svg);}
   if(url.pathname.endsWith('/files/preview')){
    const p=url.searchParams.get('path');requests.push({path:p,cwd:url.searchParams.get('cwd')});
    if(p==='/project/docs/readme.md')return res.end(JSON.stringify({kind:'text',path:p,name:'readme.md',text:markdown}));
    if(p==='missing.svg'){res.statusCode=404;return res.end(JSON.stringify({error:'Missing fixture image'}));}
-   return res.end(JSON.stringify({kind:'image',path:p.startsWith('/')?p:'/project/docs/'+p,name:'chart.svg'}));
+   return res.end(JSON.stringify({kind:'text',path:p.startsWith('/')?p:'/project/docs/'+p,name:'chart.svg',text:'<svg',truncated:true}));
   }res.statusCode=404;res.end('{}');
  });}}]});
  await server.listen();browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1100,height:850}});
@@ -27,7 +28,8 @@ try {
  assert.ok(requests.some(r=>r.path==='/project/absolute.svg'));
  const popupPromise=page.waitForEvent('popup');await page.getByRole('button',{name:'Relative figure',exact:true}).click();const popup=await popupPromise;
  const target=JSON.parse(new URLSearchParams(new URL(popup.url()).hash.slice(1)).get('target'));
- assert.equal(target.cwd,'/project/docs');assert.equal(target.path,'figures/chart.svg');await popup.close();
+ assert.equal(target.cwd,'/project/docs');assert.equal(target.path,'figures/chart.svg');
+ await popup.waitForFunction(()=>{const i=document.querySelector('.image-viewer img');return i?.complete&&i.naturalWidth>0;});await popup.close();
  await page.setViewportSize({width:420,height:750});
  assert.ok(await page.locator('.markdown-inline-image > img').first().evaluate(i=>i.getBoundingClientRect().width<=i.parentElement.getBoundingClientRect().width+1));
  await page.setViewportSize({width:1100,height:850});await mkdir('artifacts',{recursive:true});await page.screenshot({path:'artifacts/inline-images.png'});

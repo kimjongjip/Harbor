@@ -16,6 +16,7 @@ import {
 } from "./ResourcePreview";
 import { api } from "./api";
 import { resolvePreviewBase } from "./previewPath";
+import { svgImageUrl } from "./svg-image";
 
 function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source?: ResourceLocation }) {
   const open = usePreview();
@@ -23,6 +24,8 @@ function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    let objectUrl = "";
     setUrl(""); setError("");
     const link = classifyLink(src);
     if (link.kind === "web") { setUrl(link.url); return; }
@@ -30,10 +33,16 @@ function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source
     void (async () => {
       const cwd = await resolvePreviewBase(source.hostId, source.cwd);
       const result = await api<{ kind: string; path: string }>(`/hosts/${encodeURIComponent(source.hostId)}/files/preview?${new URLSearchParams({ path: link.path, cwd })}`, undefined, "GET");
+      if (/\.svg$/i.test(result.path) && result.kind !== "directory") {
+        objectUrl = await svgImageUrl(source.hostId, result.path, controller.signal);
+        if (cancelled) URL.revokeObjectURL(objectUrl);
+        else setUrl(objectUrl);
+        return;
+      }
       if (result.kind !== "image") throw new Error("이미지로 미리볼 수 없는 파일입니다.");
       if (!cancelled) setUrl(fileUrl(source.hostId, result.path, "image"));
     })().catch(e => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [src, source?.hostId, source?.cwd]);
   return <span className="markdown-inline-image">
     {url && !error ? <img src={url} alt={alt || "이미지"} loading="lazy" referrerPolicy="no-referrer"
