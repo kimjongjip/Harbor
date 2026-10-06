@@ -25,6 +25,7 @@ import WorkspaceInbox, { type InboxTab } from "./WorkspaceInbox";
 import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
 import CodexHistory from "./CodexHistory";
 import ServerTreeHost from "./ServerTreeHost";
+import ResizableSidebar from "./ResizableSidebar";
 import { useServerOrder } from "./server-order";
 import {
   focusTerminalWindow,
@@ -420,7 +421,7 @@ export default function App() {
         className={`harbor-app ${popoutId ? "is-popout" : ""} ${page === "terminals" ? "terminal-view" : ""}`}
       >
         {sidebarVisible && (
-          <aside
+          <ResizableSidebar
             className={`harbor-sidebar ${sidebar === "activity" ? "with-inbox" : ""}`}
           >
             <button className="harbor-brand" onClick={() => navigate("terminals")}>
@@ -613,7 +614,7 @@ export default function App() {
             >
               <PanelLeftClose size={14} /> 왼쪽 패널 접기
             </button>
-          </aside>
+          </ResizableSidebar>
         )}
         <div className="harbor-main">
           <header className="harbor-topbar">
