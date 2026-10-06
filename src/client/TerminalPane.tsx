@@ -14,7 +14,8 @@ import {
 import {
   snapshotTerminalAnnotation,
   buildAnnotationPrompt,
-  type TerminalAnnotationSnapshot,
+  annotationLimit,
+  type TerminalAnnotationReference,
 } from "./terminalAnnotation";
 import { TerminalAnnotationDialog } from "./TerminalAnnotationDialog";
 import {
@@ -114,12 +115,14 @@ export default function TerminalPane({
   const copySelectionRef = useRef<(() => void) | null>(null);
   const quoteSelectionRef = useRef<(() => void) | null>(null);
   const [annotation, setAnnotation] =
-    useState<TerminalAnnotationSnapshot | null>(null);
+    useState<readonly TerminalAnnotationReference[] | null>(null);
+  const annotationRef = useRef(annotation);
+  annotationRef.current = annotation;
+  const annotationNumber = useRef(0);
   const insertAnnotationRef = useRef<
     | ((
-        snapshot: TerminalAnnotationSnapshot,
+        references: readonly TerminalAnnotationReference[],
         question: string,
-        includeContext: boolean,
       ) => string | null)
     | null
   >(null);
@@ -593,21 +596,27 @@ export default function TerminalPane({
       const text = selectedText();
       if (!text) return;
       try {
-        setAnnotation(
-          snapshotTerminalAnnotation(term, text, {
+        if ((annotationRef.current?.length || 0) >= annotationLimit)
+          throw new Error(`인용은 한 번에 ${annotationLimit}개까지 가능합니다. 일부 참조를 삭제해주세요.`);
+        const snapshot = snapshotTerminalAnnotation(term, text, {
             terminalId: info.id,
             hostName: hostNameRef.current || infoRef.current.hostId,
             title: infoRef.current.title,
             threadId: infoRef.current.agentSessionId || infoRef.current.resumeThreadId,
-          }),
-        );
+            cwd: infoRef.current.cwd,
+          });
+        const captured = { number: ++annotationNumber.current, snapshot };
+        setAnnotation(current => [...(current || []), captured]);
       } catch (error) {
         setCopyStatus((error as Error).message);
       }
     };
-    insertAnnotationRef.current = (snapshot, question, includeContext) => {
-      if (snapshot.source.terminalId !== info.id)
+    insertAnnotationRef.current = (references, question) => {
+      if (references.some(item => item.snapshot.source.terminalId !== info.id))
         return "인용한 터미널과 입력 대상이 다릅니다. 원래 터미널에서 다시 열어 주세요.";
+      const threadId = infoRef.current.agentSessionId || infoRef.current.resumeThreadId;
+      if (threadId && references.some(item => item.snapshot.source.threadId && item.snapshot.source.threadId !== threadId))
+        return "참조를 추가한 뒤 대화가 변경되었습니다. 참조를 삭제하고 현재 대화에서 다시 선택해주세요.";
       if (!terminalReady())
         return "터미널 연결이 끊겨 입력하지 못했습니다. 질문은 그대로 유지됩니다.";
       if (!infoRef.current.agentConnected || !term.modes.bracketedPasteMode) {
@@ -615,7 +624,7 @@ export default function TerminalPane({
       }
       let prompt: string;
       try {
-        prompt = buildAnnotationPrompt(snapshot, question, includeContext);
+        prompt = buildAnnotationPrompt(references, question);
       } catch (error) {
         return (error as Error).message;
       }
@@ -627,7 +636,7 @@ export default function TerminalPane({
         if (!stopped) term.focus();
       });
       setCopyStatus(
-        "인용·출처·질문을 AI 입력창에 넣었습니다. 확인한 뒤 Enter로 보내세요.",
+        "번호가 붙은 참조와 질문을 AI 입력창에 넣었습니다. 확인한 뒤 Enter로 보내세요.",
       );
       clearTimeout(copyStatusTimeout);
       copyStatusTimeout = setTimeout(() => setCopyStatus(""), 4000);
@@ -994,18 +1003,24 @@ export default function TerminalPane({
     >
       {annotation && (
         <TerminalAnnotationDialog
-          annotation={annotation}
+          annotations={annotation}
           disabled={!connected || Boolean(info.exited)}
-          onClose={() => setAnnotation(null)}
-          onInsert={(question, includeContext) => {
+          onClose={() => {
+            setAnnotation(null);
+            annotationNumber.current = 0;
+          }}
+          onRemove={number => setAnnotation(current => current?.filter(item => item.number !== number) ?? null)}
+          onInsert={question => {
             const error = insertAnnotationRef.current
               ? insertAnnotationRef.current(
                   annotation,
                   question,
-                  includeContext,
                 )
               : "터미널을 사용할 수 없습니다. 질문은 그대로 유지됩니다.";
-            if (!error) setAnnotation(null);
+            if (!error) {
+              setAnnotation(null);
+              annotationNumber.current = 0;
+            }
             return error;
           }}
         />
@@ -1035,7 +1050,7 @@ export default function TerminalPane({
             type="button"
             className="terminal-footer-button"
             aria-label="선택한 내용 인용하여 질문"
-            title="선택한 부분과 주변 문맥을 인용 카드로 열어 질문을 작성합니다."
+            title="선택한 내용을 번호가 붙은 참조로 추가합니다."
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => quoteSelectionRef.current?.()}
           >
