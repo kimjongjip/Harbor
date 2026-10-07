@@ -45,7 +45,7 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.0.6",
+    version: "1.1.0",
     writeClipboardText: (text) =>
       navigator.userActivation.isActive
         ? ipcRenderer.invoke("harbor:clipboard-write-text", text)

@@ -6,6 +6,11 @@ import {
   annotationHookTrustConfig,
 } from "./annotation-hook.js";
 import { claudeArguments, claudeHookSettings } from "./claude-hooks.js";
+import { claudePeerMcpConfig } from "./claude-peer-channel.js";
+import {
+  codexPeerPowerShellLauncher,
+  codexPeerPosixLauncher,
+} from "./codex-peer-runtime.js";
 
 export type TerminalProgram =
   "shell" | "codex" | "resume" | "claude" | "claude-resume";
@@ -25,7 +30,18 @@ export interface ShellBridge {
 /** Keep Windows' process command line short even with several native hooks. */
 export function powershellStartup(script: string) {
   const loader =
-    "$harborInit=$env:HARBOR_POWERSHELL_INIT;Remove-Item Env:HARBOR_POWERSHELL_INIT -ErrorAction SilentlyContinue;. ([ScriptBlock]::Create($harborInit));Remove-Variable harborInit -ErrorAction SilentlyContinue";
+    "$harborInit=$env:HARBOR_POWERSHELL_INIT;Remove-Item Env:HARBOR_POWERSHELL_INIT -ErrorAction SilentlyContinue;if($env:HARBOR_POWERSHELL_INIT_PARTS){$harborInit='';$harborParts=[int]$env:HARBOR_POWERSHELL_INIT_PARTS;Remove-Item Env:HARBOR_POWERSHELL_INIT_PARTS;for($harborPart=0;$harborPart -lt $harborParts;$harborPart++){$harborName='HARBOR_POWERSHELL_INIT_'+$harborPart;$harborInit+=[Environment]::GetEnvironmentVariable($harborName);Remove-Item ('Env:'+$harborName)};Remove-Variable harborParts,harborPart,harborName};. ([ScriptBlock]::Create($harborInit));Remove-Variable harborInit -ErrorAction SilentlyContinue";
+  const env: Record<string, string> = {};
+  if (script.length <= 24000) env.HARBOR_POWERSHELL_INIT = script;
+  else {
+    const count = Math.ceil(script.length / 12000);
+    env.HARBOR_POWERSHELL_INIT_PARTS = String(count);
+    for (let index = 0; index < count; index++)
+      env[`HARBOR_POWERSHELL_INIT_${index}`] = script.slice(
+        index * 12000,
+        (index + 1) * 12000,
+      );
+  }
   return {
     args: [
       "-NoLogo",
@@ -33,7 +49,7 @@ export function powershellStartup(script: string) {
       "-EncodedCommand",
       Buffer.from(loader, "utf16le").toString("base64"),
     ],
-    env: { HARBOR_POWERSHELL_INIT: script },
+    env,
   };
 }
 
@@ -99,7 +115,7 @@ export function powershellInitialization(
 ) {
   const quote = (s: string) => `'${s.replaceAll("'", "''")}'`;
   // Windows PowerShell's legacy native argument parser needs escaped inner quotes.
-  const args = [
+  const quotedArgs = [
     ...codexArguments("codex", url),
     ...(enablePermissionHook
       ? [
@@ -115,9 +131,13 @@ export function powershellInitialization(
           annotationHookTrustConfig("windows"),
         ]
       : []),
-  ]
-    .map((value) => quote(value.replaceAll('"', '\\"')))
-    .join(" ");
+  ].map((value) => quote(value.replaceAll('"', '\\"')));
+  const args = quotedArgs.join(" ");
+  const codexLauncher =
+    enablePermissionHook && url ? codexPeerPowerShellLauncher() : "";
+  const codexInvoke = codexLauncher
+    ? `__HarborRunCodexPeers -Executable $harborExecutable -BridgeUrl ${quote(url!)} -ConfigArgs (@(${quotedArgs.join(",")}) + @($harborConfig)) -UserArgs $harborArgs`
+    : `& $harborExecutable ${args} @harborConfig @harborArgs`;
   const notify = url
     ? `try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Method POST -Uri ${quote(url)} -Headers @{Authorization=('Bearer '+$env:HARBOR_SESSION_TOKEN)} -ContentType 'application/json' -Body '{"jsonrpc":"2.0","method":"notifications/harbor/terminal-state","params":{"state":"shell"}}' | Out-Null } catch {}`
     : "";
@@ -131,17 +151,22 @@ export function powershellInitialization(
       ? new URL("/bridge/claude", url).href
       : undefined;
   const claudeSettings = claudeUrl ? claudeHookSettings(claudeUrl) : undefined;
+  const claudeMcp =
+    claudeUrl && url ? claudePeerMcpConfig("windows", url) : undefined;
   const claudeSetup = claudeSettings
     ? `$harborSettings=[IO.Path]::GetTempFileName(); [IO.File]::WriteAllText($harborSettings,${quote(claudeSettings)},[Text.UTF8Encoding]::new($false));`
     : "";
+  const claudePeerSetup = claudeMcp
+    ? `$harborPeerConfig=ConvertFrom-Json ${quote(claudeMcp)}; $harborPeerConfig.mcpServers.harbor.env.HARBOR_CLAUDE_CHANNEL_ENABLED= $(if($harborPeers){'1'}else{'0'}); $harborMcp=[IO.Path]::GetTempFileName(); [IO.File]::WriteAllText($harborMcp,($harborPeerConfig | ConvertTo-Json -Depth 12 -Compress),[Text.UTF8Encoding]::new($false)); $harborPeerArgs=@('--mcp-config',$harborMcp); if($harborPeers){$harborPeerArgs+=@('--dangerously-load-development-channels','server:harbor')};`
+    : "if($harborPeers){Write-Host 'Harbor 자동 수신 연결을 사용할 수 없습니다.'};";
   const claudeArgs = claudeSettings ? "--settings $harborSettings" : "";
-  const claudeWrapper = `function global:claude { __HarborCwd; $harborSettings=$null; $harborToken=$env:HARBOR_SESSION_TOKEN; try { Remove-Item Env:HARBOR_SESSION_TOKEN -ErrorAction SilentlyContinue; ${claudeSetup} $harborClaude=(Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborClaude ${claudeArgs} @args } finally { $harborExit=$LASTEXITCODE; $env:HARBOR_SESSION_TOKEN=$harborToken; if($harborSettings) { Remove-Item -LiteralPath $harborSettings -ErrorAction SilentlyContinue }; ${notify}; $global:LASTEXITCODE=$harborExit } };`;
+  const claudeWrapper = `function global:claude { __HarborCwd; $harborSettings=$null; $harborMcp=$null; $harborPeers=$false; $harborLiteral=$false; $harborClaudeArgs=@(); foreach($harborValue in $args){if(!$harborLiteral -and $harborValue -ceq '--harbor-peers'){$harborPeers=$true}else{$harborClaudeArgs+=$harborValue;if($harborValue -ceq '--'){$harborLiteral=$true}}}; if($harborClaudeArgs -contains '-p' -or $harborClaudeArgs -contains '--print' -or @($harborClaudeArgs | Where-Object { $_.StartsWith('--print=') }).Count -gt 0){$harborPeers=$false}; $harborPeerArgs=@(); try { ${claudeSetup} ${claudePeerSetup} $harborClaude=(Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborClaude @harborPeerArgs ${claudeArgs} @harborClaudeArgs } finally { $harborExit=$LASTEXITCODE; if($harborSettings) { Remove-Item -LiteralPath $harborSettings -ErrorAction SilentlyContinue }; if($harborMcp) { Remove-Item -LiteralPath $harborMcp -ErrorAction SilentlyContinue }; ${notify}; $global:LASTEXITCODE=$harborExit } };`;
   const launch = program.startsWith("claude")
     ? `${resumeCwd ? `Set-Location -LiteralPath ${quote(resumeCwd)} -ErrorAction Stop; ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? quote(resumeThreadId) : ""}` : ""}`
     : program === "shell"
       ? ""
       : `codex${program === "resume" ? ` resume ${resumeThreadId ? quote(resumeThreadId) : "--all"}` : ""}`;
-  return `${report} function global:codex { try { ${normalize} ${reportCodex} $harborExecutable=(Get-Command ${quote(host.codexPath || "codex")} -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborExecutable ${args} @harborConfig @harborArgs } finally { $harborExit=$LASTEXITCODE; ${notify}; $global:LASTEXITCODE=$harborExit } }; ${claudeWrapper} ${launch}`;
+  return `${report} ${codexLauncher} function global:codex { try { ${normalize} ${reportCodex} $harborExecutable=(Get-Command ${quote(host.codexPath || "codex")} -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); ${codexInvoke} } finally { $harborExit=$LASTEXITCODE; ${notify}; $global:LASTEXITCODE=$harborExit } }; ${claudeWrapper} ${launch}`;
 }
 
 /** Contains a per-session token; send only on authenticated SSH stdin after echo is disabled. */
@@ -153,7 +178,7 @@ export function bashInitialization(
   resumeThreadId?: string,
   resumeCwd?: string,
 ) {
-  const args = [
+  const configArgs = [
     ...codexArguments("codex", bridge.url),
     ...(bridge.hook
       ? [
@@ -169,15 +194,36 @@ export function bashInitialization(
           annotationHookTrustConfig("posix"),
         ]
       : []),
-  ]
-    .map(shellQuote)
-    .join(" ");
+  ];
+  const args = configArgs.map(shellQuote).join(" ");
+  const codexPeerCode = Buffer.from(codexPeerPosixLauncher()).toString(
+    "base64",
+  );
+  const codexInvoke = bridge.hook
+    ? `if command -v python3 >/dev/null 2>&1; then command python3 -X utf8 -c ${shellQuote(`import base64; exec(base64.b64decode('${codexPeerCode}'))`)} ${shellQuote(host.codexPath || "codex")} ${shellQuote(bridge.url)} $((${configArgs.length} + \${#harbor_config[@]})) ${args} "\${harbor_config[@]}" "\${harbor_args[@]}"; else command ${shellQuote(host.codexPath || "codex")} ${args} "\${harbor_config[@]}" "\${harbor_args[@]}"; fi`
+    : `command ${shellQuote(host.codexPath || "codex")} ${args} "\${harbor_config[@]}" "\${harbor_args[@]}"`;
+  const nestedCodex = `if [[ "\${HARBOR_CODEX_MANAGED_PARENT:-}" == 1 ]]; then command ${shellQuote(host.codexPath || "codex")} "$@"; return $?; fi;`;
+  const nestedClaude =
+    'if [[ "${HARBOR_CODEX_MANAGED_PARENT:-}" == 1 ]]; then command claude "$@"; return $?; fi;';
   const rc = `[[ ! -f ~/.bashrc ]] || source ~/.bashrc; PROMPT_COMMAND+=(__harbor_cwd)`;
   const interactive = `exec bash --rcfile <(printf '%s\\n' ${shellQuote(rc)}) -i`;
   const claudeUrl = bridge.hook
     ? new URL("/bridge/claude", bridge.hook.url).href
     : undefined;
-  const claudeArgs = claudeArguments(claudeUrl).map(shellQuote).join(" ");
+  const claudeArgs = claudeArguments(claudeUrl, undefined, false, "posix")
+    .map(shellQuote)
+    .join(" ");
+  const claudeMcp = claudeUrl
+    ? (() => {
+        const config = JSON.parse(claudePeerMcpConfig("posix", bridge.url));
+        // Let this launch's explicit option flow through Claude to the stdio adapter.
+        delete config.mcpServers.harbor.env.HARBOR_CLAUDE_CHANNEL_ENABLED;
+        return JSON.stringify(config);
+      })()
+    : undefined;
+  const claudePeerSetup = claudeMcp
+    ? `local harbor_mcp harbor_peers=0 harbor_literal=0 harbor_v; local -a harbor_claude_args=() harbor_peer_args=(); for harbor_v in "$@"; do if [[ $harbor_literal == 0 && $harbor_v == --harbor-peers ]]; then harbor_peers=1; else harbor_claude_args+=("$harbor_v"); [[ $harbor_v != -- ]] || harbor_literal=1; fi; done; for harbor_v in "\${harbor_claude_args[@]}"; do case "$harbor_v" in -p|--print|--print=*) harbor_peers=0;; esac; done; if command -v python3 >/dev/null 2>&1; then harbor_mcp=$(mktemp); printf '%s' ${shellQuote(claudeMcp)} > "$harbor_mcp"; harbor_peer_args=(--mcp-config "$harbor_mcp"); if [[ $harbor_peers == 1 ]]; then harbor_peer_args+=(--dangerously-load-development-channels server:harbor); fi; HARBOR_CODEX_MANAGED_PARENT=1 HARBOR_CLAUDE_CHANNEL_ENABLED=$harbor_peers command claude "\${harbor_peer_args[@]}" ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; rm -f -- "$harbor_mcp"; else printf '%s\\n' 'Harbor 메시지 연결에는 python3가 필요합니다.' >&2; HARBOR_CODEX_MANAGED_PARENT=1 command claude ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; fi;`
+    : `command claude ${claudeArgs} "$@"; local harbor_exit=$?;`;
   const claudeLaunch = `${resumeCwd ? `cd ${shellDirectory(resumeCwd)} && ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? shellQuote(resumeThreadId) : ""}` : ""}`;
   const launch = program.startsWith("claude")
     ? `${interactive} -c ${shellQuote(`${claudeLaunch}; ${interactive}`)}`
@@ -193,5 +239,5 @@ export function bashInitialization(
     : "";
   const cwdHook = `function __harbor_cwd() { printf '\\033]1337;CurrentDir=%s\\007' "$PWD"; }; export -f __harbor_cwd;`;
   const reportCodex = `local harbor_dir="$PWD" harbor_i harbor_v; for ((harbor_i=0; harbor_i<\${#harbor_args[@]}; harbor_i++)); do harbor_v=\${harbor_args[harbor_i]}; case "$harbor_v" in --) break;; -C|--cd) ((harbor_i++)); harbor_dir=\${harbor_args[harbor_i]};; --cd=*) harbor_dir=\${harbor_v#--cd=};; -C?*) harbor_dir=\${harbor_v#-C};; esac; done; (cd -- "$harbor_dir" 2>/dev/null && __harbor_cwd);`;
-  return `${cwdHook} export HARBOR_SESSION_TOKEN=${shellQuote(bridge.token)}; ${hookEnvironment}function codex() { ${normalize} ${reportCodex} command ${shellQuote(host.codexPath || "codex")} ${args} "\${harbor_config[@]}" "\${harbor_args[@]}"; local harbor_exit=$?; local harbor_trace=; case $- in *x*) harbor_trace=1; set +x;; esac; ${notify}; if [[ -n "$harbor_trace" ]]; then set -x; fi; return "$harbor_exit"; }; export -f codex; function claude() { __harbor_cwd; (unset HARBOR_SESSION_TOKEN; command claude ${claudeArgs} "$@"); local harbor_exit=$?; ${notify}; return "$harbor_exit"; }; export -f claude; ${cwd ? `cd ${shellDirectory(cwd)} || exit; ` : ""}stty echo icanon; ${launch}\n`;
+  return `${cwdHook} export HARBOR_SESSION_TOKEN=${shellQuote(bridge.token)}; ${hookEnvironment}function codex() { ${nestedCodex} ${normalize} ${reportCodex} ${codexInvoke}; local harbor_exit=$?; local harbor_trace=; case $- in *x*) harbor_trace=1; set +x;; esac; ${notify}; if [[ -n "$harbor_trace" ]]; then set -x; fi; return "$harbor_exit"; }; export -f codex; function claude() { ${nestedClaude} __harbor_cwd; ${claudePeerSetup} ${notify}; return "$harbor_exit"; }; export -f claude; ${cwd ? `cd ${shellDirectory(cwd)} || exit; ` : ""}stty echo icanon; ${launch}\n`;
 }

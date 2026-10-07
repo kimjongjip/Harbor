@@ -693,6 +693,24 @@
 .mailbox-guide strong {
   font-weight: 600;
 }
+.mailbox-peers {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+.mailbox-peers button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+.mailbox-peers button small {
+  overflow-wrap: anywhere;
+}
 .mailbox-guide small {
   display: block;
   color: var(--muted);

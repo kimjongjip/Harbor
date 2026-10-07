@@ -63,7 +63,9 @@ export function NewTerminalDialog({
   const [title, setTitle] = useState("");
   const [password, setPassword] = useState("");
   const [savePassword, setSavePassword] = useState(credentialStorageAvailable);
-  const [launch, setLaunch] = useState<"shell" | "codex" | "resume" | "claude" | "claude-resume">("shell");
+  const [launch, setLaunch] = useState<
+    "shell" | "codex" | "resume" | "claude" | "claude-resume"
+  >("shell");
   return (
     <Modal
       title="새 터미널"
@@ -173,8 +175,14 @@ export function NewTerminalDialog({
             >
               <option value="shell">터미널 셸</option>
               <option value="codex">Codex · 새 대화</option>
-              {claudeIntegration && <option value="claude">Claude · 새 대화</option>}
-              {claudeIntegration && <option value="claude-resume">Claude · 대화 선택해 이어가기</option>}
+              {claudeIntegration && (
+                <option value="claude">Claude · 새 대화</option>
+              )}
+              {claudeIntegration && (
+                <option value="claude-resume">
+                  Claude · 대화 선택해 이어가기
+                </option>
+              )}
               <option value="resume">Codex · 이전 대화 이어하기</option>
             </select>
             <small>
@@ -645,7 +653,9 @@ export default function TerminalWorkspace({
               : "codex 또는 claude를 실행하면 작업 상태가 연결됩니다."
           }
         >
-          {info.agentConnected ? `${info.agentKind === "claude" ? "Claude" : "Codex"} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}` : "셸"}
+          {info.agentConnected
+            ? `${info.agentKind === "claude" ? "Claude" : "Codex"} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}`
+            : "셸"}
         </span>
       )}
       <button
@@ -659,14 +669,14 @@ export default function TerminalWorkspace({
       >
         <Pencil size={14} />
       </button>
-      {info.agentKind !== "claude" && <button
+      <button
         className="icon-button compact"
         aria-label={`세션 메시지: ${info.title}`}
         title="세션 메시지"
         onClick={() => onMessages(info.id)}
       >
         <MessageSquare size={14} />
-      </button>}
+      </button>
       <button
         className="icon-button compact"
         title={`작업 폴더 열기 · ${info.cwd}`}

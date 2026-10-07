@@ -190,7 +190,7 @@ test("real scoped HTTP bridge waits for UI answers, reports connection and mailb
   await rpc(a.token, "initialize", { protocolVersion: "2025-03-26" });
   assert.equal(bridge.connections()[0].state, "connected");
   assert.ok(bridge.connections()[0].connectedAt);
-  assert.equal((await rpc(a.token, "tools/list", {})).result.tools.length, 6);
+  assert.equal((await rpc(a.token, "tools/list", {})).result.tools.length, 8);
   const created = changed(requests);
   const tool = call(a.token, "harbor_request", { ...question, waitMs: 1000 });
   await created;

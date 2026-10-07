@@ -1,4 +1,4 @@
-# Harbor 1.0
+# Harbor 1.1
 
 - [사용자 설치·업데이트 안내](docs/user-guide.md)
 - [개발자 Git 게시·배포 절차](docs/maintainer-guide.md)
@@ -48,8 +48,17 @@ cd Harbor
 - 파일 링크를 독립 창으로 열기. Markdown 표·수식·Mermaid, CSV 표, 이미지 미리보기.
 - 터미널 선택문 복사·인용. 선택한 상태의 Ctrl+C는 복사, 선택하지 않은 상태는 실행 중단.
 - Claude 작업 상태·알림·실행 승인 받은함. 일반 질문은 원래 터미널에서 답변.
+- Codex·Claude 사이의 세션 이름 기반 질문·답장. 왼쪽 받은함에서 대기·CLI 알림 전달·AI 확인·답장을 구분.
 
-Claude 상태 연동은 Windows PowerShell과 관리형 SSH Bash에서 지원합니다. 전역 Claude 설정을 수정하지 않고 해당 실행에만 HTTP hooks를 추가합니다. 관리 정책이 hooks를 제한하거나 일반 SSH 대체 연결을 사용하면 CLI 자체의 승인·상태 표시를 사용하세요. Claude 첨부는 업로드한 파일 경로 입력 방식이며 자동 Enter를 보내지 않습니다. Codex↔Claude 메시지·작업 전달은 지원하지 않습니다.
+Claude 상태 연동은 Windows PowerShell과 관리형 SSH Bash에서 지원합니다. 전역 설정을 수정하지 않고 해당 실행에만 hooks와 세션 전용 MCP 연결을 추가합니다. 관리 정책이 hooks를 제한하거나 일반 SSH 대체 연결을 사용하면 CLI 자체의 승인·상태 표시를 사용하세요. Claude 첨부는 업로드한 파일 경로 입력 방식이며 자동 Enter를 보내지 않습니다.
+
+## 세션끼리 질문하기
+
+터미널의 이름 변경 버튼으로 `구현`, `리뷰`처럼 구별되는 이름을 정하고, CLI에서 “리뷰 세션에 왜 이렇게 구현했는지 물어보고 답을 반영해줘”라고 요청합니다. 모델이 Harbor 도구를 호출하면 요청이 실제로 기록되고, 상대의 원래 대화에서 보낸 답장이 돌아옵니다. 도구 호출 없이 모델이 말로만 요청했다고 하는 것은 전달 기록으로 처리하지 않습니다.
+
+Codex CLI 0.160.1 이상에서는 해당 터미널용 app-server에 네이티브 TUI와 Harbor가 함께 연결됩니다. 요청은 네이티브 대기열에 들어가며 작성 중인 입력을 전송하거나 수정하지 않습니다. 이 WebSocket·대기열 연결은 실험적 CLI 기능입니다. 지원하지 않는 버전이나 연결 실패에서는 받은함 방식으로 표시하며, 상대에게 “받은 메시지 확인해줘”라고 요청합니다. 관리형 SSH에서 자동 연결을 사용하려면 원격의 `python3`와 SSH TCP forwarding이 필요합니다.
+
+Claude는 일반 `claude` 실행으로 질문·답장 도구를 사용할 수 있습니다. 대기 중인 Claude에 자동 알림도 보내려면 Harbor 터미널에서 `claude --harbor-peers`로 실행합니다. 이 옵션은 해당 실행에만 Claude 개발 채널을 요청하며, Claude 자체의 채널 승인·계정·조직 정책을 따릅니다. 왼쪽의 **채널 수신 요청**은 활성화가 보장됐다는 뜻이 아닙니다. 지원하지 않으면 받은함을 직접 확인합니다. [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude 채널](https://code.claude.com/docs/en/channels-reference).
 
 ## 데이터와 연결
 

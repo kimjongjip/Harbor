@@ -4,6 +4,8 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { connect as tcpConnect, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
+import type { PeerRuntime } from "./peer-delivery.js";
 import * as pty from "node-pty";
 import type { Client, ClientChannel } from "ssh2";
 import type {
@@ -42,6 +44,7 @@ interface Entry {
   buffer: TerminalScreen;
   colors: TerminalColorResponder;
   cwdObserver: TerminalCwdObserver;
+  connection?: Client;
 }
 
 export class Terminals extends EventEmitter {
@@ -52,20 +55,80 @@ export class Terminals extends EventEmitter {
   configureBridge(bridge: TerminalBridge) {
     this.bridge = bridge;
   }
-  markAgentConnected(id: string) {
+  markAgentConnected(id: string, kind: "codex" | "claude" = "codex") {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
       entry.info.agentConnected = true;
-      entry.info.agentKind = "codex";
+      entry.info.agentKind = kind;
       this.emit("change");
     }
+  }
+  markPeerRuntime(id: string, runtime: PeerRuntime) {
+    const entry = this.entries.get(id);
+    if (!entry || entry.info.exited) return;
+    entry.info.peerDelivery = runtime.delivery;
+    entry.info.peerDetail = runtime.detail;
+    if (runtime.state !== "offline") {
+      entry.info.agentKind = runtime.kind;
+      if (runtime.sessionId) entry.info.agentSessionId = runtime.sessionId;
+      if (runtime.kind !== "claude" || !entry.info.agentState)
+        entry.info.agentState = runtime.state;
+    }
+    this.emit("change");
+  }
+  /** Only connect to this terminal's loopback, through its existing SSH connection. */
+  async connectPeerRuntime(id: string, port: number): Promise<Duplex> {
+    const entry = this.entries.get(id);
+    if (
+      !entry ||
+      entry.info.exited ||
+      !Number.isInteger(port) ||
+      port < 1 ||
+      port > 65535
+    )
+      throw new Error("세션의 자동 연결을 사용할 수 없습니다.");
+    if (entry.connection) {
+      return new Promise<Duplex>((resolve, reject) =>
+        entry.connection!.forwardOut(
+          "127.0.0.1",
+          0,
+          "127.0.0.1",
+          port,
+          (error, stream) => (error ? reject(error) : resolve(stream)),
+        ),
+      );
+    }
+    // Interactive system-SSH fallback has no managed control connection.
+    if (entry.info.integration !== "ready")
+      throw new Error("관리형 연결이 아닙니다.");
+    return new Promise<Duplex>((resolve, reject) => {
+      const socket = tcpConnect({ host: "127.0.0.1", port });
+      const fail = (error: Error) => {
+        socket.destroy();
+        reject(error);
+      };
+      socket.once("error", fail);
+      socket.once("connect", () => {
+        socket.setTimeout(0);
+        socket.off("error", fail);
+        resolve(socket);
+      });
+      socket.setTimeout(10000, () => fail(new Error("세션 연결 시간 초과")));
+    });
   }
   markAgentState(id: string, state: "shell" | "codex") {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
       entry.info.agentConnected = state === "codex";
       // Once Codex exits, this shell no longer owns the resumed conversation.
-      if (state === "shell") { delete entry.info.resumeThreadId; delete entry.info.agentKind; delete entry.info.agentState; delete entry.info.agentSessionId; }
+      if (state === "shell") {
+        delete entry.info.resumeThreadId;
+        delete entry.info.agentKind;
+        delete entry.info.agentState;
+        delete entry.info.agentSessionId;
+        delete entry.info.peerDelivery;
+        delete entry.info.peerDetail;
+      }
       this.emit("change");
     }
   }
@@ -75,16 +138,36 @@ export class Terminals extends EventEmitter {
     const info = entry.info;
     if (event.hook_event_name === "SessionEnd") {
       if (info.agentSessionId !== event.session_id) return;
-      delete info.agentKind; delete info.agentSessionId; delete info.agentState; delete info.resumeThreadId;
+      delete info.agentKind;
+      delete info.agentSessionId;
+      delete info.agentState;
+      delete info.resumeThreadId;
       info.agentConnected = false;
     } else {
       info.agentKind = "claude";
       info.agentConnected = true;
       info.agentSessionId = event.session_id;
-      if (event.cwd && !/[\x00-\x1f]/.test(event.cwd) && (isAbsolute(event.cwd) || event.cwd.startsWith("/"))) info.cwd = event.cwd;
-      if (["UserPromptSubmit", "PostToolUse", "PostToolUseFailure"].includes(event.hook_event_name)) info.agentState = "working";
-      else if (event.hook_event_name === "PermissionRequest" || event.hook_event_name === "Notification") info.agentState = "waiting";
-      else if (["SessionStart", "Stop", "StopFailure"].includes(event.hook_event_name)) info.agentState = "idle";
+      if (
+        event.cwd &&
+        !/[\x00-\x1f]/.test(event.cwd) &&
+        (isAbsolute(event.cwd) || event.cwd.startsWith("/"))
+      )
+        info.cwd = event.cwd;
+      if (
+        ["UserPromptSubmit", "PostToolUse", "PostToolUseFailure"].includes(
+          event.hook_event_name,
+        )
+      )
+        info.agentState = "working";
+      else if (
+        event.hook_event_name === "PermissionRequest" ||
+        event.hook_event_name === "Notification"
+      )
+        info.agentState = "waiting";
+      else if (
+        ["SessionStart", "Stop", "StopFailure"].includes(event.hook_event_name)
+      )
+        info.agentState = "idle";
     }
     this.emit("change");
   }
@@ -163,7 +246,13 @@ export class Terminals extends EventEmitter {
           if (password) throw error;
         }
         if (connection)
-          return await this.remote(host, info, connection, options.colors, options.resumeCwd);
+          return await this.remote(
+            host,
+            info,
+            connection,
+            options.colors,
+            options.resumeCwd,
+          );
       }
       let command: string;
       let args: string[];
@@ -201,8 +290,16 @@ export class Terminals extends EventEmitter {
           args = startup.args;
           Object.assign(env, startup.env);
         } else if (program !== "shell") {
-          command = program.startsWith("claude") ? "claude" : host.codexPath || "codex";
-          args = program.startsWith("claude") ? claudeArguments(undefined, options.resumeThreadId, program === "claude-resume") : codexArguments(program, undefined, options.resumeThreadId);
+          command = program.startsWith("claude")
+            ? "claude"
+            : host.codexPath || "codex";
+          args = program.startsWith("claude")
+            ? claudeArguments(
+                undefined,
+                options.resumeThreadId,
+                program === "claude-resume",
+              )
+            : codexArguments(program, undefined, options.resumeThreadId);
         } else {
           command = process.env.SHELL || "/bin/bash";
           args = ["-l"];
@@ -307,6 +404,7 @@ export class Terminals extends EventEmitter {
       );
       const entry: Entry = {
         info,
+        connection,
         buffer: new TerminalScreen(),
         colors: new TerminalColorResponder(colors),
         cwdObserver: new TerminalCwdObserver(),

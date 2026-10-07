@@ -46,11 +46,31 @@ VS Code 확장의 실제 내부 동작과 동일하다고 설명하지 않는다
 
 관련 단위 테스트는 `terminalAnnotation.test.ts`, `terminal-annotations.test.ts`, `annotation-hook.test.ts`를 사용한다. 로컬 검증용 `scripts/verify-native-annotation.mjs`와 `scripts/verify-terminal-annotation.mjs`는 Git 제외 파일이다. 네이티브 검증은 격리한 CODEX_HOME과 작업 폴더, 합성 PTY, 루프백 모의 Responses 서버만 사용한다. 실제 API·사용자 대화·실제 SSH에서 검증하지 않는다. 설치본의 서버 파일을 교체해도 실행 중 서버와 Codex 프로세스는 이전 훅을 사용한다. 재시작 전 적용 완료로 보고하지 않는다.
 
+## 네이티브 세션 간 질문·답장 구현
+
+1.1.0의 메시지 경로는 터미널별 MCP 인증 → `PeerDelivery` → `Mailbox` → 수신 CLI → 인증된 `harbor_reply` → 송신 CLI다. UI 전송과 실제 AI 도구 전송의 작성자를 구분한다. 세션 이름이 모호하면 임의로 첫 세션을 선택하지 않는다. `harbor_ask`는 최대 50초 동안 실제 답장을 기다리고 대기 중이면 원래 요청 ID를 반환한다. `harbor_ask_result`는 해당 네이티브 대화가 보낸 질문만 조회한다. 서로 질문을 기다리는 경우 추가 대기를 피하고 ID를 반환한다.
+
+`/bridge/peers`는 별도 루프백 bridge listener에만 등록하며 기존 터미널별 MCP bearer 인증과 외부 Origin 차단을 사용한다. `/runtime`은 네이티브 대화·상태·전달 능력을 등록한다. Codex app-server 포트와 capability token은 콜백에서만 사용하고 UI·지속 저장소·오류 메시지로 보내지 않는다. `/events`는 최대 25초 동안 대화 ID가 일치하는 미전달 메시지를 기다린다. `/ack`는 `offeredAt`만 기록하며 실제 모델 확인으로 표시하지 않는다. `consumedAt`은 수신자의 MCP 도구 확인에서만 기록한다. 동기 답변 도구가 기다리는 동안 해당 답장을 별도 네이티브 턴에도 전달하면 안 된다.
+
+Codex의 관리형 셸 함수는 일반 대화·resume 실행에만 전용 app-server를 만들고 원래 TUI를 `--remote`로 연결한다. help/version/exec 등 명령은 일반 CLI 경로를 유지한다. `CodexPeerRuntime`은 해당 터미널의 로컬 루프백 또는 기존 SSH 연결의 `forwardOut`으로만 붙는다. CLI 0.160.1의 `thread/queue/add`와 고정 `clientUserMessageId`로 입력을 넣는다. 직접 PTY 입력·Enter·turn/steer로 사용자의 작성 내용을 제출하지 않는다. 네이티브 입력 항목이 시작된 뒤에만 전송 확인을 기록한다. 네이티브 주 대화만 관찰하고 부모가 있는 하위 에이전트·임시 제목 생성 대화는 제외한다. 상속된 하위 에이전트 훅이나 반복 MCP 연결이 주 대화의 인용·메시지 바인딩을 덮어쓰지 않도록 한다. 외부 controller는 실행 승인 요청에 응답하지 않으며 원래 TUI가 처리한다.
+
+PowerShell의 큰 시작 스크립트는 환경 변수 여러 조각으로 나누고 짧은 loader에서 합친다. 모든 조각을 CLI 실행 전에 제거한다. app-server의 토큰 원문은 환경과 인증된 등록 요청에만 사용하고 명령행에는 해시만 넣는다. 원격 셸의 Python 표준 라이브러리 helper는 해당 실행의 backend와 TUI만 관리한다. 셸 시작 경로 `~`, 사용자 CLI 옵션·설정, 인용 훅과 실행 승인 규칙을 보존한다. 전용 프로세스가 종료되면 capability를 폐기하며, 연결 중 닫힌 터미널이나 이전 실행의 늦은 실패가 새 실행을 복구·변경하지 않도록 세대 번호를 검사한다.
+
+Claude의 per-launch stdio MCP adapter는 Windows에서는 포함된 Node 실행 파일, 관리형 SSH에서는 `python3`를 사용한다. 일반 `claude`도 동일한 메시지 도구를 받는다. `--harbor-peers`를 명시한 대화에서만 개발 채널 플래그와 `claude/channel` capability를 추가한다. `--mcp-config`와 개발 채널 플래그는 가변 인수를 받으므로 고정 `--settings` 옵션을 그 뒤에 배치하여 사용자 프롬프트를 파일명으로 소비하지 않게 한다. 훅에서 전달한 SessionStart ID로만 바인딩하며 adapter의 capability 보고가 현재 working/waiting 상태를 idle로 덮어쓰거나 종료된 대화를 다시 살리지 않는다. 채널 stdout 기록만으로 Claude의 실제 채널 허용·모델 확인을 판단하지 않는다. UI는 이를 ‘채널 수신 요청’으로 표시한다.
+
+WebSocket·네이티브 queue API와 Claude 개발 채널은 실험적 기능이다. Claude 계정·조직 정책이 채널을 막으면 Harbor가 허용 목록이나 승인 규칙을 우회하지 않는다. 일반 받은함 도구가 대체 경로다. [Codex app-server 공식 문서](https://learn.chatgpt.com/docs/app-server), [Claude 채널 공식 문서](https://code.claude.com/docs/en/channels-reference).
+
+Claude SessionStart는 HTTP 훅을 지원하지 않으므로 해당 실행의 명령 훅에서 같은 hook capability로 POST한다. Windows는 encoded PowerShell, 원격은 Python 표준 라이브러리를 사용한다. UserPromptSubmit·Stop·승인 등 지원되는 이벤트는 HTTP 훅을 유지한다. 실제 Claude 2.1.258에서 명령 SessionStart → 기존 대화 → MCP 읽기·답장 경로를 확인했다. 훅 종류를 바꿀 때 합성 HTTP 이벤트만으로 검증을 끝내지 않는다. [Claude 훅 이벤트 공식 문서](https://code.claude.com/docs/en/hooks).
+
+강제로 PTY를 종료해도 Windows의 KillOnJobClose job이 해당 실행의 app-server를 종료한다. Linux는 helper의 SIGHUP/SIGTERM 정리와 backend의 parent-death signal을 사용한다. 다른 원격 운영체제는 관리형 Codex 자동 수신 대신 받은함 방식을 사용한다. 실제 검증은 Windows 네이티브 CLI에서 수행했으며 SSH adapter의 준비와 실제 사용자 SSH 검증을 혼동하지 않는다. CLI가 실행한 도구 호출은 확인했지만, 모의 모델 검증이므로 실제 모델의 자연어 도구 선택 품질은 평가하지 않았다.
+
+기본 회귀 검증은 `mailbox.test.ts`, `peer-delivery.test.ts`, `codex-peer-runtime.test.ts`, `claude-peer-channel.test.ts`, `claude-hooks.test.ts`, `terminal-shell.test.ts`, `peer-status.test.ts` 및 기존 인용 테스트다. 실제 CLI 검증은 격리한 CLI 홈·작업 폴더·합성 대화·루프백 모의 모델만 사용한다. 실제 SSH나 사용자 대화에 테스트 요청을 보내지 않는다. mock 모델이 생성한 도구 호출을 실제 CLI가 실행한 사실과, 실제 모델이 자연어 요청에서 자율적으로 도구를 선택한 사실을 구분해서 보고한다. CLI 자동 수신·문맥 유지·입력 보존·작업 중 대기·승인 소유권을 별도로 확인한다. Claude의 mock 자격 증명은 실제 계정의 채널 허용 여부를 검증하지 못한다.
+
 ## 검증과 민감정보 점검
 
 ```powershell
 npm.cmd run build
-node --import tsx --test --test-timeout=25000 --test-concurrency=1 src/server/*.test.ts src/client/*.test.ts
+node --import tsx --test --test-timeout=90000 --test-concurrency=1 src/server/*.test.ts src/client/*.test.ts
 node scripts/verify-claude-api.mjs
 git add <검토한 파일들>
 npm.cmd run audit:publication

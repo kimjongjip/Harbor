@@ -9,6 +9,9 @@ export interface MailboxParticipant {
   hostId?: string;
   hostName?: string;
   cwd?: string;
+  agentKind?: "codex" | "claude";
+  /** Native conversation identity, rather than a reusable terminal identity. */
+  sessionId?: string;
 }
 
 export interface MailboxMessage {
@@ -29,6 +32,10 @@ export interface MailboxMessage {
   /** An authenticated/UI reply was recorded; this does not imply task completion. */
   repliedAt?: number;
   replyMessageId?: string;
+  purpose?: "question";
+  /** A native transport accepted the event; this does not establish model receipt. */
+  offeredAt?: number;
+  offeredSessionId?: string;
 }
 
 export interface MailboxSendInput {

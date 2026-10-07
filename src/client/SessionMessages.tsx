@@ -3,6 +3,7 @@ import { ArrowRight, MessageSquare, Send, X } from "lucide-react";
 import type { HostView, TerminalInfo } from "../shared/types";
 import type { MailboxMessage } from "../shared/mailbox";
 import { api } from "./api";
+import { messageDelivery, peerConnection, peerName } from "./peer-status";
 
 export default function SessionMessages({
   terminalId,
@@ -11,6 +12,7 @@ export default function SessionMessages({
   messages,
   onClose,
   onError,
+  onOpen,
 }: {
   terminalId: string;
   terminals: TerminalInfo[];
@@ -18,6 +20,7 @@ export default function SessionMessages({
   messages: MailboxMessage[];
   onClose: () => void;
   onError: (message: string) => void;
+  onOpen?: (id: string) => void;
 }) {
   const terminal = terminals.find((t) => t.id === terminalId);
   const [to, setTo] = useState(terminalId);
@@ -84,7 +87,10 @@ export default function SessionMessages({
       </div>
       <div className="mailbox-guide">
         <p>
-          Codex에 <strong>“받은 메시지 확인해줘”</strong>라고 요청하세요.
+          <strong>
+            “리뷰 세션에 왜 이렇게 구현했는지 물어보고 답을 반영해줘”
+          </strong>
+          처럼 요청하세요.
         </p>
         <small>
           다른 세션에는 “
@@ -95,11 +101,40 @@ export default function SessionMessages({
         <details>
           <summary>메시지는 언제 전달되나요?</summary>
           <p>
-            메시지는 받은함에 보관됩니다. 받는 Codex가 메시지 도구를 호출하면
-            ‘Codex 확인’으로 바뀝니다. 실행 중인 작업을 중단하거나 다음 명령을
-            자동 실행하지 않습니다.
+            자동 수신 연결은 원래 대화에 메시지 알림을 전달합니다. 작업 중에는
+            대기할 수 있습니다. CLI 알림 전달, AI의 실제 확인, 답장 도착을 각각
+            표시합니다. 받은함 연결에서는 상대에게 “받은 메시지 확인해줘”라고
+            요청하세요.
+          </p>
+          <p>
+            Claude 자동 수신은 터미널에서 <code>claude --harbor-peers</code>로
+            실행합니다. Claude의 채널 허용 여부는 계정·조직 정책과 CLI 버전에
+            따라 달라집니다.
           </p>
         </details>
+        <div className="mailbox-peers" aria-label="대화 가능한 세션">
+          {terminals
+            .filter((t) => !t.exited)
+            .map((peer) => (
+              <button
+                key={peer.id}
+                type="button"
+                onClick={() => onOpen?.(peer.id)}
+                title={peer.peerDetail || peer.cwd}
+              >
+                <b>{peer.title}</b>
+                <small>
+                  {hosts.find((h) => h.id === peer.hostId)?.name} ·{" "}
+                  {peer.agentKind === "claude"
+                    ? "Claude"
+                    : peer.agentKind === "codex"
+                      ? "Codex"
+                      : "셸"}{" "}
+                  · {peerConnection(peer)}
+                </small>
+              </button>
+            ))}
+        </div>
       </div>
       <div className="mailbox-history">
         {visible.length ? (
@@ -126,14 +161,10 @@ export default function SessionMessages({
                   })}
                 </time>
                 <span>
-                  {message.author === "agent" ? "Codex · " : "내가 보냄 · "}
-                  {message.repliedAt
-                    ? "답장 도착"
-                    : message.status === "consumed"
-                      ? "Codex 확인"
-                      : message.recipient.kind === "user"
-                        ? "받음"
-                        : "받은함 대기"}
+                  {message.author === "agent"
+                    ? `${peerName(message.sender)} · `
+                    : "내가 보냄 · "}
+                  {messageDelivery(message, terminals)}
                 </span>
                 {message.sender.terminalId && (
                   <button
@@ -213,9 +244,9 @@ export default function SessionMessages({
         </label>
         <p className="mailbox-delivery">
           {recipient?.agentConnected
-            ? "Codex 연결됨 · 받은함에 전달하고, Codex가 읽으면 확인 상태를 표시합니다."
+            ? `${peerConnection(recipient)} · ${recipient.peerDetail || "실제 확인과 답장은 위 기록에서 확인합니다."}`
             : recipient && !recipient.exited
-              ? "아직 Codex가 연결되지 않았습니다. 메시지는 보관되며, 해당 터미널에서 Codex 실행 후 확인할 수 있습니다."
+              ? "CLI 연결 대기 · 해당 터미널에서 Codex 또는 Claude를 실행하세요."
               : "메시지를 보낼 실행 중인 세션을 선택하세요."}
         </p>
         <textarea

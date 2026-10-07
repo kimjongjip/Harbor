@@ -137,6 +137,8 @@ export interface TerminalInfo {
   agentSessionId?: string;
   integration?: "ready" | "unavailable";
   agentConnected?: boolean;
+  peerDelivery?: "automatic" | "poll" | "unavailable";
+  peerDetail?: string;
   resumeThreadId?: string;
 }
 export interface AppState {

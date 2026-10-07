@@ -265,11 +265,12 @@ export default function WorkspaceInbox({
       {tab === "messages" && (
         <SessionMessages
           terminalId={terminalId}
-          terminals={state.terminals.filter(t => t.agentKind !== "claude" && (t.agentKind === "codex" || !t.program?.startsWith("claude")))}
+          terminals={state.terminals}
           hosts={state.hosts}
           messages={state.mailbox || []}
           onClose={() => onTab("requests")}
           onError={onError}
+          onOpen={onOpen}
         />
       )}
       {tab === "notifications" && (

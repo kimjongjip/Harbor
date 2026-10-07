@@ -86,7 +86,7 @@ test(
     const executable = join(directory, "codex.exe");
     const output = join(directory, "args.json");
     // A tiny native fixture verifies PowerShell's argv quoting at the process boundary.
-    const source = `using System; using System.IO; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(args.Length > 1 && args[0] == "--settings" ? File.ReadAllText(args[1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN"), init=Environment.GetEnvironmentVariable("HARBOR_POWERSHELL_INIT") })); } }`;
+    const source = `using System; using System.IO; using System.Collections; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { int mcp=Array.IndexOf(args,"--mcp-config"); int settings=Array.IndexOf(args,"--settings"); int initParts=0; foreach(DictionaryEntry e in Environment.GetEnvironmentVariables()) { if(((string)e.Key).StartsWith("HARBOR_POWERSHELL_INIT")) initParts++; } File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(settings>=0 ? File.ReadAllText(args[settings+1]) : null), mcp=(mcp>=0 ? File.ReadAllText(args[mcp+1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN"), init=Environment.GetEnvironmentVariable("HARBOR_POWERSHELL_INIT"), initParts=initParts })); } }`;
     const compile = `Add-Type -TypeDefinition '${source.replaceAll("'", "''")}' -ReferencedAssemblies System.Web.Extensions -OutputAssembly '${executable.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
     const run = (script: string, extraEnv: NodeJS.ProcessEnv = {}) =>
       new Promise<string>((done, reject) => {
@@ -130,20 +130,70 @@ test(
     );
     await run(`${claudeInit}; claude --resume fixture-session`, {
       HARBOR_TEST_CAPTURE: output,
-      HARBOR_SESSION_TOKEN: "mcp-secret-must-not-reach-claude",
+      HARBOR_SESSION_TOKEN: "fixture-scoped-peer-token",
       PATH: `${directory};${process.env.PATH}`,
     });
     const claudeCaptured = JSON.parse(await readFile(output, "utf8"));
-    assert.equal(claudeCaptured.token, null);
+    assert.equal(claudeCaptured.token, "fixture-scoped-peer-token");
+    assert.equal(
+      claudeCaptured.initParts,
+      0,
+      "startup source chunks never reach native CLI or its MCP children",
+    );
+    const claudeMcp = JSON.parse(claudeCaptured.mcp);
+    assert.equal(
+      claudeMcp.mcpServers.harbor.env.HARBOR_CLAUDE_CHANNEL_ENABLED,
+      "0",
+    );
+    assert.equal(
+      claudeCaptured.mcp.includes("fixture-scoped-peer-token"),
+      false,
+    );
+    assert.ok(
+      claudeCaptured.args.indexOf("--mcp-config") <
+        claudeCaptured.args.indexOf("--settings"),
+      "a fixed option terminates native Claude's variadic MCP config arguments before the user's prompt",
+    );
     const claudeSettings = JSON.parse(claudeCaptured.settings);
     assert.equal(
-      claudeSettings.hooks.SessionStart[0].hooks[0].url,
+      claudeSettings.hooks.UserPromptSubmit[0].hooks[0].url,
       "http://127.0.0.1:1/bridge/claude",
     );
+    assert.equal(claudeSettings.hooks.SessionStart[0].hooks[0].type, "command");
     assert.deepEqual(claudeCaptured.args.slice(-2), [
       "--resume",
       "fixture-session",
     ]);
+    await run(`${claudeInit}; claude --harbor-peers --resume fixture-session`, {
+      HARBOR_TEST_CAPTURE: output,
+      HARBOR_SESSION_TOKEN: "fixture-scoped-peer-token",
+      PATH: `${directory};${process.env.PATH}`,
+    });
+    const channelCaptured = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(
+      JSON.parse(channelCaptured.mcp).mcpServers.harbor.env
+        .HARBOR_CLAUDE_CHANNEL_ENABLED,
+      "1",
+    );
+    assert.ok(
+      channelCaptured.args.includes("--dangerously-load-development-channels"),
+    );
+    assert.ok(channelCaptured.args.includes("server:harbor"));
+    assert.equal(channelCaptured.args.includes("--harbor-peers"), false);
+    await run(`${claudeInit}; claude --harbor-peers -p fixture-question`, {
+      HARBOR_TEST_CAPTURE: output,
+      PATH: `${directory};${process.env.PATH}`,
+    });
+    const printed = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(
+      JSON.parse(printed.mcp).mcpServers.harbor.env
+        .HARBOR_CLAUDE_CHANNEL_ENABLED,
+      "0",
+    );
+    assert.equal(
+      printed.args.includes("--dangerously-load-development-channels"),
+      false,
+    );
     const token = randomUUID();
     const initialization = powershellInitialization(
       { codexPath: executable } as HostConfig,
@@ -179,7 +229,7 @@ test(
       "startup source is removed before launching the CLI",
     );
     assert.ok(
-      powershellStartup(initialization).args.join(" ").length < 1000,
+      powershellStartup(initialization).args.join(" ").length < 2500,
       "hook definitions do not exceed Windows' launch command line limit",
     );
     assert.ok(

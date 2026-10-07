@@ -29,6 +29,8 @@ const participantSchema = z.object({
   hostId: idSchema.optional(),
   hostName: z.string().max(200).optional(),
   cwd: z.string().max(4096).optional(),
+  agentKind: z.enum(["codex", "claude"]).optional(),
+  sessionId: idSchema.optional(),
 });
 const messageSchema = z.object({
   id: idSchema,
@@ -45,6 +47,9 @@ const messageSchema = z.object({
   consumedAt: z.number().finite().nonnegative().optional(),
   repliedAt: z.number().finite().nonnegative().optional(),
   replyMessageId: idSchema.optional(),
+  purpose: z.literal("question").optional(),
+  offeredAt: z.number().finite().nonnegative().optional(),
+  offeredSessionId: idSchema.optional(),
 });
 const sendSchema = z.object({
   fromTerminalId: idSchema.optional(),
@@ -126,14 +131,20 @@ export class Mailbox extends EventEmitter {
     fromTerminalId: string,
     toTerminalId: string,
     text: string,
+    scope: {
+      senderSessionId?: string;
+      recipientSessionId?: string;
+      purpose?: "question";
+    } = {},
   ): MailboxMessage {
     const parsed = sendSchema.parse({ fromTerminalId, toTerminalId, text });
     return this.create(
-      this.participant(fromTerminalId),
-      this.participant(toTerminalId),
+      this.scopedParticipant(fromTerminalId, scope.senderSessionId),
+      this.scopedParticipant(toTerminalId, scope.recipientSessionId),
       parsed.text,
       undefined,
       "agent",
+      scope.purpose,
     );
   }
 
@@ -141,17 +152,25 @@ export class Mailbox extends EventEmitter {
     fromTerminalId: string,
     replyToId: string,
     text: string,
+    sessionId?: string,
   ): MailboxMessage {
     const previous = this.messages.find((message) => message.id === replyToId);
     if (!previous || previous.recipient.terminalId !== fromTerminalId)
       throw new Error("이 세션으로 받은 메시지에만 답장할 수 있습니다.");
+    this.assertSession(previous.recipient, sessionId);
+    if (previous.replyMessageId)
+      throw new Error(
+        "이미 답장한 메시지입니다. 새 메시지로 후속 질문을 보내세요.",
+      );
+    if (previous.sender.kind === "terminal")
+      this.participant(previous.sender.terminalId!);
     const recipient =
       previous.sender.kind === "terminal"
-        ? this.participant(previous.sender.terminalId!)
+        ? previous.sender
         : { kind: "user" as const, title: "나" };
     const parsed = z.string().trim().min(1).max(MAILBOX_TEXT_LIMIT).parse(text);
     return this.create(
-      this.participant(fromTerminalId),
+      this.scopedParticipant(fromTerminalId, sessionId),
       recipient,
       parsed,
       replyToId,
@@ -162,7 +181,7 @@ export class Mailbox extends EventEmitter {
   /** The recipient's authenticated MCP fetch is the only path to consumed. */
   consume(
     terminalId: string,
-    options: { unreadOnly?: boolean; limit?: number } = {},
+    options: { unreadOnly?: boolean; limit?: number; sessionId?: string } = {},
   ): MailboxMessage[] {
     this.participant(terminalId);
     const limit = z
@@ -175,6 +194,7 @@ export class Mailbox extends EventEmitter {
       .filter(
         (message) =>
           message.recipient.terminalId === terminalId &&
+          this.matchesSession(message.recipient, options.sessionId) &&
           (options.unreadOnly === false || !message.consumedAt),
       )
       .slice(0, limit);
@@ -200,6 +220,7 @@ export class Mailbox extends EventEmitter {
     text: string,
     replyToId: string | undefined,
     author: "user" | "agent",
+    purpose?: "question",
   ): MailboxMessage {
     if (sender.terminalId === recipient.terminalId)
       throw new Error("다른 세션을 선택하세요.");
@@ -227,6 +248,7 @@ export class Mailbox extends EventEmitter {
       text,
       createdAt: Date.now(),
       status: "queued",
+      ...(purpose ? { purpose } : {}),
     };
     const next = [
       ...this.messages.map((item) =>
@@ -235,6 +257,12 @@ export class Mailbox extends EventEmitter {
               ...item,
               repliedAt: message.createdAt,
               replyMessageId: message.id,
+              ...(author === "agent"
+                ? {
+                    status: "consumed" as const,
+                    consumedAt: item.consumedAt || message.createdAt,
+                  }
+                : {}),
             }
           : item,
       ),
@@ -294,8 +322,6 @@ export class Mailbox extends EventEmitter {
     const terminal = this.resolve.terminal(id);
     if (!terminal || terminal.exited)
       throw new Error("열려 있는 세션을 선택하세요.");
-    if (terminal.agentKind === "claude" || (!terminal.agentKind && terminal.program?.startsWith("claude")))
-      throw new Error("Claude 세션 간 메시지 전달은 아직 지원하지 않습니다.");
     const host = this.resolve.host(terminal.hostId);
     if (!host) throw new Error("세션의 호스트를 찾을 수 없습니다.");
     return participantSchema.parse({
@@ -305,7 +331,87 @@ export class Mailbox extends EventEmitter {
       hostId: host.id,
       hostName: host.name,
       cwd: terminal.cwd,
+      agentKind:
+        terminal.agentKind ||
+        (terminal.program?.startsWith("claude") ? "claude" : undefined),
+      sessionId: terminal.agentSessionId,
     });
+  }
+
+  private scopedParticipant(
+    id: string,
+    sessionId?: string,
+  ): MailboxParticipant {
+    return { ...this.participant(id), ...(sessionId ? { sessionId } : {}) };
+  }
+
+  private matchesSession(
+    participant: MailboxParticipant,
+    sessionId?: string,
+  ): boolean {
+    return !participant.sessionId || participant.sessionId === sessionId;
+  }
+
+  private assertSession(
+    participant: MailboxParticipant,
+    sessionId?: string,
+  ): void {
+    if (!this.matchesSession(participant, sessionId))
+      throw new Error(
+        "다른 네이티브 대화에 전달된 메시지입니다. 원래 대화에서 확인하세요.",
+      );
+  }
+
+  find(id: string): MailboxMessage | undefined {
+    const message = this.messages.find((item) => item.id === id);
+    return message ? structuredClone(message) : undefined;
+  }
+
+  /** A controller/channel delivery acknowledgement is not an agent read. */
+  offer(
+    terminalId: string,
+    messageId: string,
+    sessionId: string,
+  ): MailboxMessage {
+    const message = this.messages.find((item) => item.id === messageId);
+    if (!message || message.recipient.terminalId !== terminalId)
+      throw new Error("이 세션으로 받은 메시지만 전달 확인할 수 있습니다.");
+    if (
+      !message.recipient.sessionId ||
+      message.recipient.sessionId !== sessionId
+    )
+      throw new Error("메시지의 네이티브 대화가 변경되었습니다.");
+    if (message.offeredAt) return structuredClone(message);
+    const next = {
+      ...message,
+      offeredAt: Date.now(),
+      offeredSessionId: sessionId,
+    };
+    this.commit(
+      this.messages.map((item) => (item.id === messageId ? next : item)),
+    );
+    return structuredClone(next);
+  }
+
+  consumeMessage(
+    terminalId: string,
+    messageId: string,
+    sessionId?: string,
+  ): MailboxMessage {
+    const message = this.messages.find((item) => item.id === messageId);
+    if (!message || message.recipient.terminalId !== terminalId)
+      throw new Error("이 세션으로 받은 메시지만 확인할 수 있습니다.");
+    this.assertSession(message.recipient, sessionId);
+    if (message.consumedAt) return structuredClone(message);
+    const next = {
+      ...message,
+      status: "consumed" as const,
+      consumedAt: Date.now(),
+    };
+    this.commit(
+      this.messages.map((item) => (item.id === messageId ? next : item)),
+    );
+    return structuredClone(next);
   }
 
   private key(participant: MailboxParticipant): string {

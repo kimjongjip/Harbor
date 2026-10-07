@@ -52,12 +52,22 @@ async function setup(t: any) {
   return { dir, terminals, resolver, mailbox };
 }
 
-test("Claude cannot receive handoffs, but switching back to Codex restores messaging", async (t) => {
+test("Codex and Claude exchange messages with native conversation identities", async (t) => {
   const { mailbox, terminals } = await setup(t);
   terminals[1].agentKind = "claude";
   terminals[1].program = "claude";
-  assert.throws(() => mailbox.send({ fromTerminalId: "a", toTerminalId: "b", text: "handoff" }), /Claude/);
-  assert.throws(() => mailbox.sendAgent("b", "a", "handoff"), /Claude/);
+  terminals[1].agentSessionId = "claude-thread";
+  const sent = mailbox.sendAgent("a", "b", "handoff");
+  assert.equal(sent.recipient.agentKind, "claude");
+  assert.equal(sent.recipient.sessionId, "claude-thread");
+  assert.throws(
+    () => mailbox.replyAgent("b", sent.id, "old thread", "another-thread"),
+    /네이티브 대화/,
+  );
+  const reply = mailbox.replyAgent("b", sent.id, "answer", "claude-thread");
+  assert.equal(reply.sender.agentKind, "claude");
+  assert.equal(reply.threadId, sent.id);
+  terminals[1].agentSessionId = undefined;
   terminals[1].agentKind = "codex";
   assert.equal(mailbox.sendAgent("a", "b", "hello").recipient.terminalId, "b");
 });
@@ -232,7 +242,7 @@ test("scoped MCP clients exchange real messages without PTY writes and cannot im
   assert.equal(init.result.protocolVersion, "2025-03-26");
   assert.deepEqual(connected, ["a"]);
   assert.equal(bridge.status("a").connected, true);
-  assert.equal((await rpc(a.token, "tools/list")).result.tools.length, 4);
+  assert.equal((await rpc(a.token, "tools/list")).result.tools.length, 6);
   const sessions = (await call(a.token, "harbor_sessions")).data;
   assert.equal(sessions.self, "a");
   assert.equal(sessions.sessions[1].host, "build-server");

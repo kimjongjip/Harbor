@@ -13,6 +13,7 @@ import { History } from "./history.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
+import { CodexPeerRuntime } from "./codex-peer-runtime.js";
 import {
   annotationCaptureSchema,
   annotationCommentsSchema,
@@ -49,13 +50,110 @@ const mailbox = new Mailbox(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
   host: (id) => store.data.hosts.find((item) => item.id === id),
 });
+const peerFlushes = new Set<string>();
+const peerGenerations = new Map<string, number>();
+const codexPeers = new CodexPeerRuntime({
+  connect: (id, peerPort) => terminals.connectPeerRuntime(id, peerPort),
+  onSession: (id, sessionId) => {
+    const runtime = bridge.peers.runtime(id);
+    if (
+      runtime?.state === "offline" ||
+      !terminals.list().some((t) => t.id === id && !t.exited)
+    )
+      return;
+    // The control connection identifies the primary conversation immediately,
+    // including /resume before the next deferred native prompt hook.
+    if (bridge.annotations.isReady(id))
+      bridge.annotations.markReady(id, sessionId);
+    bridge.setPeerRuntime(id, {
+      kind: "codex",
+      sessionId,
+      state: runtime?.state === "working" ? "working" : "idle",
+      delivery: "automatic",
+    });
+  },
+  onState: (id, state, detail) => {
+    const runtime = bridge.peers.runtime(id);
+    bridge.setPeerRuntime(id, {
+      kind: "codex",
+      sessionId: runtime?.sessionId,
+      state,
+      delivery:
+        state === "offline" ? "unavailable" : detail ? "poll" : "automatic",
+      detail,
+    });
+  },
+  onDelivered: (id, messageId, sessionId) => {
+    try {
+      bridge.ackPeerDelivery(id, messageId, sessionId);
+    } catch {
+      /* The native conversation may have closed. */
+    }
+  },
+  onAvailable: (id) => {
+    void flushPeerMessages(id);
+  },
+});
+async function flushPeerMessages(id: string) {
+  if (peerFlushes.has(id) || !codexPeers.available(id)) return;
+  peerFlushes.add(id);
+  try {
+    const events = bridge.peerEvents(id);
+    for (const message of events.messages) {
+      if (
+        !(await codexPeers.deliver(id, {
+          ...message,
+          recipientSessionId: message.recipient.sessionId,
+        }))
+      )
+        break;
+    }
+  } finally {
+    peerFlushes.delete(id);
+  }
+}
 const bridge = new AgentBridge(mailbox, {
   requests,
   onChange: () => broadcastState(),
   terminals: () => terminals.list(),
   host: (id) => store.data.hosts.find((item) => item.id === id),
-  onConnected: (id) => terminals.markAgentConnected(id),
+  onConnected: (id, kind) => terminals.markAgentConnected(id, kind),
   onState: (id, status) => terminals.markAgentState(id, status),
+  acceptCodexSession: (id, sessionId) => {
+    const primary = codexPeers.currentSession(id);
+    return !primary || primary === sessionId;
+  },
+  onPeerRuntime: (id, runtime) => {
+    terminals.markPeerRuntime(id, runtime);
+    if (runtime.state === "offline") {
+      peerGenerations.set(id, (peerGenerations.get(id) || 0) + 1);
+      codexPeers.dispose(id);
+    } else if (runtime.kind === "codex") {
+      if (runtime.endpoint) {
+        const generation = (peerGenerations.get(id) || 0) + 1;
+        peerGenerations.set(id, generation);
+        void codexPeers.attach(id, runtime.endpoint).catch(() => {
+          const previous = bridge.peers.runtime(id);
+          if (
+            peerGenerations.get(id) !== generation ||
+            previous?.state === "offline" ||
+            !terminals.list().some((t) => t.id === id && !t.exited)
+          )
+            return;
+          bridge.setPeerRuntime(id, {
+            kind: "codex",
+            sessionId: previous?.sessionId,
+            state: "idle",
+            delivery: "poll",
+            detail:
+              "자동 수신 연결을 사용할 수 없습니다. 받은 메시지 확인을 요청하세요.",
+          });
+        });
+      } else if (runtime.sessionId)
+        codexPeers.setSession(id, runtime.sessionId);
+      void flushPeerMessages(id);
+    }
+  },
   onClaudeEvent: (id, event) => {
     terminals.markClaudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
@@ -76,6 +174,7 @@ bridgeApp.all("/bridge/mcp", bridge.handle);
 bridgeApp.all("/bridge/permission", bridge.permissionHandle);
 bridgeApp.all("/bridge/claude", bridge.claudeHandle);
 bridgeApp.all("/bridge/annotation", bridge.annotationHandle);
+bridgeApp.use("/bridge/peers", bridge.peerHandle);
 bridgeApp.use((_req, res) => res.sendStatus(404));
 const bridgeServer = createServer(bridgeApp);
 await new Promise<void>((resolve, reject) => {
@@ -88,6 +187,11 @@ terminals.configureBridge({
   port: bridgePort,
   issue: (id) => bridge.issue(id),
   revoke: (id) => bridge.revoke(id),
+});
+bridge.peers.on("change", () => {
+  for (const terminal of terminals.list())
+    if (terminal.agentKind === "codex" && !terminal.exited)
+      void flushPeerMessages(terminal.id);
 });
 const files = new Files((id) => hub.passwords.get(id));
 hub.on("host-closed", (id) => files.close(id));
@@ -333,7 +437,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.0.6" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.1.0" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -953,6 +1057,7 @@ server.on("error", (error) => {
 });
 function shutdown() {
   clearInterval(heartbeat);
+  codexPeers.disposeAll();
   hub.shutdown();
   history.shutdown();
   claudeHistory.shutdown();
