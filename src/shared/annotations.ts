@@ -1,4 +1,5 @@
 export const ANNOTATION_TEXT_LIMIT = 16_000;
+export const ANNOTATION_COMMENT_LIMIT = 8_000;
 export const ANNOTATION_DRAFT_TEXT_LIMIT = 64_000;
 export const ANNOTATION_DRAFT_LIMIT = 8;
 export const ANNOTATION_PROMPT_LIMIT = 128_000;
@@ -20,10 +21,17 @@ export interface AnnotationReference {
   readonly reference: string;
 }
 
+/** A note attached to one selection, hidden behind its CLI marker. */
+export interface AnnotationComment {
+  readonly number: number;
+  readonly annotation: string;
+}
+
 export interface AnnotationContext {
   readonly annotations: readonly {
     readonly reference: string;
     readonly text: string;
+    readonly annotation: string;
     readonly source: AnnotationSource;
   }[];
 }

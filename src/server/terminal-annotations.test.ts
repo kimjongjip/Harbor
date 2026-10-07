@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ANNOTATION_COMMENT_LIMIT,
   ANNOTATION_DRAFT_TEXT_LIMIT,
   ANNOTATION_PROMPT_LIMIT,
   ANNOTATION_TEXT_LIMIT,
@@ -55,8 +56,16 @@ test("prepared captures bind immutably to the first deferred SessionStart", () =
     "terminal-a",
     input("Another pending selection"),
   );
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Pending note before SessionStart" },
+  ]);
   registry.validate("terminal-a", [first.number, second.number]);
   registry.markReady("terminal-a", "session-a");
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Pending note before SessionStart",
+  );
   assert.deepEqual(
     registry
       .resolve(
@@ -161,7 +170,7 @@ test("prepare and later SessionStart never rebind records from an assigned sessi
   registry.validate("terminal-a", [newPending.number]);
 });
 
-test("captures are immutable; hidden context contains only selected text and minimal source", () => {
+test("captures are immutable; hidden context contains selected text, its note and minimal source", () => {
   const registry = ready();
   const original = input("  preserved whitespace\n한국어 and 😀\n");
   const captured = registry.capture("terminal-a", original);
@@ -179,6 +188,7 @@ test("captures are immutable; hidden context contains only selected text and min
       {
         reference: captured.reference,
         text: "  preserved whitespace\n한국어 and 😀\n",
+        annotation: "",
         source: {
           hostName: "Synthetic Server",
           title: "Synthetic answer",
@@ -195,6 +205,320 @@ test("captures are immutable; hidden context contains only selected text and min
   }, TypeError);
   assert.equal(JSON.stringify(context).includes("terminal-a"), false);
   assert.equal(JSON.stringify(context).includes("session-a"), false);
+});
+
+test("each marker carries its own note and preserves selection and source", () => {
+  const registry = ready();
+  const first = registry.capture(
+    "terminal-a",
+    input("First original selection"),
+  );
+  const second = registry.capture(
+    "terminal-a",
+    input("Second original selection"),
+  );
+  const notes = [
+    {
+      number: first.number,
+      annotation: "왜 이렇게 설명했나요?\n한국어 note 😀",
+    },
+    {
+      number: second.number,
+      annotation: "이 예시는 두 번째 선택에 대한 설명입니다.",
+    },
+  ];
+  registry.attach("terminal-a", notes);
+  notes[0].annotation = "mutated after attaching";
+  assert.deepEqual(
+    registry.resolve(
+      "terminal-a",
+      `${second.reference} ${first.reference}`,
+      "session-a",
+    ),
+    {
+      annotations: [
+        {
+          reference: second.reference,
+          text: "Second original selection",
+          annotation: "이 예시는 두 번째 선택에 대한 설명입니다.",
+          source: input().source,
+        },
+        {
+          reference: first.reference,
+          text: "First original selection",
+          annotation: "왜 이렇게 설명했나요?\n한국어 note 😀",
+          source: input().source,
+        },
+      ],
+    },
+  );
+});
+
+test("notes can change before submission and are sealed on first successful resolve", () => {
+  const registry = ready();
+  const first = registry.capture("terminal-a", input("Selected one"));
+  const second = registry.capture("terminal-a", input("Selected two"));
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Initial note" },
+  ]);
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Retry after paste failure" },
+  ]);
+  assert.throws(
+    () =>
+      registry.resolve(
+        "terminal-a",
+        `${first.reference} [#999 annotation]`,
+        "session-a",
+      ),
+    /찾을 수 없습니다/,
+  );
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Final note" },
+  ]);
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Final note",
+  );
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Final note" },
+  ]);
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        { number: second.number, annotation: "Must not partially apply" },
+        { number: first.number, annotation: "Changed after submission" },
+      ]),
+    /이미 전송/,
+  );
+  assert.equal(
+    registry.resolve("terminal-a", second.reference, "session-a")!
+      .annotations[0].annotation,
+    "",
+  );
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Final note",
+  );
+});
+
+test("note attachment validates terminal, native session and unique references atomically", () => {
+  const registry = ready();
+  registry.markReady("terminal-b", "session-b");
+  const first = registry.capture("terminal-a", input("Original"));
+  const foreign = registry.capture("terminal-b", input("Foreign"));
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Original note" },
+  ]);
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        { number: first.number, annotation: "Must not overwrite" },
+        { number: foreign.number, annotation: "Foreign note" },
+      ]),
+    /찾을 수 없습니다/,
+  );
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        { number: first.number, annotation: "Duplicated" },
+        { number: first.number, annotation: "Duplicated again" },
+      ]),
+    /번호가 중복/,
+  );
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Original note",
+  );
+  registry.markReady("terminal-a", "session-new");
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        { number: first.number, annotation: "Wrong session" },
+      ]),
+    /대화가 변경/,
+  );
+  registry.revoke("terminal-b");
+  assert.throws(
+    () =>
+      registry.attach("terminal-b", [
+        { number: foreign.number, annotation: "Revoked" },
+      ]),
+    /준비되지/,
+  );
+});
+
+test("per-reference notes and combined selection plus note length are bounded without truncation", () => {
+  const registry = ready();
+  const refs = Array.from({ length: 4 }, () =>
+    registry.capture(
+      "terminal-a",
+      input("x".repeat(ANNOTATION_TEXT_LIMIT - ANNOTATION_COMMENT_LIMIT)),
+    ),
+  );
+  const full = refs.map((ref) => ({
+    number: ref.number,
+    annotation: "n".repeat(ANNOTATION_COMMENT_LIMIT),
+  }));
+  registry.attach("terminal-a", full);
+  registry.validate(
+    "terminal-a",
+    refs.map((ref) => ref.number),
+  );
+  const extra = registry.capture("terminal-a", input("Extra selected text"));
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        ...full,
+        { number: extra.number, annotation: "n" },
+      ]),
+    /전체 인용/,
+  );
+  assert.throws(() =>
+    registry.attach("terminal-a", [
+      {
+        number: extra.number,
+        annotation: "n".repeat(ANNOTATION_COMMENT_LIMIT + 1),
+      },
+    ]),
+  );
+  assert.throws(
+    () =>
+      registry.validate("terminal-a", [
+        ...refs.map((ref) => ref.number),
+        extra.number,
+      ]),
+    /전체 인용/,
+  );
+  assert.throws(
+    () =>
+      registry.resolve(
+        "terminal-a",
+        [...refs, extra].map((ref) => ref.reference).join(" "),
+        "session-a",
+      ),
+    /전체 인용/,
+  );
+  assert.equal(
+    registry.resolve("terminal-a", extra.reference, "session-a")!.annotations[0]
+      .annotation,
+    "",
+  );
+  const resolved = registry.resolve(
+    "terminal-a",
+    refs.map((ref) => ref.reference).join(" "),
+    "session-a",
+  )!;
+  assert.equal(
+    resolved.annotations.reduce(
+      (sum, item) => sum + item.text.length + item.annotation.length,
+      0,
+    ),
+    ANNOTATION_DRAFT_TEXT_LIMIT,
+  );
+  assert.equal(
+    resolved.annotations[0].annotation.length,
+    ANNOTATION_COMMENT_LIMIT,
+  );
+});
+
+test("global UTF-8 capacity includes attached notes and failed multi-note updates are atomic", () => {
+  const registry = ready();
+  const first = registry.capture("terminal-a", input("Small selection one"));
+  const second = registry.capture("terminal-a", input("Small selection two"));
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Existing note" },
+  ]);
+  const fill: number[] = [];
+  for (;;) {
+    try {
+      fill.push(
+        registry.capture(
+          "terminal-a",
+          input("한".repeat(ANNOTATION_TEXT_LIMIT)),
+        ).number,
+      );
+    } catch (error) {
+      assert.match((error as Error).message, /저장 공간이 가득/);
+      break;
+    }
+  }
+  // Bring the remaining space below two 8,000-character CJK notes. The capacity
+  // uses encoded JSON bytes, so this exercises real UTF-8 and per-record overhead.
+  for (;;) {
+    try {
+      fill.push(
+        registry.capture("terminal-a", input("한".repeat(1000))).number,
+      );
+    } catch (error) {
+      assert.match((error as Error).message, /저장 공간이 가득/);
+      break;
+    }
+  }
+  assert.throws(
+    () =>
+      registry.attach("terminal-a", [
+        { number: first.number, annotation: "small change" },
+        {
+          number: second.number,
+          annotation: "한".repeat(ANNOTATION_COMMENT_LIMIT),
+        },
+      ]),
+    /저장 공간이 가득/,
+  );
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Existing note",
+  );
+  registry.remove("terminal-a", fill.slice(0, 2));
+  registry.attach("terminal-a", [
+    { number: first.number, annotation: "Existing note" },
+    {
+      number: second.number,
+      annotation: "한".repeat(ANNOTATION_COMMENT_LIMIT),
+    },
+  ]);
+  for (;;) {
+    try {
+      registry.capture("terminal-a", input("한".repeat(1000)));
+    } catch (error) {
+      assert.match((error as Error).message, /저장 공간이 가득/);
+      break;
+    }
+  }
+  assert.throws(
+    () => registry.capture("terminal-a", input("한".repeat(6000))),
+    /저장 공간이 가득/,
+  );
+  registry.attach("terminal-a", [
+    { number: second.number, annotation: "Reduced note" },
+  ]);
+  registry.capture("terminal-a", input("한".repeat(6000)));
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .annotation,
+    "Existing note",
+  );
+  assert.equal(
+    registry.resolve("terminal-a", second.reference, "session-a")!
+      .annotations[0].annotation,
+    "Reduced note",
+  );
+  registry.revoke("terminal-a");
+  registry.markReady("terminal-b", "session-b");
+  const next = registry.capture("terminal-b", input("New selection"));
+  registry.attach("terminal-b", [
+    { number: next.number, annotation: "한".repeat(ANNOTATION_COMMENT_LIMIT) },
+  ]);
+  assert.equal(
+    registry.resolve("terminal-b", next.reference, "session-b")!.annotations[0]
+      .annotation.length,
+    ANNOTATION_COMMENT_LIMIT,
+  );
 });
 
 test("terminal and session boundaries prevent foreign reference lookup", () => {

@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
+  ANNOTATION_COMMENT_LIMIT,
   ANNOTATION_DRAFT_LIMIT,
   ANNOTATION_DRAFT_TEXT_LIMIT,
   ANNOTATION_PROMPT_LIMIT,
   ANNOTATION_TEXT_LIMIT,
   annotationReference,
   type AnnotationCapture,
+  type AnnotationComment,
   type AnnotationContext,
   type AnnotationReference,
 } from "../shared/annotations.js";
@@ -43,8 +45,26 @@ export const annotationNumbersSchema = z
     (numbers) => new Set(numbers).size === numbers.length,
     "인용 번호가 중복되었습니다.",
   );
+export const annotationCommentsSchema = z
+  .array(
+    z
+      .object({
+        number: numberSchema,
+        annotation: z.string().max(ANNOTATION_COMMENT_LIMIT),
+      })
+      .strict(),
+  )
+  .min(1)
+  .max(ANNOTATION_DRAFT_LIMIT)
+  .refine(
+    (comments) =>
+      new Set(comments.map((item) => item.number)).size === comments.length,
+    "인용 번호가 중복되었습니다.",
+  );
 
 interface StoredAnnotation extends AnnotationCapture {
+  readonly annotation: string;
+  readonly submitted?: true;
   readonly sessionId?: string;
   readonly reference: string;
   readonly bytes: number;
@@ -119,6 +139,7 @@ export class TerminalAnnotations {
       JSON.stringify({
         reference,
         text: parsed.text,
+        annotation: "",
         source,
       }),
       "utf8",
@@ -135,6 +156,7 @@ export class TerminalAnnotations {
       number,
       Object.freeze({
         text: parsed.text,
+        annotation: "",
         source,
         sessionId: namespace.sessionId,
         reference,
@@ -149,6 +171,46 @@ export class TerminalAnnotations {
   /** Check all refs before placing their markers in the CLI's real input. */
   validate(terminalId: string, numbers: readonly number[]): void {
     this.records(terminalId, numbers);
+  }
+
+  /** Attach notes atomically; a submitted marker always retains its original note. */
+  attach(terminalId: string, input: readonly AnnotationComment[]): void {
+    const comments = annotationCommentsSchema.parse(input);
+    const records = this.records(
+      terminalId,
+      comments.map((item) => item.number),
+      false,
+    );
+    const updated = records.map((record, index) => {
+      const annotation = comments[index].annotation;
+      if (record.submitted && record.annotation !== annotation)
+        throw new Error(
+          "이미 전송한 인용의 주석은 수정할 수 없습니다. 새로 선택해 추가해주세요.",
+        );
+      const bytes = Buffer.byteLength(
+        JSON.stringify({
+          reference: record.reference,
+          text: record.text,
+          annotation,
+          source: record.source,
+        }),
+        "utf8",
+      );
+      return Object.freeze({ ...record, annotation, bytes });
+    });
+    this.validateDraftSize(updated);
+    const additionalBytes = updated.reduce(
+      (total, record, index) => total + record.bytes - records[index].bytes,
+      0,
+    );
+    if (this.byteCount + additionalBytes > ANNOTATION_BYTE_LIMIT)
+      throw new Error(
+        "인용 저장 공간이 가득 찼습니다. 사용하지 않는 참조를 삭제하거나 터미널을 닫으세요.",
+      );
+    const namespace = this.ready(terminalId);
+    for (let index = 0; index < updated.length; index++)
+      namespace.records.set(comments[index].number, updated[index]);
+    this.byteCount += additionalBytes;
   }
 
   /** Ordinary prompts add no context. Markers must resolve in this native session. */
@@ -186,12 +248,19 @@ export class TerminalAnnotations {
         "인용을 추가한 대화와 현재 대화가 다릅니다. 현재 대화에서 다시 선택해주세요.",
       );
     const records = this.records(terminalId, numbers);
+    for (let index = 0; index < records.length; index++)
+      if (!records[index].submitted)
+        namespace.records.set(
+          numbers[index],
+          Object.freeze({ ...records[index], submitted: true }),
+        );
     return Object.freeze({
       annotations: Object.freeze(
         records.map((record) =>
           Object.freeze({
             reference: record.reference,
             text: record.text,
+            annotation: record.annotation,
             source: record.source,
           }),
         ),
@@ -235,6 +304,7 @@ export class TerminalAnnotations {
   private records(
     terminalId: string,
     numbers: readonly number[],
+    checkDraftSize = true,
   ): StoredAnnotation[] {
     const namespace = this.ready(terminalId);
     const parsed = annotationNumbersSchema.parse(numbers);
@@ -250,13 +320,20 @@ export class TerminalAnnotations {
         );
       return record;
     });
+    if (checkDraftSize) this.validateDraftSize(records);
+    return records;
+  }
+
+  private validateDraftSize(records: readonly StoredAnnotation[]): void {
     if (
-      records.reduce((total, record) => total + record.text.length, 0) >
-      ANNOTATION_DRAFT_TEXT_LIMIT
+      records.reduce(
+        (total, record) =>
+          total + record.text.length + record.annotation.length,
+        0,
+      ) > ANNOTATION_DRAFT_TEXT_LIMIT
     )
       throw new Error(
         `전체 인용은 ${ANNOTATION_DRAFT_TEXT_LIMIT.toLocaleString()}자까지 가능합니다. 일부 참조를 삭제해주세요.`,
       );
-    return records;
   }
 }

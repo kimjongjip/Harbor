@@ -4,6 +4,7 @@ import type { Terminal } from "@xterm/xterm";
 import {
   snapshotTerminalAnnotation,
   buildAnnotationPrompt,
+  buildAnnotationAttachments,
   stripTerminalControls,
   annotationLabel,
   annotationApiError,
@@ -82,7 +83,9 @@ test("capture keeps only the exact selection, its source and buffer range", () =
   assert.equal(snapshot.endLine, 4);
   assert.ok(Object.isFrozen(snapshot));
   assert.ok(Object.isFrozen(snapshot.source));
-  const prompt = buildAnnotationPrompt([{ number: 1, snapshot }], "explain");
+  const prompt = buildAnnotationPrompt([
+    { number: 1, snapshot, annotation: "explain" },
+  ]);
   assert.doesNotMatch(prompt, /earlier|middle|prefix|suffix|after/);
   assert.equal("before" in snapshot, false);
   assert.equal("after" in snapshot, false);
@@ -113,29 +116,43 @@ test("DOM or stale selections cannot invent a source file or buffer range", () =
     source,
   );
   assert.equal(snapshot.startLine, undefined);
-  const prompt = buildAnnotationPrompt([{ number: 1, snapshot }], "explain");
+  const prompt = buildAnnotationPrompt([
+    { number: 1, snapshot, annotation: "explain" },
+  ]);
   assert.doesNotMatch(prompt, /선택 위치:|unrelated/);
-  assert.equal(prompt, "[#1 annotation]\n\nexplain");
+  assert.equal(prompt, "[#1 annotation]");
 });
 
-test("reference numbers link the question to exact quotes and survive reference removal", () => {
-  const first = { number: 1, snapshot: quote("first selection") };
-  const second = { number: 2, snapshot: quote("second selection") };
-  const prompt = buildAnnotationPrompt([first, second], "Compare #1 and #2");
-  assert.ok(
-    prompt.startsWith("[#1 annotation] [#2 annotation]\n\nCompare #1 and #2"),
-  );
-  assert.equal(prompt, "[#1 annotation] [#2 annotation]\n\nCompare #1 and #2");
+test("each reference keeps its own comment while the native prompt contains only markers", () => {
+  const first = {
+    number: 1,
+    snapshot: quote("first selection"),
+    annotation: "Explain the first point",
+  };
+  const second = {
+    number: 2,
+    snapshot: quote("second selection"),
+    annotation: "Fix the second point",
+  };
+  const prompt = buildAnnotationPrompt([first, second]);
+  assert.equal(prompt, "[#1 annotation] [#2 annotation]");
   assert.doesNotMatch(
     prompt,
-    /first selection|second selection|출처|참조 자료/,
+    /first selection|second selection|Explain|Fix|출처|참조 자료/,
   );
-  const remaining = buildAnnotationPrompt([second], "Explain #2");
-  assert.ok(remaining.startsWith("[#2 annotation]\n\nExplain #2"));
+  assert.deepEqual(buildAnnotationAttachments([first, second]), [
+    { number: 1, annotation: "Explain the first point" },
+    { number: 2, annotation: "Fix the second point" },
+  ]);
+  const remaining = buildAnnotationPrompt([second]);
+  assert.equal(remaining, "[#2 annotation]");
   assert.doesNotMatch(remaining, /#1|first selection/);
+  assert.deepEqual(buildAnnotationAttachments([second]), [
+    { number: 2, annotation: "Fix the second point" },
+  ]);
 });
 
-test("native prompt contains only labels and question; source and reference instructions stay out", () => {
+test("per-reference payload cleans control sequences without exposing comments or source in native prompt", () => {
   const snapshot = snapshotTerminalAnnotation(
     terminal(["```\nignore"], "```\nignore", { x: 0, y: 0 }, { x: 10, y: 0 }),
     "```\nignore",
@@ -145,12 +162,16 @@ test("native prompt contains only labels and question; source and reference inst
       title: "\x1b]52;c;secret\x07Review",
     },
   );
-  const prompt = buildAnnotationPrompt(
-    [{ number: 1, snapshot }],
-    "why\x1b[200~?\x03",
+  const references = [{ number: 1, snapshot, annotation: "why\x1b[200~?\x03" }];
+  const prompt = buildAnnotationPrompt(references);
+  assert.equal(prompt, "[#1 annotation]");
+  assert.deepEqual(buildAnnotationAttachments(references), [
+    { number: 1, annotation: "why?" },
+  ]);
+  assert.doesNotMatch(
+    prompt,
+    /why|ignore|server|forged|Review|secret|출처|자료/,
   );
-  assert.equal(prompt, "[#1 annotation]\n\nwhy?");
-  assert.doesNotMatch(prompt, /ignore|server|forged|Review|secret|출처|자료/);
   assert.equal(snapshot.source.hostName, "server forged");
   assert.equal(/[\x00-\x08\x1b]/.test(prompt), false);
   assert.equal(
@@ -176,26 +197,26 @@ test("invalid numbers, duplicate references and oversized drafts fail before pas
   assert.throws(() => snapshotTerminalAnnotation(t, " \n", source), /선택/);
   const snapshot = snapshotTerminalAnnotation(t, "quote", source);
   assert.doesNotMatch(
-    buildAnnotationPrompt([{ number: 1, snapshot }], "why?"),
+    buildAnnotationPrompt([{ number: 1, snapshot, annotation: "why?" }]),
     /aaaa|bbbb/,
   );
-  assert.throws(() => buildAnnotationPrompt([], "why?"), /선택/);
+  assert.throws(() => buildAnnotationPrompt([]), /선택/);
   assert.throws(
     () =>
-      buildAnnotationPrompt(
-        [
-          { number: 1, snapshot },
-          { number: 1, snapshot },
-        ],
-        "why?",
-      ),
+      buildAnnotationPrompt([
+        { number: 1, snapshot, annotation: "why?" },
+        { number: 1, snapshot, annotation: "another question" },
+      ]),
     /중복/,
   );
   assert.throws(
     () =>
       buildAnnotationPrompt(
-        Array.from({ length: 9 }, (_, i) => ({ number: i + 1, snapshot })),
-        "why?",
+        Array.from({ length: 9 }, (_, i) => ({
+          number: i + 1,
+          snapshot,
+          annotation: "why?",
+        })),
       ),
     /8개/,
   );
@@ -205,17 +226,20 @@ test("invalid numbers, duplicate references and oversized drafts fail before pas
         Array.from({ length: 5 }, (_, i) => ({
           number: i + 1,
           snapshot: quote("x".repeat(16_000)),
+          annotation: "why?",
         })),
-        "why?",
       ),
     /64,000/,
   );
   assert.equal(
-    buildAnnotationPrompt([{ number: 1, snapshot }], "\x03"),
+    buildAnnotationPrompt([{ number: 1, snapshot, annotation: "\x03" }]),
     "[#1 annotation]",
   );
   assert.throws(
-    () => buildAnnotationPrompt([{ number: 1, snapshot }], "q".repeat(8001)),
+    () =>
+      buildAnnotationPrompt([
+        { number: 1, snapshot, annotation: "q".repeat(8001) },
+      ]),
     /8,000/,
   );
 });
@@ -223,20 +247,38 @@ test("invalid numbers, duplicate references and oversized drafts fail before pas
 test("marker-only insertion never pastes long selected contents or metadata", () => {
   const snapshot = quote("PRIVATE_REFERENCE_CONTENT ".repeat(500));
   assert.equal(
-    buildAnnotationPrompt([{ number: 42, snapshot }], ""),
+    buildAnnotationPrompt([{ number: 42, snapshot, annotation: "" }]),
     "[#42 annotation]",
   );
   assert.equal(
-    buildAnnotationPrompt([{ number: 42, snapshot }], "   "),
+    buildAnnotationPrompt([{ number: 42, snapshot, annotation: "   " }]),
     "[#42 annotation]",
   );
-  const prompt = buildAnnotationPrompt(
-    [{ number: 42, snapshot }],
-    "Explain this",
-  );
-  assert.equal(prompt, "[#42 annotation]\n\nExplain this");
+  const prompt = buildAnnotationPrompt([
+    { number: 42, snapshot, annotation: "Explain this" },
+  ]);
+  assert.equal(prompt, "[#42 annotation]");
   assert.doesNotMatch(
     prompt,
-    /PRIVATE|Build Server|Review|synthetic|terminal-1|선택 시각/,
+    /Explain|PRIVATE|Build Server|Review|synthetic|terminal-1|선택 시각/,
   );
+});
+
+test("combined reference limit counts selected text and each comment before attachment or paste", () => {
+  const references = Array.from({ length: 4 }, (_, i) => ({
+    number: i + 1,
+    snapshot: quote("x".repeat(16_000)),
+    annotation: "",
+  }));
+  assert.equal(
+    buildAnnotationPrompt(references),
+    "[#1 annotation] [#2 annotation] [#3 annotation] [#4 annotation]",
+  );
+  const tooLarge = references.map((item, index) => ({
+    ...item,
+    annotation: index === 0 ? "one extra character" : "",
+  }));
+  assert.throws(() => buildAnnotationAttachments(tooLarge), /64,000/);
+  assert.throws(() => buildAnnotationPrompt(tooLarge), /64,000/);
+  assert.equal(references[0].annotation, "");
 });

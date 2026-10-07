@@ -20,6 +20,7 @@ export interface TerminalAnnotationSnapshot {
 export interface TerminalAnnotationReference {
   readonly number: number;
   readonly snapshot: TerminalAnnotationSnapshot;
+  readonly annotation: string;
 }
 
 export const annotationLimit = 8;
@@ -107,34 +108,42 @@ export function snapshotTerminalAnnotation(
   });
 }
 
-export function buildAnnotationPrompt(
+export function buildAnnotationAttachments(
   annotations: readonly TerminalAnnotationReference[],
-  question: string,
-): string {
-  const cleanQuestion = stripTerminalControls(question).trim();
-  if (cleanQuestion.length > 8_000)
-    throw new Error("질문은 8,000자까지 가능합니다. 질문을 줄여주세요.");
+): { number: number; annotation: string }[] {
   if (!annotations.length) throw new Error("인용할 글을 먼저 선택해주세요.");
   if (annotations.length > annotationLimit)
     throw new Error(`인용은 한 번에 ${annotationLimit}개까지 가능합니다.`);
-  if (
-    annotations.reduce((total, item) => total + item.snapshot.text.length, 0) >
-    64_000
-  )
-    throw new Error(
-      "전체 인용은 64,000자까지 가능합니다. 일부 참조를 삭제해주세요.",
-    );
   const labels = annotations.map(({ number }) => annotationLabel(number));
   if (new Set(labels).size !== labels.length)
     throw new Error("인용 번호가 중복되었습니다.");
-  for (const { snapshot } of annotations) {
+  let total = 0;
+  const attachments = annotations.map(({ number, snapshot, annotation }) => {
     const quote = stripTerminalControls(snapshot.text);
     if (!quote.trim() || quote.length > 16_000)
       throw new Error(
         "인용 범위를 확인해주세요. 인용 하나는 16,000자까지 가능합니다.",
       );
-  }
+    const comment = stripTerminalControls(annotation).trim();
+    if (comment.length > 8_000)
+      throw new Error(
+        "인용의 질문·주석은 8,000자까지 가능합니다. 내용을 줄여주세요.",
+      );
+    total += quote.length + comment.length;
+    return { number, annotation: comment };
+  });
+  if (total > 64_000)
+    throw new Error(
+      "인용문과 질문·주석은 합쳐서 64,000자까지 가능합니다. 일부 참조를 삭제하거나 내용을 줄여주세요.",
+    );
+  return attachments;
+}
+
+export function buildAnnotationPrompt(
+  annotations: readonly TerminalAnnotationReference[],
+): string {
+  const attachments = buildAnnotationAttachments(annotations);
   // The server-side native hook supplies reference contents separately.
-  // Never expose the quote body or provenance in the native composer.
-  return [labels.join(" "), cleanQuestion].filter(Boolean).join("\n\n");
+  // Quote, per-reference comment and provenance all belong inside the reference.
+  return attachments.map(({ number }) => annotationLabel(number)).join(" ");
 }

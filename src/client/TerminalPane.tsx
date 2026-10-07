@@ -14,6 +14,7 @@ import {
 import {
   snapshotTerminalAnnotation,
   buildAnnotationPrompt,
+  buildAnnotationAttachments,
   annotationLimit,
   annotationApiError,
   annotationUnavailable,
@@ -141,7 +142,6 @@ export default function TerminalPane({
   const insertAnnotationRef = useRef<
     | ((
         references: readonly TerminalAnnotationReference[],
-        question: string,
       ) => Promise<string | null>)
     | null
   >(null);
@@ -676,7 +676,11 @@ export default function TerminalPane({
           )
         )
           throw new Error(annotationUnavailable);
-        const captured = Object.freeze({ number: registered.number, snapshot });
+        const captured = Object.freeze({
+          number: registered.number,
+          snapshot,
+          annotation: "",
+        });
         pendingAnnotationNumbers.current.add(registered.number);
         const next = [...(annotationRef.current || []), captured];
         annotationRef.current = next;
@@ -689,7 +693,7 @@ export default function TerminalPane({
         annotationRegistering = false;
       }
     };
-    insertAnnotationRef.current = async (references, question) => {
+    insertAnnotationRef.current = async (references) => {
       if (annotationInserting || annotationRegistering)
         return "인용 연결을 확인 중입니다. 잠시 기다려주세요.";
       if (
@@ -713,8 +717,10 @@ export default function TerminalPane({
         return "AI 입력창이 준비된 뒤 다시 눌러 주세요. 질문은 그대로 유지됩니다.";
       }
       let prompt: string;
+      let attachments: { number: number; annotation: string }[];
       try {
-        prompt = buildAnnotationPrompt(references, question);
+        attachments = buildAnnotationAttachments(references);
+        prompt = buildAnnotationPrompt(references);
       } catch (error) {
         return (error as Error).message;
       }
@@ -726,9 +732,9 @@ export default function TerminalPane({
         let validation: { ready: boolean };
         try {
           validation = await api<{ ready: boolean }>(
-            `/terminals/${info.id}/annotations/validate`,
+            `/terminals/${info.id}/annotations/attach`,
             {
-              numbers: references.map((item) => item.number),
+              annotations: attachments,
             },
           );
         } catch (error) {
@@ -757,7 +763,7 @@ export default function TerminalPane({
           if (!stopped) term.focus();
         });
         setCopyStatus(
-          "인용 번호를 입력창에 넣었습니다. 질문을 확인한 뒤 Enter로 보내세요.",
+          "인용문과 질문·주석을 번호에 담았습니다. 입력창에서 Enter로 보내세요.",
         );
         clearTimeout(copyStatusTimeout);
         copyStatusTimeout = setTimeout(() => setCopyStatus(""), 4000);
@@ -1147,10 +1153,21 @@ export default function TerminalPane({
             annotationRef.current = next;
             setAnnotation(next);
           }}
-          onInsert={async (question) => {
+          onUpdateAnnotation={(number, value) => {
+            annotationEpoch.current++;
+            const next =
+              annotationRef.current?.map((item) =>
+                item.number === number
+                  ? Object.freeze({ ...item, annotation: value })
+                  : item,
+              ) ?? null;
+            annotationRef.current = next;
+            setAnnotation(next);
+          }}
+          onInsert={async () => {
             const epoch = annotationEpoch.current;
             const error = insertAnnotationRef.current
-              ? await insertAnnotationRef.current(annotation, question)
+              ? await insertAnnotationRef.current(annotationRef.current || [])
               : "터미널을 사용할 수 없습니다. 질문은 그대로 유지됩니다.";
             if (!error && annotationEpoch.current === epoch) {
               annotationEpoch.current++;

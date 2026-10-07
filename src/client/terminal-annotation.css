@@ -93,6 +93,13 @@
   border-radius: 6px;
   overflow: hidden;
 }
+.terminal-annotation-reference {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
 .terminal-annotation-source {
   display: flex;
   flex-wrap: wrap;
@@ -106,7 +113,7 @@
 .terminal-annotation-quote {
   margin: 0;
   padding: 8px;
-  max-height: 120px;
+  max-height: 100px;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

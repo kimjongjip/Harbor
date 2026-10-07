@@ -31,8 +31,9 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
   assert.equal((await post(start)).status,200);
   assert.equal(events.length,1);assert.equal(events[0].id,"a");
   const reference=bridge.annotations.capture("a",{text:"selected Claude text",source:{hostName:"fixture",title:"a",cwd:"/fixture/a"}});
-  const annotated=await (await post({hook_event_name:"UserPromptSubmit",session_id:"synthetic",prompt:`${reference.reference} Explain this`})).json();
-  assert.deepEqual(JSON.parse(annotated.hookSpecificOutput.additionalContext),{annotations:[{reference:reference.reference,text:"selected Claude text",source:{hostName:"fixture",title:"a",cwd:"/fixture/a"}}]});
+  bridge.annotations.attach("a",[{number:reference.number,annotation:"Explain this specific selection"}]);
+  const annotated=await (await post({hook_event_name:"UserPromptSubmit",session_id:"synthetic",prompt:reference.reference})).json();
+  assert.deepEqual(JSON.parse(annotated.hookSpecificOutput.additionalContext),{annotations:[{reference:reference.reference,text:"selected Claude text",annotation:"Explain this specific selection",source:{hostName:"fixture",title:"a",cwd:"/fixture/a"}}]});
   assert.deepEqual(await (await post({hook_event_name:"UserPromptSubmit",session_id:"synthetic",prompt:"ordinary prompt"})).json(),{});
   assert.equal((await (await post({hook_event_name:"UserPromptSubmit",session_id:"new-session",prompt:reference.reference})).json()).decision,"block");
   for(const choice of ["allow","deny"]){

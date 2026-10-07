@@ -15,6 +15,7 @@ import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import {
   annotationCaptureSchema,
+  annotationCommentsSchema,
   annotationNumbersSchema,
 } from "./terminal-annotations.js";
 import { Requests, answerSchema } from "./requests.js";
@@ -332,7 +333,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.0.5" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.0.6" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -756,6 +757,15 @@ app.post("/api/terminals/:id/annotations/validate", (req, res) => {
     .object({ numbers: annotationNumbersSchema })
     .parse(req.body);
   bridge.annotations.validate(terminal.id, numbers);
+  res.json({ ready: true });
+});
+app.post("/api/terminals/:id/annotations/attach", (req, res) => {
+  const terminal = annotationTerminal(String(req.params.id));
+  const { annotations } = z
+    .object({ annotations: annotationCommentsSchema })
+    .strict()
+    .parse(req.body);
+  bridge.annotations.attach(terminal.id, annotations);
   res.json({ ready: true });
 });
 app.post("/api/terminals/:id/annotations/remove", (req, res) => {

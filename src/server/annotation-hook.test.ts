@@ -104,7 +104,11 @@ test(
       text: selectedText,
       source: { hostName: "Fixture", title: "Review", cwd: "/synthetic" },
     });
-    const prompt = `${reference.reference} explain`;
+    const annotation = "이 부분에서 무엇을 뜻하는지 설명해주세요.";
+    bridge.annotations.attach("origin", [
+      { number: reference.number, annotation },
+    ]);
+    const prompt = reference.reference;
     const submitted = {
       hook_event_name: "UserPromptSubmit",
       session_id: "fixture-thread",
@@ -120,6 +124,7 @@ test(
           {
             reference: reference.reference,
             text: selectedText,
+            annotation,
             source: { hostName: "Fixture", title: "Review", cwd: "/synthetic" },
           },
         ],
