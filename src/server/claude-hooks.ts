@@ -7,6 +7,7 @@ export const claudeHookSchema = z.object({
   notification_type: z.string().max(200).optional(),
   message: z.string().max(8000).optional(),
   tool_name: z.string().max(200).optional(),
+  prompt: z.string().max(128000).optional(),
 });
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 

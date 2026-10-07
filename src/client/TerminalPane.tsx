@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
 import "@xterm/xterm/css/xterm.css";
-import { getToken } from "./api";
+import { api, getToken } from "./api";
 import type { ServerEvent, TerminalInfo } from "../shared/types";
 import { installTerminalLinks } from "./terminalLinks";
 import { restoreTerminalReplay } from "./terminalReplay";
@@ -15,6 +15,8 @@ import {
   snapshotTerminalAnnotation,
   buildAnnotationPrompt,
   annotationLimit,
+  annotationApiError,
+  annotationUnavailable,
   type TerminalAnnotationReference,
 } from "./terminalAnnotation";
 import { TerminalAnnotationDialog } from "./TerminalAnnotationDialog";
@@ -114,16 +116,33 @@ export default function TerminalPane({
   const [copyStatus, setCopyStatus] = useState("");
   const copySelectionRef = useRef<(() => void) | null>(null);
   const quoteSelectionRef = useRef<(() => void) | null>(null);
-  const [annotation, setAnnotation] =
-    useState<readonly TerminalAnnotationReference[] | null>(null);
+  const [annotation, setAnnotation] = useState<
+    readonly TerminalAnnotationReference[] | null
+  >(null);
   const annotationRef = useRef(annotation);
   annotationRef.current = annotation;
-  const annotationNumber = useRef(0);
+  const annotationEpoch = useRef(0);
+  const pendingAnnotationNumbers = useRef(new Set<number>());
+  const releaseAnnotations = (numbers: number[]) => {
+    const valid = numbers.filter(
+      (number) => Number.isSafeInteger(number) && number > 0,
+    );
+    if (valid.length)
+      void api(`/terminals/${info.id}/annotations/remove`, {
+        numbers: valid,
+      }).catch(() => {});
+  };
+  const releasePendingAnnotations = (numbers: number[]) => {
+    const unused = numbers.filter((number) =>
+      pendingAnnotationNumbers.current.delete(number),
+    );
+    releaseAnnotations(unused);
+  };
   const insertAnnotationRef = useRef<
     | ((
         references: readonly TerminalAnnotationReference[],
         question: string,
-      ) => string | null)
+      ) => Promise<string | null>)
     | null
   >(null);
   const container = useRef<HTMLDivElement>(null);
@@ -198,6 +217,8 @@ export default function TerminalPane({
     let lastComposerPaste = 0;
     let attachmentSending = false;
     let composerInputGeneration = 0;
+    let annotationRegistering = false;
+    let annotationInserting = false;
     let statusTimeout: ReturnType<typeof setTimeout>;
     let transferDismissTimeout: ReturnType<typeof setTimeout>;
     // Newer backends record notices globally. Older backends need live local
@@ -267,11 +288,16 @@ export default function TerminalPane({
       notificationsReady &&
       socket?.readyState === WebSocket.OPEN;
     const agentPasteReady = () =>
-      term.modes.bracketedPasteMode || (infoRef.current.agentKind !== "claude" && !bracketedPasteSeen);
+      term.modes.bracketedPasteMode ||
+      (infoRef.current.agentKind !== "claude" && !bracketedPasteSeen);
     const pastePath = (path: string, image: boolean) => {
       if (!terminalReady()) return false;
       const nativeAgent = !!infoRef.current.agentConnected;
-      const nativeImage = image && nativeAgent && infoRef.current.agentKind !== "claude" && agentPasteReady();
+      const nativeImage =
+        image &&
+        nativeAgent &&
+        infoRef.current.agentKind !== "claude" &&
+        agentPasteReady();
       const text = nativeImage
         ? terminalPathForPaste(path, true)
         : ` ${terminalPathForPaste(path, false)} `;
@@ -421,7 +447,9 @@ export default function TerminalPane({
         }
         let inserted = 0;
         const acknowledgeBatch =
-          saved.length > 1 && !!infoRef.current.agentConnected && infoRef.current.agentKind !== "claude";
+          saved.length > 1 &&
+          !!infoRef.current.agentConnected &&
+          infoRef.current.agentKind !== "claude";
         const inputGeneration = composerInputGeneration;
         const batchGeneration = connectionGeneration;
         const readComposer = () =>
@@ -514,8 +542,8 @@ export default function TerminalPane({
             ? infoRef.current.agentKind === "claude"
               ? "Claude 입력창에 저장된 이미지 경로를 넣었습니다. 경로와 질문을 확인한 뒤 Enter를 누르세요."
               : infoRef.current.agentConnected
-              ? "Codex 입력창에 [Image #숫자]가 표시되면 이미지가 첨부된 것입니다. 표시를 확인한 뒤 Enter를 누르세요."
-              : "이미지는 저장되었지만 Codex 연결을 확인하지 못했습니다. 지금은 경로만 입력했습니다. Codex에서 [Image #숫자] 표시를 확인하세요."
+                ? "Codex 입력창에 [Image #숫자]가 표시되면 이미지가 첨부된 것입니다. 표시를 확인한 뒤 Enter를 누르세요."
+                : "이미지는 저장되었지만 Codex 연결을 확인하지 못했습니다. 지금은 경로만 입력했습니다. Codex에서 [Image #숫자] 표시를 확인하세요."
             : "내용을 확인하고 직접 Enter를 눌러 전송하세요.";
         setUploadAdvice(advice);
         imageNotice(
@@ -592,30 +620,92 @@ export default function TerminalPane({
       );
     };
     copySelectionRef.current = copySelected;
-    quoteSelectionRef.current = () => {
+    quoteSelectionRef.current = async () => {
+      if (annotationRegistering || annotationInserting) return;
       const text = selectedText();
       if (!text) return;
+      const epoch = annotationEpoch.current;
+      const thread =
+        infoRef.current.agentSessionId || infoRef.current.resumeThreadId;
+      const connection = connectionGeneration;
+      annotationRegistering = true;
       try {
+        if (!terminalReady() || !infoRef.current.agentConnected)
+          throw new Error(annotationUnavailable);
         if ((annotationRef.current?.length || 0) >= annotationLimit)
-          throw new Error(`인용은 한 번에 ${annotationLimit}개까지 가능합니다. 일부 참조를 삭제해주세요.`);
+          throw new Error(
+            `인용은 한 번에 ${annotationLimit}개까지 가능합니다. 일부 참조를 삭제해주세요.`,
+          );
         const snapshot = snapshotTerminalAnnotation(term, text, {
-            terminalId: info.id,
-            hostName: hostNameRef.current || infoRef.current.hostId,
-            title: infoRef.current.title,
-            threadId: infoRef.current.agentSessionId || infoRef.current.resumeThreadId,
-            cwd: infoRef.current.cwd,
-          });
-        const captured = { number: ++annotationNumber.current, snapshot };
-        setAnnotation(current => [...(current || []), captured]);
+          terminalId: info.id,
+          hostName: hostNameRef.current || infoRef.current.hostId,
+          title: infoRef.current.title,
+          threadId: thread,
+          cwd: infoRef.current.cwd,
+        });
+        setCopyStatus("인용 번호를 연결하고 있습니다…");
+        let registered: { number: number };
+        try {
+          registered = await api<{ number: number }>(
+            `/terminals/${info.id}/annotations`,
+            { snapshot },
+          );
+        } catch (error) {
+          throw new Error(annotationApiError(error));
+        }
+        if (stopped || annotationEpoch.current !== epoch) {
+          releaseAnnotations([registered.number]);
+          return;
+        }
+        if (
+          !terminalReady() ||
+          connectionGeneration !== connection ||
+          thread !==
+            (infoRef.current.agentSessionId || infoRef.current.resumeThreadId)
+        ) {
+          releaseAnnotations([registered.number]);
+          throw new Error(
+            "인용 연결 중 대화나 연결이 변경되었습니다. 다시 선택해주세요.",
+          );
+        }
+        if (
+          !Number.isSafeInteger(registered.number) ||
+          registered.number < 1 ||
+          annotationRef.current?.some(
+            (item) => item.number === registered.number,
+          )
+        )
+          throw new Error(annotationUnavailable);
+        const captured = Object.freeze({ number: registered.number, snapshot });
+        pendingAnnotationNumbers.current.add(registered.number);
+        const next = [...(annotationRef.current || []), captured];
+        annotationRef.current = next;
+        setAnnotation(next);
+        setCopyStatus("");
       } catch (error) {
-        setCopyStatus((error as Error).message);
+        if (!stopped && annotationEpoch.current === epoch)
+          setCopyStatus((error as Error).message);
+      } finally {
+        annotationRegistering = false;
       }
     };
-    insertAnnotationRef.current = (references, question) => {
-      if (references.some(item => item.snapshot.source.terminalId !== info.id))
+    insertAnnotationRef.current = async (references, question) => {
+      if (annotationInserting || annotationRegistering)
+        return "인용 연결을 확인 중입니다. 잠시 기다려주세요.";
+      if (
+        references.some((item) => item.snapshot.source.terminalId !== info.id)
+      )
         return "인용한 터미널과 입력 대상이 다릅니다. 원래 터미널에서 다시 열어 주세요.";
-      const threadId = infoRef.current.agentSessionId || infoRef.current.resumeThreadId;
-      if (threadId && references.some(item => item.snapshot.source.threadId && item.snapshot.source.threadId !== threadId))
+      const threadId =
+        infoRef.current.agentSessionId || infoRef.current.resumeThreadId;
+      if (
+        threadId &&
+        references.some(
+          (item) =>
+            item.snapshot.source.threadId &&
+            item.snapshot.source.threadId !== threadId,
+        )
+      )
         return "참조를 추가한 뒤 대화가 변경되었습니다. 참조를 삭제하고 현재 대화에서 다시 선택해주세요.";
       if (!terminalReady())
         return "터미널 연결이 끊겨 입력하지 못했습니다. 질문은 그대로 유지됩니다.";
@@ -628,19 +718,53 @@ export default function TerminalPane({
       } catch (error) {
         return (error as Error).message;
       }
-      composerInputGeneration++;
-      term.paste(prompt);
-      term.clearSelection();
-      mount.ownerDocument.getSelection()?.removeAllRanges();
-      requestAnimationFrame(() => {
-        if (!stopped) term.focus();
-      });
-      setCopyStatus(
-        "번호가 붙은 참조와 질문을 AI 입력창에 넣었습니다. 확인한 뒤 Enter로 보내세요.",
-      );
-      clearTimeout(copyStatusTimeout);
-      copyStatusTimeout = setTimeout(() => setCopyStatus(""), 4000);
-      return null;
+      const epoch = annotationEpoch.current;
+      const inputGeneration = composerInputGeneration;
+      const connection = connectionGeneration;
+      annotationInserting = true;
+      try {
+        let validation: { ready: boolean };
+        try {
+          validation = await api<{ ready: boolean }>(
+            `/terminals/${info.id}/annotations/validate`,
+            {
+              numbers: references.map((item) => item.number),
+            },
+          );
+        } catch (error) {
+          return annotationApiError(error);
+        }
+        if (!validation.ready) return annotationUnavailable;
+        if (
+          stopped ||
+          annotationEpoch.current !== epoch ||
+          composerInputGeneration !== inputGeneration ||
+          connectionGeneration !== connection ||
+          !terminalReady() ||
+          !infoRef.current.agentConnected ||
+          !term.modes.bracketedPasteMode ||
+          threadId !==
+            (infoRef.current.agentSessionId || infoRef.current.resumeThreadId)
+        )
+          return "확인 중 입력이나 연결이 변경되어 추가하지 않았습니다. 질문은 유지됩니다. 다시 눌러주세요.";
+        composerInputGeneration++;
+        term.paste(prompt);
+        for (const item of references)
+          pendingAnnotationNumbers.current.delete(item.number);
+        term.clearSelection();
+        mount.ownerDocument.getSelection()?.removeAllRanges();
+        requestAnimationFrame(() => {
+          if (!stopped) term.focus();
+        });
+        setCopyStatus(
+          "인용 번호를 입력창에 넣었습니다. 질문을 확인한 뒤 Enter로 보내세요.",
+        );
+        clearTimeout(copyStatusTimeout);
+        copyStatusTimeout = setTimeout(() => setCopyStatus(""), 4000);
+        return null;
+      } finally {
+        annotationInserting = false;
+      }
     };
     const selectionChanged = () => setHasSelection(Boolean(selectedText()));
     const terminalSelection = term.onSelectionChange(selectionChanged);
@@ -933,6 +1057,9 @@ export default function TerminalPane({
     connect();
     return () => {
       stopped = true;
+      annotationEpoch.current++;
+      releasePendingAnnotations([...pendingAnnotationNumbers.current]);
+      annotationRef.current = null;
       connectionGeneration++;
       resizeRef.current = null;
       clearTimeout(repaintTimer);
@@ -1006,20 +1133,29 @@ export default function TerminalPane({
           annotations={annotation}
           disabled={!connected || Boolean(info.exited)}
           onClose={() => {
+            annotationEpoch.current++;
+            releasePendingAnnotations([...pendingAnnotationNumbers.current]);
+            annotationRef.current = null;
             setAnnotation(null);
-            annotationNumber.current = 0;
           }}
-          onRemove={number => setAnnotation(current => current?.filter(item => item.number !== number) ?? null)}
-          onInsert={question => {
+          onRemove={(number) => {
+            annotationEpoch.current++;
+            releasePendingAnnotations([number]);
+            const next =
+              annotationRef.current?.filter((item) => item.number !== number) ??
+              null;
+            annotationRef.current = next;
+            setAnnotation(next);
+          }}
+          onInsert={async (question) => {
+            const epoch = annotationEpoch.current;
             const error = insertAnnotationRef.current
-              ? insertAnnotationRef.current(
-                  annotation,
-                  question,
-                )
+              ? await insertAnnotationRef.current(annotation, question)
               : "터미널을 사용할 수 없습니다. 질문은 그대로 유지됩니다.";
-            if (!error) {
+            if (!error && annotationEpoch.current === epoch) {
+              annotationEpoch.current++;
+              annotationRef.current = null;
               setAnnotation(null);
-              annotationNumber.current = 0;
             }
             return error;
           }}
@@ -1095,7 +1231,8 @@ export default function TerminalPane({
           </b>
           <span>저장 위치 · 세션 전용 첨부 폴더</span>
           <small>
-            첨부 폴더에 저장하고 경로를 입력합니다. 내용을 확인한 뒤 Enter를 누르세요.
+            첨부 폴더에 저장하고 경로를 입력합니다. 내용을 확인한 뒤 Enter를
+            누르세요.
           </small>
         </div>
       )}

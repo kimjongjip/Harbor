@@ -1,26 +1,45 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile, readFile, rm, copyFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  readFile,
+  rm,
+  copyFile,
+} from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import {
   powershellInitialization,
+  powershellStartup,
   bashInitialization,
   remoteTerminalCommand,
   codexArguments,
 } from "./terminal-shell.js";
 import type { HostConfig } from "../shared/types.js";
 import { permissionHookConfig } from "./permission-hook.js";
+import {
+  annotationHookConfig,
+  annotationHookTrustConfig,
+} from "./annotation-hook.js";
 import { shellDirectory } from "./ssh.js";
 
 test("SSH home directory expands on the remote account without interpreting other paths", () => {
   assert.equal(shellDirectory("~"), '"$HOME"');
-  assert.equal(shellDirectory("~/a b"), '"$HOME"/\'a b\'');
+  assert.equal(shellDirectory("~/a b"), "\"$HOME\"/'a b'");
   assert.equal(shellDirectory("/tmp/$(bad)"), "'/tmp/$(bad)'");
   const host = { codexPath: "codex" } as HostConfig;
-  assert.ok(remoteTerminalCommand(host, "~", "shell").startsWith('cd "$HOME" &&'));
-  assert.ok(bashInitialization(host, "~", "shell", { token: "fixture", url: "http://localhost" }).includes('cd "$HOME" || exit;'));
+  assert.ok(
+    remoteTerminalCommand(host, "~", "shell").startsWith('cd "$HOME" &&'),
+  );
+  assert.ok(
+    bashInitialization(host, "~", "shell", {
+      token: "fixture",
+      url: "http://localhost",
+    }).includes('cd "$HOME" || exit;'),
+  );
 });
 
 test("SSH commands quote folders and selected programs; bridge token occurs only in private stdin initialization", () => {
@@ -67,21 +86,23 @@ test(
     const executable = join(directory, "codex.exe");
     const output = join(directory, "args.json");
     // A tiny native fixture verifies PowerShell's argv quoting at the process boundary.
-    const source = `using System; using System.IO; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(args.Length > 1 && args[0] == "--settings" ? File.ReadAllText(args[1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN") })); } }`;
+    const source = `using System; using System.IO; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(args.Length > 1 && args[0] == "--settings" ? File.ReadAllText(args[1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN"), init=Environment.GetEnvironmentVariable("HARBOR_POWERSHELL_INIT") })); } }`;
     const compile = `Add-Type -TypeDefinition '${source.replaceAll("'", "''")}' -ReferencedAssemblies System.Web.Extensions -OutputAssembly '${executable.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
     const run = (script: string, extraEnv: NodeJS.ProcessEnv = {}) =>
       new Promise<string>((done, reject) => {
+        const startup = powershellStartup(script);
         const child = spawn(
           "powershell.exe",
           [
             "-NoProfile",
             "-NonInteractive",
-            "-EncodedCommand",
-            Buffer.from(script, "utf16le").toString("base64"),
+            ...startup.args.filter(
+              (value) => !["-NoLogo", "-NoExit"].includes(value),
+            ),
           ],
           {
             windowsHide: true,
-            env: { ...process.env, ...extraEnv },
+            env: { ...process.env, ...extraEnv, ...startup.env },
             stdio: ["ignore", "pipe", "pipe"],
           },
         );
@@ -100,7 +121,13 @@ test(
       });
     await run(compile);
     await copyFile(executable, join(directory, "claude.exe"));
-    const claudeInit = powershellInitialization({} as HostConfig, "shell", "http://127.0.0.1:1/bridge/mcp", undefined, true);
+    const claudeInit = powershellInitialization(
+      {} as HostConfig,
+      "shell",
+      "http://127.0.0.1:1/bridge/mcp",
+      undefined,
+      true,
+    );
     await run(`${claudeInit}; claude --resume fixture-session`, {
       HARBOR_TEST_CAPTURE: output,
       HARBOR_SESSION_TOKEN: "mcp-secret-must-not-reach-claude",
@@ -109,8 +136,14 @@ test(
     const claudeCaptured = JSON.parse(await readFile(output, "utf8"));
     assert.equal(claudeCaptured.token, null);
     const claudeSettings = JSON.parse(claudeCaptured.settings);
-    assert.equal(claudeSettings.hooks.SessionStart[0].hooks[0].url, "http://127.0.0.1:1/bridge/claude");
-    assert.deepEqual(claudeCaptured.args.slice(-2), ["--resume", "fixture-session"]);
+    assert.equal(
+      claudeSettings.hooks.SessionStart[0].hooks[0].url,
+      "http://127.0.0.1:1/bridge/claude",
+    );
+    assert.deepEqual(claudeCaptured.args.slice(-2), [
+      "--resume",
+      "fixture-session",
+    ]);
     const token = randomUUID();
     const initialization = powershellInitialization(
       { codexPath: executable } as HostConfig,
@@ -120,17 +153,35 @@ test(
       true,
     );
     assert.equal(initialization.includes(token), false);
-    const cwdOutput = await run(`${initialization}; Set-Location -LiteralPath '${directory.replaceAll("'", "''")}'; prompt; codex -C '${parent.replaceAll("'", "''")}'`, {
-      HARBOR_TEST_CAPTURE: output,
-    });
-    assert.ok(cwdOutput.includes(`\x1b]1337;CurrentDir=${directory}\x07`), "prompt reports the directory after cd");
-    assert.ok(cwdOutput.includes(`\x1b]1337;CurrentDir=${parent}\x07`), "Codex -C reports its effective directory");
+    const cwdOutput = await run(
+      `${initialization}; Set-Location -LiteralPath '${directory.replaceAll("'", "''")}'; prompt; codex -C '${parent.replaceAll("'", "''")}'`,
+      {
+        HARBOR_TEST_CAPTURE: output,
+      },
+    );
+    assert.ok(
+      cwdOutput.includes(`\x1b]1337;CurrentDir=${directory}\x07`),
+      "prompt reports the directory after cd",
+    );
+    assert.ok(
+      cwdOutput.includes(`\x1b]1337;CurrentDir=${parent}\x07`),
+      "Codex -C reports its effective directory",
+    );
     await run(`${initialization}; codex resume --last`, {
       HARBOR_SESSION_TOKEN: token,
       HARBOR_TEST_CAPTURE: output,
     });
     const captured = JSON.parse(await readFile(output, "utf8"));
     assert.equal(captured.token, token);
+    assert.equal(
+      captured.init,
+      null,
+      "startup source is removed before launching the CLI",
+    );
+    assert.ok(
+      powershellStartup(initialization).args.join(" ").length < 1000,
+      "hook definitions do not exceed Windows' launch command line limit",
+    );
     assert.ok(
       captured.args.includes(
         'mcp_servers.harbor.url="http://127.0.0.1:1/bridge/mcp"',
@@ -147,6 +198,12 @@ test(
         arg.startsWith("hooks.PermissionRequest="),
       ),
       permissionHookConfig("windows"),
+    );
+    for (const event of ["SessionStart", "UserPromptSubmit"] as const)
+      assert.ok(captured.args.includes(annotationHookConfig("windows", event)));
+    assert.ok(
+      captured.args.includes(annotationHookTrustConfig("windows")),
+      "PowerShell preserves native annotation trust keys and JSON escapes",
     );
     assert.equal(
       captured.args.includes("--dangerously-bypass-hook-trust"),

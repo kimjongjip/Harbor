@@ -1,9 +1,14 @@
 import type { HostConfig, TerminalColors } from "../shared/types.js";
 import { remoteCodexCommand, shellQuote, shellDirectory } from "./ssh.js";
 import { permissionHookConfig } from "./permission-hook.js";
+import {
+  annotationHookConfig,
+  annotationHookTrustConfig,
+} from "./annotation-hook.js";
 import { claudeArguments, claudeHookSettings } from "./claude-hooks.js";
 
-export type TerminalProgram = "shell" | "codex" | "resume" | "claude" | "claude-resume";
+export type TerminalProgram =
+  "shell" | "codex" | "resume" | "claude" | "claude-resume";
 export interface TerminalOptions {
   program?: TerminalProgram;
   title?: string;
@@ -15,6 +20,21 @@ export interface ShellBridge {
   token: string;
   url: string;
   hook?: { token: string; url: string };
+}
+
+/** Keep Windows' process command line short even with several native hooks. */
+export function powershellStartup(script: string) {
+  const loader =
+    "$harborInit=$env:HARBOR_POWERSHELL_INIT;Remove-Item Env:HARBOR_POWERSHELL_INIT -ErrorAction SilentlyContinue;. ([ScriptBlock]::Create($harborInit));Remove-Variable harborInit -ErrorAction SilentlyContinue";
+  return {
+    args: [
+      "-NoLogo",
+      "-NoExit",
+      "-EncodedCommand",
+      Buffer.from(loader, "utf16le").toString("base64"),
+    ],
+    env: { HARBOR_POWERSHELL_INIT: script },
+  };
 }
 
 export function codexArguments(
@@ -54,7 +74,14 @@ export function remoteTerminalCommand(
 ) {
   const directory = cwd ? `cd ${shellDirectory(cwd)} && ` : "";
   if (program === "shell") return `${directory}exec "\${SHELL:-/bin/sh}" -l`;
-  if (program.startsWith("claude")) return `${directory}exec claude ${claudeArguments(undefined, resumeThreadId, program === "claude-resume").map(shellQuote).join(" ")}`;
+  if (program.startsWith("claude"))
+    return `${directory}exec claude ${claudeArguments(
+      undefined,
+      resumeThreadId,
+      program === "claude-resume",
+    )
+      .map(shellQuote)
+      .join(" ")}`;
   return remoteCodexCommand(
     host,
     codexArguments(program, undefined, resumeThreadId),
@@ -74,7 +101,20 @@ export function powershellInitialization(
   // Windows PowerShell's legacy native argument parser needs escaped inner quotes.
   const args = [
     ...codexArguments("codex", url),
-    ...(enablePermissionHook ? ["-c", permissionHookConfig("windows")] : []),
+    ...(enablePermissionHook
+      ? [
+          "-c",
+          "features.hooks=true",
+          "-c",
+          permissionHookConfig("windows"),
+          "-c",
+          annotationHookConfig("windows", "SessionStart"),
+          "-c",
+          annotationHookConfig("windows", "UserPromptSubmit"),
+          "-c",
+          annotationHookTrustConfig("windows"),
+        ]
+      : []),
   ]
     .map((value) => quote(value.replaceAll('"', '\\"')))
     .join(" ");
@@ -86,12 +126,21 @@ export function powershellInitialization(
   const normalize = `$harborConfig=@(); $harborArgs=@(); for($i=0;$i -lt $args.Count;$i++) { $value=[string]$args[$i]; if($value -eq '--') { $harborArgs += $args[$i..($args.Count-1)]; break }; if(($value -ceq '-c' -or $value -ceq '--config') -and ($i+1 -lt $args.Count)) { $i++; $harborConfig += '-c'; $harborConfig += ([string]$args[$i]).Replace('"','\\"') } elseif($value.StartsWith('--config=')) { $harborConfig += '-c'; $harborConfig += $value.Substring(9).Replace('"','\\"') } elseif($value.StartsWith('-c') -and $value.Length -gt 2) { $harborConfig += '-c'; $harborConfig += $value.Substring(2).Replace('"','\\"') } else { $harborArgs += $args[$i] } };`;
   const report = `function global:__HarborCwd { param([string]$Directory=(Get-Location).Path) if($Directory -notmatch '[\\x00-\\x1f]') { [Console]::Write(([char]27).ToString()+']1337;CurrentDir='+$Directory+[char]7) } }; $global:HarborOriginalPrompt=(Get-Item Function:prompt).ScriptBlock; function global:prompt { & $global:HarborOriginalPrompt; __HarborCwd };`;
   const reportCodex = `$harborDirectory=(Get-Location).Path; for($j=0;$j -lt $harborArgs.Count;$j++) { $v=[string]$harborArgs[$j]; if($v -eq '--') { break }; if(($v -ceq '-C' -or $v -ceq '--cd') -and $j+1 -lt $harborArgs.Count) { $j++; $harborDirectory=[string]$harborArgs[$j] } elseif($v.StartsWith('--cd=')) { $harborDirectory=$v.Substring(5) } elseif($v.StartsWith('-C') -and $v.Length -gt 2) { $harborDirectory=$v.Substring(2) } }; try { $harborDirectory=(Resolve-Path -LiteralPath $harborDirectory -ErrorAction Stop).ProviderPath; __HarborCwd $harborDirectory } catch {};`;
-  const claudeUrl = enablePermissionHook && url ? new URL("/bridge/claude", url).href : undefined;
+  const claudeUrl =
+    enablePermissionHook && url
+      ? new URL("/bridge/claude", url).href
+      : undefined;
   const claudeSettings = claudeUrl ? claudeHookSettings(claudeUrl) : undefined;
-  const claudeSetup = claudeSettings ? `$harborSettings=[IO.Path]::GetTempFileName(); [IO.File]::WriteAllText($harborSettings,${quote(claudeSettings)},[Text.UTF8Encoding]::new($false));` : "";
+  const claudeSetup = claudeSettings
+    ? `$harborSettings=[IO.Path]::GetTempFileName(); [IO.File]::WriteAllText($harborSettings,${quote(claudeSettings)},[Text.UTF8Encoding]::new($false));`
+    : "";
   const claudeArgs = claudeSettings ? "--settings $harborSettings" : "";
   const claudeWrapper = `function global:claude { __HarborCwd; $harborSettings=$null; $harborToken=$env:HARBOR_SESSION_TOKEN; try { Remove-Item Env:HARBOR_SESSION_TOKEN -ErrorAction SilentlyContinue; ${claudeSetup} $harborClaude=(Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborClaude ${claudeArgs} @args } finally { $harborExit=$LASTEXITCODE; $env:HARBOR_SESSION_TOKEN=$harborToken; if($harborSettings) { Remove-Item -LiteralPath $harborSettings -ErrorAction SilentlyContinue }; ${notify}; $global:LASTEXITCODE=$harborExit } };`;
-  const launch = program.startsWith("claude") ? `${resumeCwd ? `Set-Location -LiteralPath ${quote(resumeCwd)} -ErrorAction Stop; ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? quote(resumeThreadId) : ""}` : ""}` : program === "shell" ? "" : `codex${program === "resume" ? ` resume ${resumeThreadId ? quote(resumeThreadId) : "--all"}` : ""}`;
+  const launch = program.startsWith("claude")
+    ? `${resumeCwd ? `Set-Location -LiteralPath ${quote(resumeCwd)} -ErrorAction Stop; ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? quote(resumeThreadId) : ""}` : ""}`
+    : program === "shell"
+      ? ""
+      : `codex${program === "resume" ? ` resume ${resumeThreadId ? quote(resumeThreadId) : "--all"}` : ""}`;
   return `${report} function global:codex { try { ${normalize} ${reportCodex} $harborExecutable=(Get-Command ${quote(host.codexPath || "codex")} -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborExecutable ${args} @harborConfig @harborArgs } finally { $harborExit=$LASTEXITCODE; ${notify}; $global:LASTEXITCODE=$harborExit } }; ${claudeWrapper} ${launch}`;
 }
 
@@ -106,17 +155,33 @@ export function bashInitialization(
 ) {
   const args = [
     ...codexArguments("codex", bridge.url),
-    ...(bridge.hook ? ["-c", permissionHookConfig("posix")] : []),
+    ...(bridge.hook
+      ? [
+          "-c",
+          "features.hooks=true",
+          "-c",
+          permissionHookConfig("posix"),
+          "-c",
+          annotationHookConfig("posix", "SessionStart"),
+          "-c",
+          annotationHookConfig("posix", "UserPromptSubmit"),
+          "-c",
+          annotationHookTrustConfig("posix"),
+        ]
+      : []),
   ]
     .map(shellQuote)
     .join(" ");
   const rc = `[[ ! -f ~/.bashrc ]] || source ~/.bashrc; PROMPT_COMMAND+=(__harbor_cwd)`;
   const interactive = `exec bash --rcfile <(printf '%s\\n' ${shellQuote(rc)}) -i`;
-  const claudeUrl = bridge.hook ? new URL("/bridge/claude", bridge.hook.url).href : undefined;
+  const claudeUrl = bridge.hook
+    ? new URL("/bridge/claude", bridge.hook.url).href
+    : undefined;
   const claudeArgs = claudeArguments(claudeUrl).map(shellQuote).join(" ");
   const claudeLaunch = `${resumeCwd ? `cd ${shellDirectory(resumeCwd)} && ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? shellQuote(resumeThreadId) : ""}` : ""}`;
-  const launch = program.startsWith("claude") ? `${interactive} -c ${shellQuote(`${claudeLaunch}; ${interactive}`)}` :
-    program === "shell"
+  const launch = program.startsWith("claude")
+    ? `${interactive} -c ${shellQuote(`${claudeLaunch}; ${interactive}`)}`
+    : program === "shell"
       ? interactive
       : `${interactive} -c ${shellQuote(`codex${program === "resume" ? ` resume ${resumeThreadId ? shellQuote(resumeThreadId) : "--all"}` : ""}; ${interactive}`)}`;
   // curl reads its Authorization header from stdin, keeping the token out of ps output.

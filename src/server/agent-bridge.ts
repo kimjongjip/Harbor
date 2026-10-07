@@ -12,6 +12,7 @@ import type { HostConfig, TerminalInfo } from "../shared/types.js";
 import { MAILBOX_TEXT_LIMIT } from "../shared/mailbox.js";
 import { Mailbox } from "./mailbox.js";
 import { Requests, permissionEventSchema, questionSchema } from "./requests.js";
+import { TerminalAnnotations } from "./terminal-annotations.js";
 import {
   REQUEST_QUESTION_LIMIT,
   type TerminalConnection,
@@ -181,6 +182,8 @@ export class AgentBridge {
   readonly handle: Router;
   readonly permissionHandle: Router;
   readonly claudeHandle: Router;
+  readonly annotationHandle: Router;
+  readonly annotations = new TerminalAnnotations();
   private readonly credentials = new Map<string, Credential>();
   private readonly pendingCalls = new Map<
     string,
@@ -194,6 +197,7 @@ export class AgentBridge {
     this.handle = express.Router();
     this.permissionHandle = express.Router();
     this.claudeHandle = express.Router();
+    this.annotationHandle = express.Router();
     const authenticate =
       (hook: boolean): RequestHandler =>
       (req, res, next) => {
@@ -269,14 +273,69 @@ export class AgentBridge {
     this.claudeHandle.use(express.json({ limit: "128kb" }));
     this.claudeHandle.use((req, res) => {
       const event = claudeHookSchema.safeParse(req.body);
-      if (!event.success) { res.status(400).json({}); return; }
+      if (!event.success) {
+        res.status(400).json({});
+        return;
+      }
       const credential = res.locals.harborCredential as Credential;
       this.options.onClaudeEvent?.(credential.terminalId, event.data);
-      if (event.data.hook_event_name === "PermissionRequest" && !["AskUserQuestion", "ExitPlanMode"].includes(event.data.tool_name || "")) {
+      if (event.data.hook_event_name === "SessionStart")
+        this.annotations.markReady(
+          credential.terminalId,
+          event.data.session_id,
+        );
+      if (event.data.hook_event_name === "UserPromptSubmit") {
+        this.annotationContext(
+          res,
+          credential.terminalId,
+          event.data.prompt || "",
+          event.data.session_id,
+        );
+        return;
+      }
+      if (
+        event.data.hook_event_name === "PermissionRequest" &&
+        !["AskUserQuestion", "ExitPlanMode"].includes(
+          event.data.tool_name || "",
+        )
+      ) {
         void this.permission(req, res, credential);
       } else res.json({});
     });
     this.claudeHandle.use(errors);
+    this.annotationHandle.use(authenticate(true));
+    this.annotationHandle.use(express.json({ limit: "1mb" }));
+    this.annotationHandle.use((req, res) => {
+      const event = z
+        .object({
+          hook_event_name: z.enum(["SessionStart", "UserPromptSubmit"]),
+          session_id: z.string().min(1).max(256),
+          prompt: z.string().max(128_000).optional(),
+        })
+        .safeParse(req.body);
+      if (!event.success) {
+        res.status(400).json({});
+        return;
+      }
+      const credential = res.locals.harborCredential as Credential;
+      if (event.data.hook_event_name === "SessionStart") {
+        this.annotations.markReady(
+          credential.terminalId,
+          event.data.session_id,
+        );
+        this.options.onConnected?.(credential.terminalId);
+        this.options.onState?.(credential.terminalId, "codex");
+        res.json({});
+        return;
+      }
+      this.annotationContext(
+        res,
+        credential.terminalId,
+        event.data.prompt || "",
+        event.data.session_id,
+      );
+    });
+    this.annotationHandle.use(errors);
   }
 
   /** Raw tokens are returned once and never persisted or included in UI state. */
@@ -288,6 +347,7 @@ export class AgentBridge {
   } {
     if (this.credentials.has(terminalId))
       this.options.requests?.cancelTerminal(terminalId);
+    this.annotations.revoke(terminalId);
     const token = randomBytes(32).toString("hex");
     const hookToken = randomBytes(32).toString("hex");
     this.credentials.set(terminalId, {
@@ -308,12 +368,37 @@ export class AgentBridge {
 
   revoke(terminalId: string): void {
     this.credentials.delete(terminalId);
+    this.annotations.revoke(terminalId);
     try {
       this.options.requests?.cancelTerminal(terminalId);
     } catch {
       /* Revocation must still succeed if the history disk is unavailable. */
     }
     this.options.onChange?.();
+  }
+
+  private annotationContext(
+    res: Response,
+    terminalId: string,
+    prompt: string,
+    sessionId: string,
+  ): void {
+    try {
+      const context = this.annotations.resolve(terminalId, prompt, sessionId);
+      res.json(
+        context
+          ? {
+              hookSpecificOutput: {
+                hookEventName: "UserPromptSubmit",
+                additionalContext: JSON.stringify(context),
+              },
+            }
+          : {},
+      );
+    } catch (error) {
+      // A missing reference must not silently submit a question without its text.
+      res.json({ decision: "block", reason: (error as Error).message });
+    }
   }
 
   connections(): TerminalConnection[] {
@@ -552,6 +637,18 @@ export class AgentBridge {
           ? params.protocolVersion
           : "";
       credential.connectedAt = Date.now();
+      // SessionStart is deferred until the first prompt in native Codex. Allow
+      // a resumed answer to be referenced before then; the hook binds its real
+      // session id on submission. Older clients must not get unresolved markers.
+      const clientVersion = (
+        params.clientInfo as { version?: unknown } | undefined
+      )?.version;
+      const version =
+        typeof clientVersion === "string"
+          ? /(\d+)\.(\d+)\.(\d+)/.exec(clientVersion)
+          : null;
+      if (version && (Number(version[1]) >= 1 || Number(version[2]) >= 160))
+        this.annotations.prepare(credential.terminalId);
       this.options.onConnected?.(credential.terminalId);
       this.options.onState?.(credential.terminalId, "codex");
       success({
@@ -655,7 +752,13 @@ export class AgentBridge {
             self: credential.terminalId,
             sessions: this.options
               .terminals()
-              .filter((terminal) => !terminal.exited && terminal.agentKind !== "claude" && (terminal.agentKind === "codex" || !terminal.program?.startsWith("claude")))
+              .filter(
+                (terminal) =>
+                  !terminal.exited &&
+                  terminal.agentKind !== "claude" &&
+                  (terminal.agentKind === "codex" ||
+                    !terminal.program?.startsWith("claude")),
+              )
               .map((terminal) => ({
                 id: terminal.id,
                 name: terminal.title,
@@ -748,7 +851,13 @@ export class AgentBridge {
   private recipient(reference: string): TerminalInfo {
     const available = this.options
       .terminals()
-      .filter((terminal) => !terminal.exited && terminal.agentKind !== "claude" && (terminal.agentKind === "codex" || !terminal.program?.startsWith("claude")));
+      .filter(
+        (terminal) =>
+          !terminal.exited &&
+          terminal.agentKind !== "claude" &&
+          (terminal.agentKind === "codex" ||
+            !terminal.program?.startsWith("claude")),
+      );
     const byId = available.find((terminal) => terminal.id === reference);
     if (byId) return byId;
     const matches = available.filter(

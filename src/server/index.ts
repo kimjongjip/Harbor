@@ -13,6 +13,10 @@ import { History } from "./history.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
+import {
+  annotationCaptureSchema,
+  annotationNumbersSchema,
+} from "./terminal-annotations.js";
 import { Requests, answerSchema } from "./requests.js";
 import { TerminalNotices } from "./terminal-notices.js";
 import { passwordConnection } from "./ssh-connect.js";
@@ -33,7 +37,8 @@ const credentials = new Credentials(store.directory);
 const history = new History();
 const claudeHistory = new ClaudeHistory();
 const historyProvider = z.enum(["codex", "claude"]).default("codex");
-const historyReader = (provider: "codex" | "claude") => provider === "claude" ? claudeHistory : history;
+const historyReader = (provider: "codex" | "claude") =>
+  provider === "claude" ? claudeHistory : history;
 const notices = new TerminalNotices();
 const requests = new Requests(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
@@ -53,8 +58,13 @@ const bridge = new AgentBridge(mailbox, {
   onClaudeEvent: (id, event) => {
     terminals.markClaudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
-      const title = terminals.list().find(t => t.id === id)?.title || "Claude";
-      notices.append(id, title, `\x1b]9;${String(event.message || "Claude 입력을 확인하세요.").replace(/[\x00-\x1f\x7f]/g, " ")}\x07`);
+      const title =
+        terminals.list().find((t) => t.id === id)?.title || "Claude";
+      notices.append(
+        id,
+        title,
+        `\x1b]9;${String(event.message || "Claude 입력을 확인하세요.").replace(/[\x00-\x1f\x7f]/g, " ")}\x07`,
+      );
     }
   },
 });
@@ -64,6 +74,7 @@ bridgeApp.disable("x-powered-by");
 bridgeApp.all("/bridge/mcp", bridge.handle);
 bridgeApp.all("/bridge/permission", bridge.permissionHandle);
 bridgeApp.all("/bridge/claude", bridge.claudeHandle);
+bridgeApp.all("/bridge/annotation", bridge.annotationHandle);
 bridgeApp.use((_req, res) => res.sendStatus(404));
 const bridgeServer = createServer(bridgeApp);
 await new Promise<void>((resolve, reject) => {
@@ -321,7 +332,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.0.4" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.0.5" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -556,7 +567,9 @@ app.post("/api/terminals", async (req, res) => {
     .object({
       hostId: z.string(),
       cwd: cleanPath.default(""),
-      program: z.enum(["shell", "codex", "resume", "claude", "claude-resume"]).default("shell"),
+      program: z
+        .enum(["shell", "codex", "resume", "claude", "claude-resume"])
+        .default("shell"),
       title: name.optional(),
       password: z.string().max(2000).optional(),
       savePassword: z.boolean().optional(),
@@ -637,7 +650,10 @@ const resumingThreads = new Map<
 >();
 app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
   const body = z
-    .object({ colors: terminalColorsInput.optional(), provider: historyProvider })
+    .object({
+      colors: terminalColorsInput.optional(),
+      provider: historyProvider,
+    })
     .parse(req.body || {});
   const host = hub.host(String(req.params.id));
   const threadId = historyThreadId.parse(req.params.threadId);
@@ -645,8 +661,13 @@ app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
   const existing = terminals
     .list()
     .find(
-      (t) => t.hostId === host.id && (t.agentKind || (t.program?.startsWith("claude") ? "claude" : "codex")) === body.provider &&
-        (t.resumeThreadId === threadId || t.agentSessionId === threadId) && !t.exited,
+      (t) =>
+        t.hostId === host.id &&
+        (t.agentKind ||
+          (t.program?.startsWith("claude") ? "claude" : "codex")) ===
+          body.provider &&
+        (t.resumeThreadId === threadId || t.agentSessionId === threadId) &&
+        !t.exited,
     );
   if (existing) {
     if (body.colors) terminals.setColors(existing.id, body.colors);
@@ -657,7 +678,11 @@ app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
   if (!opening) {
     opening = (async () => {
       const password = await passwordFor(host.id);
-      const thread = await historyReader(body.provider).summary(host, password, threadId);
+      const thread = await historyReader(body.provider).summary(
+        host,
+        password,
+        threadId,
+      );
       if (thread.active)
         throw new Error("이 대화는 실행 중입니다. 기존 터미널에서 이어가세요.");
       const cwd = cleanPath.min(1).parse(thread.cwd);
@@ -676,6 +701,68 @@ app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
 });
 app.post("/api/terminals/:id/close", (req, res) => {
   terminals.close(String(req.params.id));
+  res.json({ ok: true });
+});
+function annotationTerminal(id: string) {
+  const terminal = terminals
+    .list()
+    .find((item) => item.id === id && !item.exited);
+  if (!terminal || !terminal.agentConnected)
+    throw new Error("인용을 추가할 실행 중인 AI 터미널을 찾을 수 없습니다.");
+  if (!bridge.annotations.isReady(id))
+    throw new Error(
+      "번호 인용 연결이 준비되지 않았습니다. Harbor 업데이트 후 Codex를 다시 실행하고 인용 훅을 검토해주세요.",
+    );
+  return terminal;
+}
+app.post("/api/terminals/:id/annotations", (req, res) => {
+  const terminal = annotationTerminal(String(req.params.id));
+  const { snapshot } = z
+    .object({
+      snapshot: z.object({
+        text: annotationCaptureSchema.shape.text,
+        source: z.object({
+          terminalId: z.string().min(1).max(256),
+          threadId: z.string().max(256).optional(),
+        }),
+      }),
+    })
+    .parse(req.body);
+  if (snapshot.source.terminalId !== terminal.id)
+    throw new Error("인용한 터미널과 입력 대상이 다릅니다.");
+  const threadId = terminal.agentSessionId || terminal.resumeThreadId;
+  if (
+    threadId &&
+    snapshot.source.threadId &&
+    threadId !== snapshot.source.threadId
+  )
+    throw new Error(
+      "참조를 추가한 뒤 대화가 변경되었습니다. 현재 대화에서 다시 선택해주세요.",
+    );
+  res.json(
+    bridge.annotations.capture(terminal.id, {
+      text: snapshot.text,
+      source: {
+        hostName: hub.host(terminal.hostId).name,
+        title: terminal.title,
+        ...(terminal.cwd ? { cwd: terminal.cwd } : {}),
+      },
+    }),
+  );
+});
+app.post("/api/terminals/:id/annotations/validate", (req, res) => {
+  const terminal = annotationTerminal(String(req.params.id));
+  const { numbers } = z
+    .object({ numbers: annotationNumbersSchema })
+    .parse(req.body);
+  bridge.annotations.validate(terminal.id, numbers);
+  res.json({ ready: true });
+});
+app.post("/api/terminals/:id/annotations/remove", (req, res) => {
+  const { numbers } = z
+    .object({ numbers: annotationNumbersSchema })
+    .parse(req.body);
+  bridge.annotations.remove(String(req.params.id), numbers);
   res.json({ ok: true });
 });
 async function attachmentTarget(id: string) {

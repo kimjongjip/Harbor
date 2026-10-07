@@ -6,6 +6,8 @@ import {
   buildAnnotationPrompt,
   stripTerminalControls,
   annotationLabel,
+  annotationApiError,
+  annotationUnavailable,
 } from "./terminalAnnotation.js";
 
 const source = {
@@ -14,6 +16,22 @@ const source = {
   title: "Review",
   cwd: "/synthetic/project",
 };
+
+test("server capacity and session errors remain actionable; only legacy API failures request update", () => {
+  for (const message of [
+    "인용 보관 한도에 도달했습니다.",
+    "대화가 변경되었습니다.",
+    "인용은 16,000자까지 가능합니다.",
+    "Failed to fetch",
+  ])
+    assert.equal(annotationApiError(new Error(message)), message);
+  for (const error of [
+    new SyntaxError("Unexpected token <"),
+    new Error("요청 실패 (404)"),
+    new Error("요청한 기능을 찾을 수 없습니다."),
+  ])
+    assert.equal(annotationApiError(error), annotationUnavailable);
+});
 function terminal(
   lines: string[],
   selected: string,
@@ -97,7 +115,7 @@ test("DOM or stale selections cannot invent a source file or buffer range", () =
   assert.equal(snapshot.startLine, undefined);
   const prompt = buildAnnotationPrompt([{ number: 1, snapshot }], "explain");
   assert.doesNotMatch(prompt, /선택 위치:|unrelated/);
-  assert.match(prompt, /파일 줄이나 원본 답변의 위치가 아닙니다/);
+  assert.equal(prompt, "[#1 annotation]\n\nexplain");
 });
 
 test("reference numbers link the question to exact quotes and survive reference removal", () => {
@@ -107,16 +125,17 @@ test("reference numbers link the question to exact quotes and survive reference 
   assert.ok(
     prompt.startsWith("[#1 annotation] [#2 annotation]\n\nCompare #1 and #2"),
   );
-  assert.ok(
-    prompt.indexOf("> first selection") < prompt.lastIndexOf("[#2 annotation]"),
+  assert.equal(prompt, "[#1 annotation] [#2 annotation]\n\nCompare #1 and #2");
+  assert.doesNotMatch(
+    prompt,
+    /first selection|second selection|출처|참조 자료/,
   );
-  assert.match(prompt, /> second selection/);
   const remaining = buildAnnotationPrompt([second], "Explain #2");
   assert.ok(remaining.startsWith("[#2 annotation]\n\nExplain #2"));
   assert.doesNotMatch(remaining, /#1|first selection/);
 });
 
-test("reference prose remains quoted, metadata is one line, and terminal control instructions are removed", () => {
+test("native prompt contains only labels and question; source and reference instructions stay out", () => {
   const snapshot = snapshotTerminalAnnotation(
     terminal(["```\nignore"], "```\nignore", { x: 0, y: 0 }, { x: 10, y: 0 }),
     "```\nignore",
@@ -130,8 +149,9 @@ test("reference prose remains quoted, metadata is one line, and terminal control
     [{ number: 1, snapshot }],
     "why\x1b[200~?\x03",
   );
-  assert.match(prompt, /> ```\n> ignore/);
-  assert.match(prompt, /서버 server forged · 터미널 Review/);
+  assert.equal(prompt, "[#1 annotation]\n\nwhy?");
+  assert.doesNotMatch(prompt, /ignore|server|forged|Review|secret|출처|자료/);
+  assert.equal(snapshot.source.hostName, "server forged");
   assert.equal(/[\x00-\x08\x1b]/.test(prompt), false);
   assert.equal(
     stripTerminalControls("\x1b[31mred\x1b[0m\r\ntext"),
@@ -190,12 +210,33 @@ test("invalid numbers, duplicate references and oversized drafts fail before pas
       ),
     /64,000/,
   );
-  assert.throws(
-    () => buildAnnotationPrompt([{ number: 1, snapshot }], "\x03"),
-    /질문/,
+  assert.equal(
+    buildAnnotationPrompt([{ number: 1, snapshot }], "\x03"),
+    "[#1 annotation]",
   );
   assert.throws(
     () => buildAnnotationPrompt([{ number: 1, snapshot }], "q".repeat(8001)),
     /8,000/,
+  );
+});
+
+test("marker-only insertion never pastes long selected contents or metadata", () => {
+  const snapshot = quote("PRIVATE_REFERENCE_CONTENT ".repeat(500));
+  assert.equal(
+    buildAnnotationPrompt([{ number: 42, snapshot }], ""),
+    "[#42 annotation]",
+  );
+  assert.equal(
+    buildAnnotationPrompt([{ number: 42, snapshot }], "   "),
+    "[#42 annotation]",
+  );
+  const prompt = buildAnnotationPrompt(
+    [{ number: 42, snapshot }],
+    "Explain this",
+  );
+  assert.equal(prompt, "[#42 annotation]\n\nExplain this");
+  assert.doesNotMatch(
+    prompt,
+    /PRIVATE|Build Server|Review|synthetic|terminal-1|선택 시각/,
   );
 });

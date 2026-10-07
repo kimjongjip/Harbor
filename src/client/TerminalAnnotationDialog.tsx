@@ -13,32 +13,46 @@ export function TerminalAnnotationDialog({
   annotations: readonly TerminalAnnotationReference[];
   onRemove: (number: number) => void;
   onClose: () => void;
-  onInsert: (question: string) => string | null;
+  onInsert: (question: string) => Promise<string | null>;
   disabled: boolean;
 }) {
   const [question, setQuestion] = useState("");
   const [expandedNumber, setExpandedNumber] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  const mounted = useRef(true);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const id = useId();
   const expanded = annotations.find((item) => item.number === expandedNumber);
-  const canInsert = !disabled && annotations.length > 0 && Boolean(question.trim());
+  const canInsert = !disabled && !busy && annotations.length > 0;
 
   useEffect(() => {
+    mounted.current = true;
     const frame = requestAnimationFrame(() => questionRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      mounted.current = false;
+      cancelAnimationFrame(frame);
+    };
   }, []);
 
-  const insert = () => {
-    if (!canInsert) return;
+  const insert = async () => {
+    if (!canInsert || pending.current) return;
+    pending.current = true;
+    setBusy(true);
     try {
-      setError(onInsert(question.trim()));
+      const result = await onInsert(question.trim());
+      if (mounted.current) setError(result);
     } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "입력하지 못했습니다. 연결 상태를 확인해 주세요.",
-      );
+      if (mounted.current)
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "입력하지 못했습니다. 연결 상태를 확인해 주세요.",
+        );
+    } finally {
+      pending.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -102,6 +116,7 @@ export function TerminalAnnotationDialog({
                   className="terminal-annotation-chip-remove"
                   aria-label={`${label} 제거`}
                   title="인용 제거"
+                  disabled={busy}
                   onClick={() => {
                     if (isExpanded) setExpandedNumber(null);
                     onRemove(annotation.number);
@@ -122,7 +137,8 @@ export function TerminalAnnotationDialog({
           <section className="terminal-annotation-preview" id={`${id}-preview`}>
             <div className="terminal-annotation-source">
               <span>
-                {expanded.snapshot.source.hostName} · {expanded.snapshot.source.title}
+                {expanded.snapshot.source.hostName} ·{" "}
+                {expanded.snapshot.source.title}
               </span>
               {expanded.snapshot.startLine != null && (
                 <span>
@@ -135,10 +151,15 @@ export function TerminalAnnotationDialog({
                 </span>
               )}
             </div>
-            <pre className="terminal-annotation-quote">{expanded.snapshot.text}</pre>
+            <pre className="terminal-annotation-quote">
+              {expanded.snapshot.text}
+            </pre>
           </section>
         )}
-        <label className="terminal-annotation-question" htmlFor={`${id}-question`}>
+        <label
+          className="terminal-annotation-question"
+          htmlFor={`${id}-question`}
+        >
           <span className="terminal-annotation-label">질문</span>
           <textarea
             aria-label="인용에 대한 질문"
@@ -147,7 +168,8 @@ export function TerminalAnnotationDialog({
             value={question}
             maxLength={8000}
             rows={2}
-            placeholder="인용한 부분에 대해 질문하세요."
+            disabled={busy}
+            placeholder="질문은 여기 또는 CLI 입력칸에서 작성하세요. (선택 사항)"
             onChange={(event) => {
               setQuestion(event.target.value);
               setError(null);
@@ -166,7 +188,8 @@ export function TerminalAnnotationDialog({
           />
         </label>
         <p className="terminal-annotation-hint">
-          인용과 질문을 이 터미널 입력에 추가합니다. 터미널에서 Enter를 눌러 보내세요.
+          입력칸에는 인용 번호만 표시됩니다. 선택한 내용은 전송할 때 별도로
+          연결됩니다. 터미널에서 Enter를 눌러 보내세요.
         </p>
         {disabled && (
           <p className="terminal-annotation-error" role="status">
@@ -180,11 +203,19 @@ export function TerminalAnnotationDialog({
         )}
         <footer className="terminal-annotation-footer">
           <span className="terminal-annotation-hint">Ctrl+Enter</span>
-          <button type="button" className="button secondary small" onClick={onClose}>
+          <button
+            type="button"
+            className="button secondary small"
+            onClick={onClose}
+          >
             취소
           </button>
-          <button type="submit" className="button primary small" disabled={!canInsert}>
-            입력에 추가
+          <button
+            type="submit"
+            className="button primary small"
+            disabled={!canInsert}
+          >
+            {busy ? "연결 확인 중…" : "입력에 추가"}
           </button>
         </footer>
       </form>

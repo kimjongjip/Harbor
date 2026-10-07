@@ -21,6 +21,7 @@ import {
   bashInitialization,
   codexArguments,
   powershellInitialization,
+  powershellStartup,
   remoteTerminalCommand,
   type TerminalOptions,
 } from "./terminal-shell.js";
@@ -196,12 +197,9 @@ export class Terminals extends EventEmitter {
             !!issued?.hookToken,
             options.resumeCwd,
           );
-          args = [
-            "-NoLogo",
-            "-NoExit",
-            "-EncodedCommand",
-            Buffer.from(script, "utf16le").toString("base64"),
-          ];
+          const startup = powershellStartup(script);
+          args = startup.args;
+          Object.assign(env, startup.env);
         } else if (program !== "shell") {
           command = program.startsWith("claude") ? "claude" : host.codexPath || "codex";
           args = program.startsWith("claude") ? claudeArguments(undefined, options.resumeThreadId, program === "claude-resume") : codexArguments(program, undefined, options.resumeThreadId);
