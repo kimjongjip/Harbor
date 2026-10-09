@@ -1,4 +1,4 @@
-param([switch]$NoLaunch)
+param([switch]$NoLaunch, [string]$DesktopDirectory)
 $ErrorActionPreference = 'Stop'
 $harborRoot = $PSScriptRoot
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Install Git for Windows before updating.' }
@@ -18,4 +18,4 @@ try {
   & git pull --ff-only
   if ($LASTEXITCODE -ne 0) { throw 'Git update failed. Check network access and the Git message above. Local data was not removed.' }
 } finally { Pop-Location }
-& (Join-Path $harborRoot 'Setup-Harbor.ps1') -NoLaunch:$NoLaunch
+& (Join-Path $harborRoot 'Setup-Harbor.ps1') -NoLaunch:$NoLaunch -DesktopDirectory $DesktopDirectory

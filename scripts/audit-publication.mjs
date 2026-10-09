@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
 if (!files.length) throw new Error('Stage the intended files before running the publication audit.');
 const roots = new Set(['.gitignore', '.gitattributes', 'README.md', 'AGENTS.md', 'CHANGELOG.md', 'docs/user-guide.md', 'docs/maintainer-guide.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'Setup-Harbor.cmd', 'Setup-Harbor.ps1', 'Update-Harbor.cmd', 'Update-Harbor.ps1', 'Start-Harbor.cmd', 'Start-Harbor-Desktop.ps1']);
-const scripts = new Set(['package-desktop.mjs', 'desktop-release.mjs', 'make-desktop-icons.mjs', 'harbor-image.py', 'audit-publication.mjs', 'set-version.mjs', 'verify-claude-api.mjs', 'verify-inline-images.mjs', 'verify-installed-replay.mjs']);
+const scripts = new Set(['package-desktop.mjs', 'desktop-release.mjs', 'make-desktop-icons.mjs', 'harbor-image.py', 'audit-publication.mjs', 'set-version.mjs', 'create-desktop-shortcut.ps1', 'verify-claude-api.mjs', 'verify-inline-images.mjs', 'verify-installed-replay.mjs']);
 const findings = [];
 for (const file of files) {
   const allowed = roots.has(file) || /^(src|desktop|public)\//.test(file) || (file.startsWith('scripts/') && scripts.has(file.slice(8)));

@@ -53,18 +53,32 @@ function messageText(row: any): string {
   const content = row.message?.content;
   return typeof content === 'string' ? content : Array.isArray(content) ? content.filter(p => p?.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n') : '';
 }
+function titlePrompt(row: any): { text: string; command: boolean } {
+  const text = messageText(row).trim();
+  if (row.isCompactSummary || /^<local-command-(?:caveat|stdout|stderr)>/.test(text)) return { text: '', command: false };
+  const command = text.match(/<command-name>([\s\S]*?)<\/command-name>/)?.[1]?.trim();
+  if (command) {
+    const args = text.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1]?.trim();
+    return { text: [command, args].filter(Boolean).join(' '), command: true };
+  }
+  return { text, command: false };
+}
 export function parseClaudeHistory(hostId: string, id: string, text: string, modified: number): HistoryDetail {
   const rows = records(text).filter(r => !r.sessionId || r.sessionId === id);
   const deduplicated = new Map<string, any>();
   let anonymous = 0;
   for (const row of rows) deduplicated.set(typeof row.uuid === 'string' ? row.uuid : `anonymous-${anonymous++}`, row);
   const visible = [...deduplicated.values()].filter(r => !r.isSidechain && !r.isMeta && ['user', 'assistant'].includes(r.type) && messageText(r));
-  const first = visible.find(r => r.type === 'user');
-  const custom = rows.filter(r => r.type === 'custom-title' && typeof r.customTitle === 'string').at(-1)?.customTitle;
-  const summary = rows.filter(r => r.type === 'summary' && typeof r.summary === 'string').at(-1)?.summary;
-  const preview = messageText(first || {}).slice(0, 300);
+  const metadata = (type: string, field: string) => {
+    const value = rows.filter(r => !r.isSidechain && r.type === type && typeof r[field] === 'string').at(-1)?.[field];
+    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  };
+  const prompts = visible.filter(r => r.type === 'user').map(titlePrompt);
+  const preview = (prompts.find(p => p.text && !p.command)?.text || prompts.find(p => p.text)?.text || '').slice(0, 300);
+  // Claude 2.1.258's resume picker prefers agent name, custom name, AI title, summary, then a prompt.
+  const title = metadata('agent-name', 'agentName') || metadata('custom-title', 'customTitle') || metadata('ai-title', 'aiTitle') || metadata('summary', 'summary') || preview || 'Claude 대화';
   return {
-    thread: { id, hostId, provider: 'claude', title: (custom || summary || preview || 'Claude 대화').slice(0, 180), cwd: rows.find(r => typeof r.cwd === 'string')?.cwd || '', preview, updatedAt: modified, source: 'claude', active: false },
+    thread: { id, hostId, provider: 'claude', title: title.slice(0, 180), cwd: rows.find(r => typeof r.cwd === 'string')?.cwd || '', preview, updatedAt: modified, source: 'claude', active: false },
     items: visible.map((r, i) => ({ id: String(r.uuid || `${id}-${i}`), kind: r.type, text: messageText(r), imageCount: Array.isArray(r.message?.content) ? r.message.content.filter((p: any) => p?.type === 'image').length : 0 } as MessageItem)), nextCursor: null,
   };
 }

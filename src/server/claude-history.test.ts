@@ -69,3 +69,60 @@ test('malformed primitive records and other session records are skipped; repeate
   const detail = parseClaudeHistory('h', 'id', jsonl([null, 3, 'text', [], { type: 'user', sessionId: 'other', message: { content: 'wrong session' } }, { type: 'assistant', uuid: 'a', sessionId: 'id', message: { content: 'partial' } }, { type: 'assistant', uuid: 'a', sessionId: 'id', message: { content: 'complete' } }]), 1);
   assert.deepEqual(detail.items.map(i => i.text), ['complete']);
 });
+
+test('Claude resume titles prefer named sessions and AI titles before summaries and command wrappers', () => {
+  const rows = [
+    { type: 'user', sessionId: 'id', message: { content: '<command-name>/help</command-name><command-message>help</command-message><command-args></command-args>' } },
+    { type: 'summary', sessionId: 'id', summary: 'Previous summary' },
+    { type: 'ai-title', sessionId: 'id', aiTitle: '이전 자동 제목' },
+    { type: 'ai-title', sessionId: 'id', aiTitle: '  서버 대화\n기록 수정  ' },
+    { type: 'ai-title', sessionId: 'other', aiTitle: 'Wrong session title' },
+    { type: 'custom-title', sessionId: 'id', isSidechain: true, customTitle: 'Wrong subagent title' },
+  ];
+  const parse = () => parseClaudeHistory('h', 'id', jsonl(rows), 1).thread;
+  assert.equal(parse().title, '서버 대화 기록 수정');
+  rows.push({ type: 'custom-title', sessionId: 'id', customTitle: '내가 정한 이름' } as any);
+  assert.equal(parse().title, '내가 정한 이름');
+  rows.push({ type: 'agent-name', sessionId: 'id', agentName: '리뷰 세션' } as any);
+  assert.equal(parse().title, '리뷰 세션');
+});
+
+test('Claude fallback titles and previews skip local commands and preserve the original transcript', () => {
+  const command = '<command-name>/resume</command-name><command-message>resume</command-message><command-args></command-args>';
+  const rows = [
+    { type: 'user', message: { content: '<local-command-caveat>Internal command note</local-command-caveat>' } },
+    { type: 'user', message: { content: command } },
+    { type: 'user', message: { content: '<local-command-stdout>Command output</local-command-stdout>' } },
+    { type: 'user', isCompactSummary: true, message: { content: 'Compacted context' } },
+    { type: 'user', message: { content: '컴파일 오류를 수정해줘' } },
+  ];
+  const detail = parseClaudeHistory('h', 'id', jsonl(rows), 1);
+  assert.equal(detail.thread.title, '컴파일 오류를 수정해줘');
+  assert.equal(detail.thread.preview, '컴파일 오류를 수정해줘');
+  assert.equal(detail.items[1].text, command);
+  assert.equal(parseClaudeHistory('h', 'id', jsonl([{ type: 'user', message: { content: '<command-name>/review</command-name><command-args>src/main.ts</command-args>' } }]), 1).thread.title, '/review src/main.ts');
+});
+
+test('catalog and detail retain the same AI-generated title from a long transcript tail', async () => {
+  const rows = [
+    { type: 'user', sessionId: 'id', cwd: '/project', message: { content: '<command-name>/help</command-name>' } },
+    { type: 'assistant', sessionId: 'id', message: { content: 'filler'.repeat(24000) } },
+    { type: 'user', sessionId: 'id', message: { content: '실제 작업 질문' } },
+    { type: 'ai-title', sessionId: 'id', aiTitle: '긴 기록의 자동 제목' },
+  ];
+  const contents = Buffer.from(jsonl(rows));
+  const reader: ClaudeHistoryReader = {
+    root: '/claude/projects', join: (...parts) => parts.join('/'),
+    async entries(dir) { return dir === this.root ? [{ name: 'project', directory: true, size: 0, modified: 1 }] : [{ name: 'id.jsonl', directory: false, size: contents.length, modified: 1 }]; },
+    async read(_file, start, length) { return contents.subarray(start, start + length).toString(); },
+    close() {},
+  };
+  const history = new ClaudeHistory(async () => reader);
+  try {
+    const listed = (await history.list(host)).data[0];
+    assert.equal(listed.title, '긴 기록의 자동 제목');
+    assert.equal(listed.preview, '실제 작업 질문');
+    assert.equal((await history.read(host, undefined, 'id')).thread.title, listed.title);
+    assert.equal((await history.list(host, undefined, { search: '자동 제목' })).data.length, 1);
+  } finally { history.shutdown(); }
+});

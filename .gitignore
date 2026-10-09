@@ -31,6 +31,7 @@
 !/scripts/harbor-image.py
 !/scripts/audit-publication.mjs
 !/scripts/set-version.mjs
+!/scripts/create-desktop-shortcut.ps1
 !/scripts/verify-claude-api.mjs
 !/scripts/verify-inline-images.mjs
 !/scripts/verify-installed-replay.mjs

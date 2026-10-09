@@ -76,6 +76,10 @@ PDF는 `Files.preview`에서 텍스트로 읽지 않고 종류·절대경로를 
 
 ## 검증과 민감정보 점검
 
+Setup은 빌드 성공 후 `scripts/create-desktop-shortcut.ps1`로 Windows Desktop known folder에 Harbor.lnk를 저장한다. 바로가기는 숨긴 PowerShell에서 저장소의 `Start-Harbor-Desktop.ps1`을 실행하므로 업데이트 후 같은 경로를 사용한다. `-NoLaunch`에서도 바로가기는 만들며, 생성 실패는 경고로 처리한다. 검증 시 Setup/Update 또는 helper의 `-DesktopDirectory`를 격리된 폴더로 지정하고 실제 사용자 바로가기를 테스트용으로 교체하지 않는다. 공백·한글 설치 경로, 반복 생성, 실제 launcher 실행을 확인한다.
+
+Claude 제목 우선순위는 공식 Claude 2.1.258 배포 파일의 resume picker에서 확인한 agentName → customTitle → aiTitle → summary → first prompt를 따른다. `ai-title` 레코드를 빠뜨리면 `<command-name>` 같은 초기 명령이 제목으로 노출된다. 제목과 목록의 짧은 미리보기만 정리하고 저장된 대화 원문은 수정하지 않는다. [공식 세션 문서](https://code.claude.com/docs/en/sessions)의 이름·생성 제목 설명도 참고한다.
+
 ```powershell
 npm.cmd run build
 node --import tsx --test --test-timeout=90000 --test-concurrency=1 src/server/*.test.ts src/client/*.test.ts

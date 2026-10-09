@@ -14,6 +14,7 @@ await mkdir(path.join(fixture, 'claude/projects/project'), { recursive: true });
 await writeFile(path.join(fixture, `claude/projects/project/${id}.jsonl`), [
   { type: 'user', uuid: 'one', sessionId: id, cwd: fixture, message: { content: 'Synthetic Claude question' } },
   { type: 'assistant', uuid: 'two', sessionId: id, cwd: fixture, message: { content: [{ type: 'text', text: 'Synthetic Claude answer' }] } },
+  { type: 'ai-title', sessionId: id, aiTitle: 'Synthetic generated session title' },
 ].map(r => JSON.stringify(r)).join('\n'));
 const socket = createServer();
 await new Promise(r => socket.listen(0, '127.0.0.1', r));
@@ -44,13 +45,16 @@ try {
   assert.equal(list.data.length, 1);
   assert.equal(list.data[0].provider, 'claude');
   assert.equal(list.data[0].id, id);
+  assert.equal(list.data[0].title, 'Synthetic generated session title');
   const detail = await get(`/api/hosts/local/history/${id}?provider=claude`);
   assert.equal(detail.items.length, 2);
   assert.equal(detail.items[1].text, 'Synthetic Claude answer');
+  assert.equal(detail.thread.title, list.data[0].title);
+  assert.equal((await get('/api/hosts/local/history?provider=claude&search=generated%20session')).data.length, 1);
   const missing = await get('/api/hosts/local/history?provider=claude&search=nonmatching');
   assert.equal(missing.data.length, 0);
   assert.equal((await get('/api/bootstrap')).state.terminals.length, 0);
-  const result = { passed: true, bundledBackend: true, providerRouting: true, listDetailSearch: true, syntheticOnly: true, userTerminalsTouched: false };
+  const result = { passed: true, bundledBackend: true, providerRouting: true, listDetailSearch: true, generatedSessionTitle: true, syntheticOnly: true, userTerminalsTouched: false };
   await mkdir(path.join(root, 'artifacts'), { recursive: true });
   await writeFile(path.join(root, 'artifacts/claude-api-verification.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));

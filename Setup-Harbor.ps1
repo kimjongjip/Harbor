@@ -1,4 +1,4 @@
-param([switch]$NoLaunch)
+param([switch]$NoLaunch, [string]$DesktopDirectory)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $harborRoot = $PSScriptRoot
@@ -38,6 +38,11 @@ try {
   & $harborNpm run build
   if ($LASTEXITCODE -ne 0) { throw 'Harbor build failed.' }
   Set-Content -LiteralPath (Join-Path $harborRuntime 'source-install') -Value 'Source installation' -Encoding ASCII
-  Write-Host 'Harbor is ready. Use Start-Harbor.cmd to open it next time.'
+  try {
+    & (Join-Path $harborRoot 'scripts\create-desktop-shortcut.ps1') -HarborRoot $harborRoot -DesktopDirectory $DesktopDirectory
+  } catch {
+    Write-Warning "Harbor is installed, but the desktop shortcut could not be created: $($_.Exception.Message). Use Start-Harbor.cmd to open it."
+  }
+  Write-Host 'Harbor is ready. Open the Harbor desktop icon or use Start-Harbor.cmd next time.'
 } finally { Pop-Location }
 if (-not $NoLaunch) { & (Join-Path $harborRoot 'Start-Harbor-Desktop.ps1') }
