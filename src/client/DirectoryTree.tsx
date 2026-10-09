@@ -16,6 +16,7 @@ import {
 import type { DirectoryView, FileEntry, HostView } from "../shared/types";
 import { api, getToken } from "./api";
 import { fileUrl, usePreview } from "./ResourcePreview";
+import { useFileDrop } from "./useFileDrop";
 
 export default function DirectoryTree({
   host,
@@ -46,11 +47,16 @@ export default function DirectoryTree({
   } | null>(null);
   const [uploadState, setUploadState] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [dragging, setDragging] = useState(false);
   const generation = useRef(0);
   const uploadBusy = useRef(false);
   const uploadInput = useRef<HTMLInputElement>(null);
   const hostId = host?.id;
+  const drop = useFileDrop({
+    rootPath: root?.path,
+    busy: uploading || busy,
+    onFiles: (files, path) => void upload(files, path),
+    onError: setError,
+  });
   async function load(path: string) {
     if (!hostId) return;
     const gen = ++generation.current;
@@ -117,7 +123,7 @@ export default function DirectoryTree({
     const gen = generation.current;
     try {
       for (const [i, file] of files.entries()) {
-        setUploadState(`${i + 1}/${files.length} · ${file.name}`);
+        setUploadState(`${i + 1}/${files.length} · ${file.name} → ${target}`);
         const response = await fetch(
           `/api/hosts/${hostId}/files/upload?${new URLSearchParams({ path: target, name: file.name })}`,
           {
@@ -134,8 +140,19 @@ export default function DirectoryTree({
           throw new Error(result.error || "업로드에 실패했습니다.");
       }
       if (generation.current === gen) {
-        await load(root!.path);
-        setUploadState(`${files.length}개 업로드 완료`);
+        const view = await api<DirectoryView>(
+          `/hosts/${hostId}/files?${new URLSearchParams({ path: target })}`,
+          undefined,
+          "GET",
+        );
+        if (generation.current === gen) {
+          if (target === root!.path) setRoot(view);
+          else {
+            setNodes((prev) => ({ ...prev, [target]: view }));
+            setExpanded((prev) => [...new Set([...prev, target])]);
+          }
+          setUploadState(`${files.length}개 업로드 완료 · ${target}`);
+        }
       }
     } catch (err) {
       setError((err as Error).message);
@@ -157,7 +174,11 @@ export default function DirectoryTree({
             aria-expanded={directory ? isExpanded : undefined}
           >
             <button
-              className={`directory-row ${selected === entry.path ? "selected" : ""}`}
+              className={`directory-row ${selected === entry.path ? "selected" : ""} ${drop.dragging && drop.targetPath === entry.path && directory ? "drop-target" : ""}`}
+              {...drop.rowProps(
+                directory ? entry.path : view.path,
+                directory && !isExpanded ? () => void toggle(entry) : undefined,
+              )}
               style={{ paddingLeft: 10 + depth * 14 }}
               title={entry.path}
               draggable={entry.kind === "file"}
@@ -217,31 +238,9 @@ export default function DirectoryTree({
   }
   return (
     <section
-      className={`directory-explorer ${dragging ? "dragging" : ""}`}
+      className={`directory-explorer ${drop.dragging ? "dragging" : ""}`}
       aria-label="서버 파일 탐색기"
-      onDragOver={(event) => {
-        if (event.dataTransfer.types.includes("Files")) {
-          event.preventDefault();
-          setDragging(true);
-        }
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node))
-          setDragging(false);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDragging(false);
-        if (
-          [...event.dataTransfer.items].some(
-            (item) => item.webkitGetAsEntry?.()?.isDirectory,
-          )
-        ) {
-          setError("폴더는 압축한 뒤 올려주세요.");
-          return;
-        }
-        void upload([...event.dataTransfer.files]);
-      }}
+      {...drop.containerProps}
     >
       <header className="explorer-header">
         <b>파일 탐색기</b>
@@ -337,11 +336,11 @@ export default function DirectoryTree({
           </p>
         )}
       </div>
-      {dragging && (
+      {drop.dragging && (
         <div className="explorer-drop-overlay">
           <Upload size={24} />
           <b>{host?.name}에 업로드</b>
-          <span>{root?.path}</span>
+          <span>{drop.targetPath || "먼저 폴더를 여세요."}</span>
         </div>
       )}
       <footer className="explorer-footer">

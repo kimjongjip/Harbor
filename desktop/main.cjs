@@ -232,6 +232,7 @@ function createWindow(url = origin + "/", bounds) {
       nodeIntegration: false,
       webSecurity: true,
       spellcheck: false,
+      plugins: new URL(url).searchParams.get("preview") === "1",
       backgroundThrottling: false,
     },
   });
@@ -536,7 +537,7 @@ function setupDesktop() {
       const headers = { ...details.responseHeaders };
       if (details.resourceType === "mainFrame")
         headers["Content-Security-Policy"] = [
-          `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' ws://127.0.0.1:${port}; object-src 'none'; frame-src 'none'; base-uri 'none'`,
+          `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' ws://127.0.0.1:${port}; object-src 'none'; frame-src ${new URL(details.url).searchParams.get("preview") === "1" ? "'self'" : "'none'"}; base-uri 'none'`,
         ];
       callback({ responseHeaders: headers });
     },
@@ -567,7 +568,7 @@ function setupDesktop() {
       !contents ||
       !isAppPage(contents.getURL()) ||
       url.origin !== origin ||
-      !/^\/api\/hosts\/[^/]+\/files\/download$/.test(url.pathname)
+      !/^\/api\/hosts\/[^/]+\/files\/(?:download|pdf)$/.test(url.pathname)
     ) {
       event.preventDefault();
       return;

@@ -36,6 +36,25 @@ test("SVG figures resolve from the Markdown directory and use the image endpoint
   await assert.rejects(files.image(host, join(dir, "not-image.svg")), /이미지 형식/);
 });
 
+test("PDF previews preserve resolved document paths and original binary bytes", async (t) => {
+  const { dir, host, files } = await setup(t);
+  await fs.mkdir(join(dir, "docs"));
+  const filename = join(dir, "docs", "설계.PDF");
+  const bytes = Buffer.from("%PDF-1.7\n\0binary document fixture", "utf8");
+  await fs.writeFile(filename, bytes);
+  const preview = await files.preview(host, "docs/설계.PDF", dir);
+  assert.equal(preview.kind, "pdf");
+  assert.equal(preview.path, filename);
+  assert.equal(preview.size, bytes.length);
+  assert.equal("text" in preview, false);
+  const absolute = await files.preview(host, filename, "unrelated");
+  assert.equal(absolute.path, filename);
+  const download = await files.download(host, preview.path);
+  const chunks = [];
+  for await (const chunk of download.stream) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), bytes);
+});
+
 test("file listing, UTF-8 names, binary upload/download and exclusive collision protection", async (t) => {
   const { dir, host, files } = await setup(t);
   const bytes = Buffer.from([0, 255, 13, 10, 128, 49]);

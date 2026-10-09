@@ -58,7 +58,7 @@ export const usePreview = () => useContext(PreviewContext);
 export function fileUrl(
   hostId: string,
   path: string,
-  type: "image" | "download" = "download",
+  type: "image" | "download" | "pdf" = "download",
 ) {
   return `/api/hosts/${hostId}/files/${type}?${new URLSearchParams({ path, token: getToken() })}`;
 }
@@ -81,8 +81,14 @@ export function PreviewProvider({
       const openFile = (next: Target) => {
         const url = new URL(window.location.origin + "/");
         url.searchParams.set("preview", "1");
-        url.hash = new URLSearchParams({ target: JSON.stringify(next) }).toString();
-        const child = window.open(url.href, "_blank", "popup,width=1100,height=850,resizable=yes,scrollbars=yes");
+        url.hash = new URLSearchParams({
+          target: JSON.stringify(next),
+        }).toString();
+        const child = window.open(
+          url.href,
+          "_blank",
+          "popup,width=1100,height=850,resizable=yes,scrollbars=yes",
+        );
         // Electron handles same-origin popups natively and returns null.
         // Retain access to the file if a regular browser blocks the popup.
         if (!child && !window.harborDesktop) setTarget(next);
@@ -122,7 +128,7 @@ export function PreviewProvider({
   );
 }
 interface PreviewData {
-  kind: "image" | "text" | "binary" | "directory";
+  kind: "image" | "text" | "binary" | "directory" | "pdf";
   name: string;
   path: string;
   size: number;
@@ -198,13 +204,16 @@ function ResourcePreview({
     setError("");
     setData(null);
     (async () => {
-      const base = relativePath ? await resolvePreviewBase(target.hostId!, previewCwd) : previewCwd;
+      const base = relativePath
+        ? await resolvePreviewBase(target.hostId!, previewCwd)
+        : previewCwd;
       if (ignore) return null;
       setResolvedBase(base);
       if (relativePath) setFolderInput(base);
       return api<PreviewData>(
         `/hosts/${target.hostId}/files/preview?${new URLSearchParams({ path: target.path!, cwd: base })}`,
-        undefined, "GET",
+        undefined,
+        "GET",
       );
     })()
       .then((d) => {
@@ -218,22 +227,33 @@ function ResourcePreview({
     };
   }, [target, previewCwd]);
   const [svgUrl, setSvgUrl] = useState("");
-  const svgPath = data && data.kind !== "directory" && /\.svg$/i.test(data.path) ? data.path : undefined;
+  const svgPath =
+    data && data.kind !== "directory" && /\.svg$/i.test(data.path)
+      ? data.path
+      : undefined;
   useEffect(() => {
     setSvgUrl("");
     if (!svgPath || !target.hostId) return;
     const controller = new AbortController();
     let url = "";
-    void svgImageUrl(target.hostId, svgPath, controller.signal).then(value => {
-      url = value;
-      if (controller.signal.aborted) URL.revokeObjectURL(value);
-      else setSvgUrl(value);
-    }).catch(e => { if (!controller.signal.aborted) setError(e.message); });
-    return () => { controller.abort(); if (url) URL.revokeObjectURL(url); };
+    void svgImageUrl(target.hostId, svgPath, controller.signal)
+      .then((value) => {
+        url = value;
+        if (controller.signal.aborted) URL.revokeObjectURL(value);
+        else setSvgUrl(value);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(e.message);
+      });
+    return () => {
+      controller.abort();
+      if (url) URL.revokeObjectURL(url);
+    };
   }, [svgPath, target.hostId]);
   const image =
     target.url ||
-    svgUrl || (data?.kind === "image" && !svgPath
+    svgUrl ||
+    (data?.kind === "image" && !svgPath
       ? fileUrl(target.hostId!, data.path, "image")
       : undefined);
   const download =
@@ -312,8 +332,13 @@ function ResourcePreview({
             )}
           </button>
         </div>
-        <div className="resource-preview-body" ref={documentZoom.ref}
-          style={{ "--document-zoom": documentZoom.percent / 100 } as CSSProperties}>
+        <div
+          className="resource-preview-body"
+          ref={documentZoom.ref}
+          style={
+            { "--document-zoom": documentZoom.percent / 100 } as CSSProperties
+          }
+        >
           {relativePath && (
             <form
               className="preview-base-folder"
@@ -335,9 +360,12 @@ function ResourcePreview({
               </button>
             </form>
           )}
-          {relativePath && error && resolvedBase && <p className="preview-copy-status">
-            기준 폴더: {resolvedBase}. 문서가 다른 프로젝트에 있으면 위 입력란에 그 프로젝트의 절대경로를 지정해 주세요.
-          </p>}
+          {relativePath && error && resolvedBase && (
+            <p className="preview-copy-status">
+              기준 폴더: {resolvedBase}. 문서가 다른 프로젝트에 있으면 위
+              입력란에 그 프로젝트의 절대경로를 지정해 주세요.
+            </p>
+          )}
           {error ? (
             <div className="inline-error" role="alert">
               {error}
@@ -434,12 +462,23 @@ function ResourcePreview({
                 />
               </div>
             </>
+          ) : data?.kind === "pdf" ? (
+            <iframe
+              className="pdf-file-preview"
+              title={`PDF 미리보기 · ${data.name}`}
+              src={fileUrl(target.hostId!, data.path, "pdf")}
+              referrerPolicy="no-referrer"
+            />
           ) : data?.kind === "text" ? (
             <div className="text-file-preview">
               <div className="document-zoom-toolbar">
                 <span>Ctrl + 마우스 휠로 글자 크기 조절</span>
-                <button className="button secondary small" onClick={documentZoom.reset}
-                  title="기본 크기로 · Ctrl+0" aria-label="문서 글자 크기 초기화">
+                <button
+                  className="button secondary small"
+                  onClick={documentZoom.reset}
+                  title="기본 크기로 · Ctrl+0"
+                  aria-label="문서 글자 크기 초기화"
+                >
                   {documentZoom.percent}%
                 </button>
               </div>

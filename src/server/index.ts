@@ -437,7 +437,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.1.0" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.2.0" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -977,6 +977,27 @@ app.get("/api/hosts/:id/files/image", async (req, res) => {
   );
   res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
   res.type(image.mime).send(image.bytes);
+});
+app.get("/api/hosts/:id/files/pdf", async (req, res) => {
+  if (!validToken(req.query.token, token)) {
+    res.status(403).json({ error: "PDF 연결이 만료되었습니다." });
+    return;
+  }
+  const filename = cleanPath.min(1).parse(req.query.path);
+  if (!/\.pdf$/i.test(filename)) throw new Error("PDF 파일을 선택하세요.");
+  const file = await files.download(hub.host(String(req.params.id)), filename);
+  // Only this authenticated document may be framed by the Harbor preview.
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Length", file.size);
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+  );
+  await pipeline(file.stream, res).catch((error) => {
+    if (!res.headersSent && !res.destroyed) throw error;
+  });
 });
 app.put("/api/hosts/:id/files/upload", async (req, res) => {
   if (Number(req.headers["content-length"]) > MAX_UPLOAD_BYTES) {

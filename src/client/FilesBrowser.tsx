@@ -26,6 +26,7 @@ import type { DirectoryView, FileEntry, HostView } from "../shared/types";
 import { api, getToken } from "./api";
 import { Modal } from "./Dialogs";
 import { usePreview } from "./ResourcePreview";
+import { useFileDrop } from "./useFileDrop";
 
 interface UploadItem {
   id: string;
@@ -95,13 +96,17 @@ export default function FilesBrowser({
     x: number;
     y: number;
   } | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const dragDepth = useRef(0);
   const input = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [uploadTarget, setUploadTarget] = useState("");
   const [uploading, setUploading] = useState(false);
+  const drop = useFileDrop({
+    rootPath: directory?.path,
+    busy: uploading || busy,
+    onFiles: (files, path) => void upload(files, path),
+    onError: setError,
+  });
   const xhr = useRef<XMLHttpRequest | null>(null);
   const cancelled = useRef(false);
   const inFlight = useRef(false);
@@ -198,9 +203,10 @@ export default function FilesBrowser({
         prev.map((item) => (item.id === id ? { ...item, ...value } : item)),
       );
   }
-  async function upload(files: File[]) {
+  async function upload(files: File[], targetPath = directory?.path) {
     if (inFlight.current || !directory || !files.length) return;
-    const target = { hostId, path: directory.path, name: host.name };
+    if (!targetPath) return;
+    const target = { hostId, path: targetPath, name: host.name };
     const queue = files.map((file) => ({ id: crypto.randomUUID(), file }));
     if (files.some((f) => f.size > 512 * 1024 * 1024)) {
       setError("파일은 개당 512MB까지 업로드할 수 있습니다.");
@@ -452,46 +458,11 @@ export default function FilesBrowser({
         </div>
       )}
       <div
-        className={`file-drop-area ${dragging ? "dragging" : ""}`}
+        className={`file-drop-area ${drop.dragging ? "dragging" : ""}`}
         data-testid="file-drop-area"
-        onDragEnter={(e) => {
-          if (!e.dataTransfer.types.includes("Files")) return;
-          e.preventDefault();
-          dragDepth.current++;
-          setDragging(true);
-        }}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes("Files")) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect =
-              uploading || !directory ? "none" : "copy";
-          }
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault();
-          if (--dragDepth.current <= 0) {
-            dragDepth.current = 0;
-            setDragging(false);
-          }
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          dragDepth.current = 0;
-          setDragging(false);
-          if (
-            [...e.dataTransfer.items].some(
-              (i) => i.webkitGetAsEntry?.()?.isDirectory,
-            )
-          ) {
-            setError(
-              "파일을 선택해서 올려주세요. 폴더를 통째로 올릴 때는 먼저 압축해 주세요.",
-            );
-            return;
-          }
-          void upload([...e.dataTransfer.files]);
-        }}
+        {...drop.containerProps}
       >
-        {dragging && (
+        {drop.dragging && (
           <div className="file-drop-overlay">
             <Upload size={34} />
             <b>
@@ -499,7 +470,7 @@ export default function FilesBrowser({
                 ? "현재 업로드가 끝난 뒤 놓아주세요"
                 : `${host?.name}에 파일 업로드`}
             </b>
-            <span>{directory?.path || "먼저 업로드할 폴더를 여세요."}</span>
+            <span>{drop.targetPath || "먼저 업로드할 폴더를 여세요."}</span>
           </div>
         )}
         <div className="file-table" role="table" aria-label="파일 목록">
@@ -531,7 +502,10 @@ export default function FilesBrowser({
               entries.map((entry) => (
                 <div
                   key={entry.path}
-                  className={`file-row ${selected === entry.path ? "selected" : ""}`}
+                  className={`file-row ${selected === entry.path ? "selected" : ""} ${drop.dragging && drop.targetPath === entry.path && entry.kind === "directory" ? "drop-target" : ""}`}
+                  {...drop.rowProps(
+                    entry.kind === "directory" ? entry.path : directory!.path,
+                  )}
                   role="row"
                   tabIndex={0}
                   draggable={entry.kind === "file"}

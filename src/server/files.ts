@@ -217,6 +217,7 @@ export class Files {
     };
     if (stat.isDirectory()) return { ...base, kind: "directory" };
     if (!stat.isFile()) throw new Error("일반 파일만 미리볼 수 있습니다.");
+    if (/\.pdf$/i.test(resolved)) return { ...base, kind: "pdf" };
     if (/\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(resolved)) {
       if (stat.size > 20 * 1024 * 1024)
         throw new Error("20MB보다 큰 이미지는 다운로드해서 확인해 주세요.");
