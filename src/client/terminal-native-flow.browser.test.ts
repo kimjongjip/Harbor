@@ -21,8 +21,8 @@ test(
 const term=window.term=new Terminal({cols:85,rows:20,allowProposedApi:true,fontSize:16});term.open(document.querySelector('#native'));window.sent=[];window.frames=0;window.writes=0;window.resizes=0;
 term.onData(value=>window.sent.push(value));const write=term.write.bind(term),resize=term.resize.bind(term);term.write=(...args)=>{window.writes++;return write(...args)};term.resize=(...args)=>{window.resizes++;return resize(...args)};
 window.push=text=>new Promise(resolve=>term.write(text,resolve));window.copy=()=>richSelectedText(document.querySelector('#surface'));
-function App(){const[blocks,setBlocks]=useState([]);const[start,setStart]=useState(0);window.setStart=setStart;window.setBlocks=setBlocks;return <section id="surface"><article data-rich-block="old-question" data-terminal-rich="true"><p>Previous question before native output</p></article><article data-rich-block="old-answer" data-terminal-rich="true"><p>Previous answer before native output</p></article><TerminalNativeFlow term={term} blocks={blocks} startRow={()=>start} onFrame={()=>window.frames++} renderAnswer={text=><p>{text}</p>}/></section>;}
-createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[31;1mRan exact command\\x1b[0m\\r\\n  ORIGINAL RESULT\\r\\n› 미전송🙂');`,
+function App(){const[blocks,setBlocks]=useState([]);const[start,setStart]=useState(0);const[composer,setComposer]=useState(true);window.setComposer=setComposer;window.setStart=setStart;window.setBlocks=setBlocks;return <section id="surface"><article data-rich-block="old-question" data-terminal-rich="true"><p>Previous question before native output</p></article><article data-rich-block="old-answer" data-terminal-rich="true"><p>Previous answer before native output</p></article><TerminalNativeFlow term={term} codexComposer={composer} blocks={blocks} startRow={()=>start} onFrame={()=>window.frames++} renderAnswer={text=><p>{text}</p>}/></section>;}
+createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2004h\\x1b[31;1mRan exact command\\x1b[0m\\r\\n  ORIGINAL RESULT\\r\\n› 미전송🙂');`,
         resolveDir: process.cwd(),
         sourcefile: "native-flow-fixture.tsx",
         loader: "tsx",
@@ -68,6 +68,36 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[31
           "› 미전송🙂",
         ),
       );
+      const fallback = await page.evaluate(() => {
+        const row = document.querySelector('[data-native-row="2"]')!;
+        const fill = row.querySelector(".terminal-native-row-fill > span")!;
+        return {
+          color: getComputedStyle(fill).backgroundColor,
+          rowColor: getComputedStyle(row).backgroundColor,
+          ordinary: getComputedStyle(
+            document.querySelector(
+              '[data-native-row="1"] .terminal-native-row-fill > span',
+            )!,
+          ).backgroundColor,
+          width: fill.getBoundingClientRect().width,
+          rowWidth: row.getBoundingClientRect().width,
+          text: row.textContent,
+        };
+      });
+      assert.notEqual(
+        fallback.color,
+        fallback.ordinary,
+        "only the live composer receives the fallback fill",
+      );
+      assert.equal(
+        fallback.rowColor,
+        fallback.color,
+        "fallback fills the whole visible input row",
+      );
+      assert.equal(fallback.text?.trimEnd(), "› 미전송🙂");
+      await page.screenshot({
+        path: join(parent, "codex-composer-fallback.png"),
+      });
       assert.equal(
         await page
           .locator('[data-native-row="0"] > span')
@@ -221,6 +251,7 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[31
       // parsed-to-DOM timings are recorded as evidence, not a fragile 16 ms SLA.
       await page.evaluate(async () => {
         const state = window as any;
+        state.setComposer(false);
         state.setBlocks([]);
         state.term.options.scrollback = 6000;
         state.term.reset();

@@ -13,6 +13,7 @@ import {
   type NativeFlowFrame,
 } from "./terminal-native-flow";
 import { NativeRow } from "./TerminalNativeRow";
+import { nativeComposerFill } from "./terminal-native-composer";
 export type { NativeFlowFrame } from "./terminal-native-flow";
 
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -25,6 +26,7 @@ interface View {
   fontFamily: string;
   lineHeight: number;
   blocks: RichTerminalBlock[];
+  composerFill?: ReturnType<typeof nativeComposerFill>;
 }
 /** A selectable native buffer projection. It never writes, resizes or replays PTY input. */
 export function TerminalNativeFlow({
@@ -32,6 +34,7 @@ export function TerminalNativeFlow({
   blocks = emptyBlocks,
   active = true,
   frozen = false,
+  codexComposer = false,
   startRow = 0,
   onFrame,
   onInput,
@@ -42,6 +45,7 @@ export function TerminalNativeFlow({
   blocks?: RichTerminalBlock[];
   active?: boolean;
   frozen?: boolean;
+  codexComposer?: boolean;
   startRow?: number | ((frame: NativeFlowFrame) => number);
   onFrame?(frame: NativeFlowFrame): void;
   onInput?(): void;
@@ -50,8 +54,24 @@ export function TerminalNativeFlow({
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
-  const latest = useRef({ blocks, active, frozen, startRow, onFrame, onInput });
-  latest.current = { blocks, active, frozen, startRow, onFrame, onInput };
+  const latest = useRef({
+    blocks,
+    active,
+    frozen,
+    codexComposer,
+    startRow,
+    onFrame,
+    onInput,
+  });
+  latest.current = {
+    blocks,
+    active,
+    frozen,
+    codexComposer,
+    startRow,
+    onFrame,
+    onInput,
+  };
   const previous = useRef<View | null>(null);
   const refresh = useRef(() => {});
   useLayoutEffect(() => {
@@ -118,6 +138,9 @@ export function TerminalNativeFlow({
             (term.options.fontSize || 14) * (term.options.lineHeight || 1.2),
         ),
         blocks: latest.current.blocks,
+        composerFill: latest.current.codexComposer
+          ? nativeComposerFill(term, frame)
+          : undefined,
       };
       previous.current = next;
       setView(next);
@@ -172,7 +195,7 @@ export function TerminalNativeFlow({
   }, [term]);
   useLayoutEffect(() => {
     refresh.current();
-  }, [active, frozen, startRow, blocks]);
+  }, [active, frozen, codexComposer, startRow, blocks]);
   if (!view || !active) return null;
   const lines = view.frame.lines.slice(view.start);
   const parts =
@@ -259,6 +282,13 @@ export function TerminalNativeFlow({
                 : undefined
             }
             lineHeight={view.lineHeight}
+            backgroundColor={
+              view.composerFill &&
+              view.start + part.row >= view.composerFill.first &&
+              view.start + part.row <= view.composerFill.last
+                ? view.composerFill.color
+                : undefined
+            }
           />
         ),
       )}

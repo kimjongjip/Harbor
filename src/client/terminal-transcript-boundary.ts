@@ -10,17 +10,155 @@ export interface TranscriptFrame {
 
 const comparable = (text: string) =>
   text.replace(/[*`#_]/g, "").replace(/\s+/g, "");
+const promptPrefix = /^\s*[›❯»>]\s?/;
+const markdownListPrefix = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/;
+const nativeListPrefix = /^\s*(?:[-+*•·]|\d{1,9}[.)])[ \t]+/;
+
+/** Comparison only: terminal Markdown renders link labels, not their targets.
+ * Keep code spans/fences literal and leave ambiguous syntax unchanged. The
+ * original text remains another candidate; this never changes the saved data.
+ */
+function visibleMarkdownText(text: string): string {
+  let result = "",
+    at = 0;
+  while (at < text.length) {
+    if (at === 0 || text[at - 1] === "\n") {
+      // Indented code also prints Markdown punctuation literally. Some list
+      // continuations share this indentation; keeping those literal is the
+      // conservative choice when the native rendering is ambiguous.
+      if (/^(?: {4}|\t)/.test(text.slice(at))) {
+        const end = text.indexOf("\n", at);
+        const next = end < 0 ? text.length : end + 1;
+        result += text.slice(at, next);
+        at = next;
+        continue;
+      }
+      const fence = /^( {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/.exec(text.slice(at));
+      if (fence) {
+        const marker = fence[2],
+          start = at + fence[0].length;
+        const close = new RegExp(
+          `^ {0,3}${marker[0]}{${marker.length},}[ \\t]*\\r?$`,
+          "gm",
+        );
+        close.lastIndex = start;
+        const end = close.exec(text);
+        const next = end ? end.index + end[0].length : text.length;
+        result += text.slice(at, next);
+        at = next;
+        continue;
+      }
+      // Terminal Markdown can use •/· instead of -/*, or a different numbered
+      // list marker. Only the syntactic line prefix is normalized, never body
+      // hyphens/numbers or the protected code above.
+      const list = markdownListPrefix.exec(text.slice(at));
+      if (list) at += list[0].length;
+    }
+    if (text[at] === "\\") {
+      result += text.slice(at, at + 2);
+      at += 2;
+      continue;
+    }
+    if (text[at] === "`") {
+      const marker = /^`+/.exec(text.slice(at))![0];
+      const close = /`+/g;
+      close.lastIndex = at + marker.length;
+      let end: RegExpExecArray | null;
+      do {
+        end = close.exec(text);
+      } while (end && end[0].length !== marker.length);
+      const next = end ? end.index + marker.length : at + marker.length;
+      result += text.slice(at, next);
+      at = next;
+      continue;
+    }
+    const labelStart = text[at] === "!" && text[at + 1] === "[" ? at + 1 : at;
+    if (text[labelStart] === "[") {
+      let cursor = labelStart + 1,
+        depth = 1;
+      for (; cursor < text.length && depth; cursor++) {
+        if (text[cursor] === "\\") cursor++;
+        else if (text[cursor] === "[") depth++;
+        else if (text[cursor] === "]") depth--;
+      }
+      const labelEnd = cursor - 1;
+      if (!depth && text[cursor] === "(") {
+        const destinationStart = ++cursor;
+        depth = 1;
+        for (; cursor < text.length && depth; cursor++) {
+          if (text[cursor] === "\\") cursor++;
+          else if (text[cursor] === "(") depth++;
+          else if (text[cursor] === ")") depth--;
+        }
+        const destination = text.slice(destinationStart, cursor - 1).trim();
+        // Destinations with whitespace are accepted only with an optional title
+        // or angle brackets. A malformed/unclosed link must remain literal.
+        if (
+          !depth &&
+          labelEnd > labelStart + 1 &&
+          /^(?:<[^<>\r\n]*>|[^\s]+)?(?:\s+(?:"[^"\r\n]*"|'[^'\r\n]*'))?$/.test(
+            destination,
+          )
+        ) {
+          result += text.slice(labelStart + 1, labelEnd);
+          at = cursor;
+          continue;
+        }
+      }
+      // Do not repeatedly rescan long unmatched/nested brackets. Keeping the
+      // whole ambiguous region literal is safer than finding a guessed anchor.
+      result += text.slice(at, cursor);
+      at = cursor;
+      continue;
+    }
+    result += text[at++];
+  }
+  return result;
+}
+
+const answerSuffixCache = new WeakMap<
+  ConversationTurn["items"][number],
+  { text: string; suffixes: { text: string; prose: boolean }[] }
+>();
+function answerSuffixes(message: ConversationTurn["items"][number]) {
+  const cached = answerSuffixCache.get(message);
+  if (cached?.text === message.text) return cached.suffixes;
+  const raw = comparable(message.text).slice(-180);
+  const suffixes = [{ text: raw, prose: false }];
+  // Avoid rescanning saved Markdown per echoed key. Extremely large or odd
+  // records keep the conservative original-text matching path.
+  if (
+    message.text.length <= 512 * 1024 &&
+    (message.text.includes("](") ||
+      /(?:^|\n) {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/.test(message.text))
+  ) {
+    const visible = comparable(visibleMarkdownText(message.text)).slice(-180);
+    if (visible !== raw) suffixes.push({ text: visible, prose: true });
+  }
+  const result = suffixes.filter((value) => value.text.length >= 12);
+  answerSuffixCache.set(message, { text: message.text, suffixes: result });
+  return result;
+}
 
 /** Normalize each inspected row at most once across candidate questions/answers. */
 function frameLookup(lines: string[]) {
-  const normalized: (string | undefined)[] = [];
+  const normalized: ({ raw: string; prose: string } | undefined)[] = [];
+  const values = (row: number) => {
+    if (normalized[row]) return normalized[row]!;
+    const text = lines[row];
+    return (normalized[row] = {
+      raw: comparable(text),
+      prose: comparable(text.replace(nativeListPrefix, "")),
+    });
+  };
   const prompts: number[] = [];
   for (let row = 0; row < lines.length; row++)
-    if (/^\s*[›❯>]\s?/.test(lines[row])) prompts.push(row);
+    if (promptPrefix.test(lines[row])) prompts.push(row);
   return {
     lines,
     prompts,
-    normalized: (row: number) => (normalized[row] ??= comparable(lines[row])),
+    normalized: (row: number) => values(row).raw,
+    normalizedProse: (row: number) => values(row).prose,
   };
 }
 type FrameLookup = ReturnType<typeof frameLookup>;
@@ -36,7 +174,7 @@ function questionRow(lookup: FrameLookup, text: string): number {
     for (let at = row; at < Math.min(nextPrompt, row + 32); at++) {
       value +=
         at === row
-          ? comparable(lines[at].replace(/^\s*[›❯>]\s?/, ""))
+          ? comparable(lines[at].replace(promptPrefix, ""))
           : normalized(at);
       if (value.startsWith(wanted)) return row;
       if (value.length >= wanted.length) break;
@@ -47,10 +185,11 @@ function questionRow(lookup: FrameLookup, text: string): number {
 
 function answerEnd(
   lookup: FrameLookup,
-  text: string,
+  message: ConversationTurn["items"][number],
   blocks: RichTerminalBlock[],
 ): number {
-  const { lines, normalized } = lookup;
+  const { lines, normalized, normalizedProse } = lookup;
+  const text = message.text;
   const block = [...blocks].reverse().find((item) => item.text === text);
   if (block) {
     for (let row = lines.length - 1; row >= 0; row--)
@@ -60,14 +199,22 @@ function answerEnd(
       )
         return row + 1;
   }
-  const wanted = comparable(text).slice(-180);
-  if (wanted.length < 12) return -1;
+  const wanted = answerSuffixes(message);
+  if (!wanted.length) return -1;
+  const maxLength = Math.max(...wanted.map((value) => value.text.length));
   for (let end = lines.length; end > Math.max(0, lines.length - 1000); end--) {
-    let value = "";
+    let value = "",
+      prose = "";
     for (let row = end - 1; row >= Math.max(0, end - 32); row--) {
       value = normalized(row) + value;
-      if (value.endsWith(wanted)) return end;
-      if (value.length > wanted.length * 2) break;
+      prose = normalizedProse(row) + prose;
+      if (
+        wanted.some((suffix) =>
+          (suffix.prose ? prose : value).endsWith(suffix.text),
+        )
+      )
+        return end;
+      if (value.length > maxLength * 2) break;
     }
   }
   return -1;
@@ -93,7 +240,7 @@ export function transcriptBoundary(
     const assistant = [...turn.items]
       .reverse()
       .find((item) => item.kind === "assistant" && turn.finalIds.has(item.id));
-    return assistant ? answerEnd(lookup, assistant.text, blocks) : -1;
+    return assistant ? answerEnd(lookup, assistant, blocks) : -1;
   };
   const end = completedEnd(last);
   // Only a verified final answer can replace a whole turn. Idle/working status

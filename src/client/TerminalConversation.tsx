@@ -16,6 +16,7 @@ import { api } from "./api";
 import { TranscriptItems } from "./TranscriptItems";
 import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
 import { transcriptBoundary } from "./terminal-transcript-boundary";
+import { TerminalCompletionCue } from "./terminal-completion-cue";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import {
   conversationTurns,
@@ -421,9 +422,30 @@ export function TerminalConversation({
   const publishedBoundary = useRef<
     ReturnType<typeof transcriptBoundary> | undefined
   >(undefined);
+  const completionCue = useMemo(
+    () => ({
+      detector: new TerminalCompletionCue(),
+      timers: [] as ReturnType<typeof setTimeout>[],
+    }),
+    [term, info.id, info.hostId, sessionId, provider],
+  );
+  useEffect(
+    () => () => completionCue.timers.forEach(clearTimeout),
+    [completionCue, active, mode],
+  );
   const updateNativeFrame = useCallback(
     (frame: NativeFlowFrame) => {
       nativeFrame.current = frame;
+      // Some existing Codex sessions have no peer event transport. A new native
+      // footer merely asks for a read; saved turn status still decides folding.
+      if (provider === "codex" && completionCue.detector.observe(frame.lines)) {
+        completionCue.timers.forEach(clearTimeout);
+        // The footer can arrive before the persisted turn becomes completed.
+        // Retry a bounded number of times without requiring more native output.
+        completionCue.timers = [200, 1200, 3000].map((delay) =>
+          setTimeout(() => void load.current(false, true), delay),
+        );
+      }
       const next = boundaryForFrame(frame);
       if (
         next.historyCount !== publishedBoundary.current?.historyCount ||
@@ -433,7 +455,7 @@ export function TerminalConversation({
         setBoundaryRevision((value) => value + 1);
       }
     },
-    [boundaryForFrame],
+    [boundaryForFrame, completionCue, provider],
   );
   const renderNativeAnswer = useCallback(
     (text: string) => <pre className="terminal-native-answer-text">{text}</pre>,
@@ -606,6 +628,7 @@ export function TerminalConversation({
             );
           })}
           <TerminalNativeFlow
+            codexComposer={provider === "codex"}
             term={term}
             blocks={blocks}
             active={visible}

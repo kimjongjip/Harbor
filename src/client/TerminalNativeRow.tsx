@@ -12,11 +12,13 @@ export const NativeRow = memo(function NativeRow({
   runs,
   cursorOffset,
   lineHeight,
+  backgroundColor,
 }: {
   row: number;
   runs: NativeRun[];
   cursorOffset?: number;
   lineHeight: number;
+  backgroundColor?: string;
 }) {
   let offset = 0;
   const nodes: ReactNode[] = [];
@@ -49,7 +51,12 @@ export const NativeRow = memo(function NativeRow({
     if (local >= 0 && local < run.text.length) {
       const width = String.fromCodePoint(run.text.codePointAt(local)!).length;
       nodes.push(
-        <span key={index} style={run.style}>
+        <span
+          key={index}
+          style={
+            backgroundColor ? { ...run.style, backgroundColor } : run.style
+          }
+        >
           {run.text.slice(0, local)}
           <span
             data-native-cursor="true"
@@ -65,7 +72,12 @@ export const NativeRow = memo(function NativeRow({
       );
     } else
       nodes.push(
-        <span key={index} style={run.style}>
+        <span
+          key={index}
+          style={
+            backgroundColor ? { ...run.style, backgroundColor } : run.style
+          }
+        >
           {run.text}
         </span>,
       );
@@ -83,6 +95,7 @@ export const NativeRow = memo(function NativeRow({
         lineHeight: `${lineHeight}px`,
         whiteSpace: "pre-wrap",
         overflowWrap: "anywhere",
+        backgroundColor,
       }}
     >
       <div className="terminal-native-row-fill" aria-hidden="true">
@@ -92,6 +105,7 @@ export const NativeRow = memo(function NativeRow({
             data-native-fill={run.text}
             style={{
               ...run.style,
+              ...(backgroundColor ? { backgroundColor } : {}),
               color: "transparent",
               textDecoration: "none",
             }}

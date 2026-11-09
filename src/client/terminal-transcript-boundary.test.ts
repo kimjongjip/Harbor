@@ -323,3 +323,295 @@ test("empty marker cannot match an unrelated screen and wrapped prompts stay int
     { historyCount: 1, nativeStart: 0 },
   );
 });
+
+const completedAnswer = (text: string) =>
+  conversationTurns(
+    records().map((item) => (item.id === "a2" ? { ...item, text } : item)),
+  );
+
+test("Codex double-angle prompt identifies the current native turn and repeated questions", () => {
+  const lines = [
+    "earlier screen",
+    "» Please inspect the compiler output",
+    "Ran compiler",
+    "» draft",
+  ];
+  assert.deepEqual(
+    transcriptBoundary(
+      conversationTurns(records(false)),
+      frame(lines),
+      [],
+      true,
+    ),
+    {
+      historyCount: 1,
+      nativeStart: 1,
+    },
+  );
+  assert.deepEqual(
+    transcriptBoundary(
+      conversationTurns(records()),
+      frame([
+        "This is the complete final answer.",
+        "» Please inspect the compiler output",
+        "New unsaved work",
+      ]),
+      [],
+      true,
+    ),
+    { historyCount: 1, nativeStart: 0 },
+  );
+});
+
+test("completed Markdown link labels match native Codex output without losing the approval tail", () => {
+  const text =
+    "Input and copy checks passed. Updated **[Git](https://example.test/repository/commit/0123456789012345678901234567890123456789)**.";
+  const lines = [
+    "» Please inspect the compiler output",
+    "Ran compiler",
+    "Input and copy checks passed. Updated Git.",
+    "Allow a new command?",
+    "1. Yes",
+    "2. No",
+    "» draft",
+  ];
+  assert.deepEqual(
+    transcriptBoundary(completedAnswer(text), frame(lines), [], true),
+    {
+      historyCount: 2,
+      nativeStart: 3,
+    },
+  );
+  assert.deepEqual(
+    transcriptBoundary(
+      completedAnswer(text),
+      frame([lines[0], text, "» draft"]),
+      [],
+      false,
+    ),
+    {
+      historyCount: 2,
+      nativeStart: 2,
+    },
+    "raw Markdown remains a supported native representation",
+  );
+});
+
+test("link label projection handles balanced destinations, image labels and wrapped visible text", () => {
+  for (const [saved, visible] of [
+    [
+      "The final report is [read the **updated** report](docs/report_(final).md).",
+      "The final report is read the updated report.",
+    ],
+    [
+      "View the result: ![allocation diagram](images/allocation.png).",
+      "View the result: allocation diagram.",
+    ],
+    [
+      'Read [the [updated] report](<docs/final report.md> "Report").',
+      "Read the [updated] report.",
+    ],
+  ]) {
+    const split = Math.floor(visible.length / 2);
+    assert.deepEqual(
+      transcriptBoundary(
+        completedAnswer(saved),
+        frame([
+          "» Please inspect the compiler output",
+          visible.slice(0, split),
+          visible.slice(split),
+          "» draft",
+        ]),
+        [],
+        false,
+      ),
+      { historyCount: 2, nativeStart: 3 },
+    );
+  }
+});
+
+test("Markdown-looking links in inline and fenced code stay literal", () => {
+  const literal = "[literal link](https://example.test/code)";
+  for (const saved of [
+    `Use this exact syntax: \`${literal}\`.`,
+    `Use this exact syntax: \`\`${literal}\`\`.`,
+    `Code example:\n\`\`\`text\n${literal}\n\`\`\``,
+    `Code example:\n~~~text\n${literal}\n~~~`,
+    `Code example:\n\n    ${literal}`,
+    `Code example:\n\n\t${literal}`,
+  ]) {
+    assert.deepEqual(
+      transcriptBoundary(
+        completedAnswer(saved),
+        frame([
+          "» Please inspect the compiler output",
+          "Use this exact syntax: literal link.",
+          "» draft",
+        ]),
+        [],
+        false,
+      ),
+      { historyCount: 1, nativeStart: 0 },
+      "code must not become a label-only completion anchor",
+    );
+  }
+  assert.deepEqual(
+    transcriptBoundary(
+      completedAnswer(`Use this exact syntax: \`${literal}\`.`),
+      frame([
+        "» Please inspect the compiler output",
+        `Use this exact syntax: ${literal}.`,
+        "» draft",
+      ]),
+      [],
+      false,
+    ),
+    { historyCount: 2, nativeStart: 2 },
+  );
+});
+
+test("malformed and escaped links cannot guess away native work", () => {
+  for (const saved of [
+    "Result available in [the final report](https://example.test/unclosed",
+    "Result available in [the final report](invalid destination with spaces)",
+    "Result available in \\[the final report](https://example.test/final)",
+  ]) {
+    assert.deepEqual(
+      transcriptBoundary(
+        completedAnswer(saved),
+        frame([
+          "» Please inspect the compiler output",
+          "Result available in the final report",
+          "Unsaved work",
+          "» draft",
+        ]),
+        [],
+        true,
+      ),
+      { historyCount: 1, nativeStart: 0 },
+    );
+  }
+});
+
+test("rendered links cannot bypass completion proof or a repeated newer prompt", () => {
+  const text =
+    "Final checks passed. See [the detailed report](docs/report.md).";
+  const visible = "Final checks passed. See the detailed report.";
+  const partial = completedAnswer(text).map((turn) => ({
+    ...turn,
+    complete: false,
+    finalIds: new Set<string>(),
+  }));
+  assert.deepEqual(
+    transcriptBoundary(
+      partial,
+      frame(["» Please inspect the compiler output", visible, "» draft"]),
+      [],
+      false,
+    ),
+    {
+      historyCount: 1,
+      nativeStart: 0,
+    },
+  );
+  assert.deepEqual(
+    transcriptBoundary(
+      completedAnswer(text),
+      frame([
+        visible,
+        "» Please inspect the compiler output",
+        "Ran another tool",
+      ]),
+      [],
+      true,
+    ),
+    {
+      historyCount: 1,
+      nativeStart: 0,
+    },
+  );
+});
+
+test("a final paragraph with a Git link matches after native bullet lists without stripping body punctuation", () => {
+  const saved =
+    "Changes are ready.\n\n- Native input stays in the same process.\n- Gray prompt backgrounds are preserved.\n- Copy and selection still work.\n\nInput and display checks passed. The tested update is available in [Git](https://example.test/repository/commit/0123456789012345678901234567890123456789).";
+  for (const bullet of ["•", "·"]) {
+    const lines = [
+      "» Please inspect the compiler output",
+      "Changes are ready.",
+      "",
+      `  ${bullet} Native input stays in the same process.`,
+      `  ${bullet} Gray prompt backgrounds are preserved.`,
+      `  ${bullet} Copy and selection still work.`,
+      "",
+      "Input and display checks passed. The tested update is available in Git.",
+      "Allow an unrelated operation?",
+      "1. Yes",
+      "2. No",
+      "» draft",
+    ];
+    assert.deepEqual(
+      transcriptBoundary(completedAnswer(saved), frame(lines), [], true),
+      {
+        historyCount: 2,
+        nativeStart: 8,
+      },
+    );
+  }
+  const numbered =
+    "1. Keep alpha-beta unchanged.\n2. Inspect version-2 and x-y values.\n\nRead [the complete report](docs/final.md).";
+  assert.deepEqual(
+    transcriptBoundary(
+      completedAnswer(numbered),
+      frame([
+        "» Please inspect the compiler output",
+        "1) Keep alpha-beta unchanged.",
+        "2) Inspect version-2 and x-y values.",
+        "Read the complete report.",
+        "» draft",
+      ]),
+      [],
+      false,
+    ),
+    { historyCount: 2, nativeStart: 4 },
+  );
+  assert.deepEqual(
+    transcriptBoundary(
+      completedAnswer(numbered),
+      frame([
+        "» Please inspect the compiler output",
+        "1) Keep alphabeta unchanged.",
+        "2) Inspect version2 and xy values.",
+        "Read the complete report.",
+        "» draft",
+      ]),
+      [],
+      false,
+    ),
+    { historyCount: 1, nativeStart: 0 },
+    "body hyphens are not discarded",
+  );
+});
+
+test("list-looking code remains literal when matching rendered answers", () => {
+  const code = "- Keep this literal code line exactly as written.";
+  for (const saved of [
+    `Example:\n\n    ${code}\n\nRead [the detailed report](docs/final.md).`,
+    `Example:\n\n\`${code}\`\n\nRead [the detailed report](docs/final.md).`,
+  ]) {
+    const lines = [
+      "» Please inspect the compiler output",
+      "Example:",
+      "Keep this literal code line exactly as written.",
+      "Read the detailed report.",
+      "» draft",
+    ];
+    assert.deepEqual(
+      transcriptBoundary(completedAnswer(saved), frame(lines), [], false),
+      {
+        historyCount: 1,
+        nativeStart: 0,
+      },
+    );
+  }
+});

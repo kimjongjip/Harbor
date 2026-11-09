@@ -100,7 +100,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           id: "a2",
           kind: "assistant",
           turnId: "two",
-          text: completed ? "SECOND FINAL ANSWER" : "PARTIAL WORK",
+          text: completed
+            ? "SECOND FINAL ANSWER\n\nPublished [Git](https://example.test/repository/commit/0123456789abcdef0123456789abcdef01234567)."
+            : "PARTIAL WORK",
           phase: "final_answer",
           turnStatus: completed ? "completed" : "inProgress",
         },
@@ -186,7 +188,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .getByText("  └ NATIVE WORK OUTPUT", { exact: true })
         .waitFor();
       assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
-      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 0);
+      assert.equal(
+        await page.locator('[data-rich-block="conversation-user-q2"]').count(),
+        0,
+      );
       await page.screenshot({ path: join(root, "native-working.png") });
       await page.evaluate(() => (window as any).term.focus());
       await page.keyboard.type("abc");
@@ -198,15 +203,29 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => (window as any).setAgentState("idle"));
       await page.waitForTimeout(300);
       assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
-      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 0);
-      assert.ok((await page.locator(".terminal-native-flow").innerText()).includes("NATIVE WORK OUTPUT"));
+      assert.equal(
+        await page.locator('[data-rich-block="conversation-user-q2"]').count(),
+        0,
+      );
+      assert.ok(
+        (await page.locator(".terminal-native-flow").innerText()).includes(
+          "NATIVE WORK OUTPUT",
+        ),
+      );
       // A saved completion cannot replace arbitrary live bytes. First deliver
       // the matching final answer through the same synthetic PTY connection.
-      const finalOutput = "\x1b[2J\x1b[H› SECOND QUESTION\r\n• Ran compiler\r\n  └ NATIVE WORK OUTPUT\r\nSECOND FINAL ANSWER\r\n› UNSENT DRAFT";
+      // Codex paints link labels rather than Markdown destinations. Its visible
+      // prompt glyph can also vary by version; neither changes the native turn.
+      const finalOutput =
+        "\x1b[2J\x1b[H» SECOND QUESTION\r\n• Ran compiler\r\n  └ NATIVE WORK OUTPUT\r\nSECOND FINAL ANSWER\r\n\r\nPublished Git.\r\n» UNSENT DRAFT";
       screen.append(finalOutput);
       for (const socket of sockets.clients)
-        socket.send(JSON.stringify({ type: "terminal-data", id, data: finalOutput }));
-      await page.waitForFunction(() => (window as any).bufferText().includes("SECOND FINAL ANSWER"));
+        socket.send(
+          JSON.stringify({ type: "terminal-data", id, data: finalOutput }),
+        );
+      await page.waitForFunction(() =>
+        (window as any).bufferText().includes("SECOND FINAL ANSWER"),
+      );
       const native = await page.evaluate(() => ({
         cols: (window as any).term.cols,
         rows: (window as any).term.rows,
@@ -215,9 +234,20 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page
         .locator(".terminal-conversation")
         .waitFor({ state: "visible" });
-      await page.locator('[data-rich-block="conversation-assistant-a2"]').getByText("SECOND FINAL ANSWER", { exact: true }).waitFor();
-      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 1);
-      assert.equal(await page.locator('[data-rich-block="conversation-assistant-a2"]').count(), 1);
+      await page
+        .locator('[data-rich-block="conversation-assistant-a2"]')
+        .getByText("SECOND FINAL ANSWER", { exact: true })
+        .waitFor();
+      assert.equal(
+        await page.locator('[data-rich-block="conversation-user-q2"]').count(),
+        1,
+      );
+      assert.equal(
+        await page
+          .locator('[data-rich-block="conversation-assistant-a2"]')
+          .count(),
+        1,
+      );
       await page.waitForTimeout(200);
       const liveCut = await page.evaluate(() => ({
         boundary: document
