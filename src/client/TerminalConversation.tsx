@@ -1,12 +1,15 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
-import { ArrowDown, RotateCcw, X } from "lucide-react";
-import type { MessageItem, TerminalInfo } from "../shared/types";
+import { ArrowDown } from "lucide-react";
+import type { TerminalInfo } from "../shared/types";
 import type { HistoryDetail } from "../shared/history";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { api } from "./api";
 import { Markdown } from "./RichMarkdown";
+import { TranscriptItems } from "./TranscriptItems";
+import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
+import { transcriptBoundary } from "./terminal-transcript-boundary";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import {
   conversationTurns,
@@ -27,66 +30,22 @@ const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
   return `${last.kind}:${last.id}`;
 };
-const Message = memo(function Message({
-  item,
-  provider,
-  hostId,
-  cwd,
-}: {
-  item: MessageItem;
-  provider: string;
-  hostId: string;
-  cwd: string;
-}) {
-  return (
-    <article
-      className={`history-message ${item.kind}`}
-      data-rich-block={`conversation-${item.kind}-${item.id}`}
-      data-terminal-rich="true"
-    >
-      <b>
-        {item.kind === "user"
-          ? "나"
-          : item.kind === "assistant"
-            ? provider
-            : item.kind === "command"
-              ? "명령 실행"
-              : item.kind === "change"
-                ? "코드 변경"
-                : "작업 기록"}
-      </b>
-      {!!item.imageCount && <small>이미지 {item.imageCount}개</small>}
-      <div className="conversation-message-content">
-        {item.kind === "user" ? (
-          <div className="conversation-question">{item.text}</div>
-        ) : item.kind === "assistant" ? (
-          <Markdown text={item.text} location={{ hostId, cwd }} />
-        ) : (
-          <pre>
-            {item.text}
-            {item.detail ? `\n${item.detail}` : ""}
-          </pre>
-        )}
-      </div>
-    </article>
-  );
-});
-
-/** One continuous DOM for questions/answers. Native CLI process, PTY and input stay mounted. */
+/** One terminal document: persisted work and native live output/input share one scroller. */
 export function TerminalConversation({
   term,
   info,
-  onClose,
-  mode = "conversation",
+  mode = "auto",
   blocks = emptyBlocks,
   active = true,
+  onLink,
 }: {
   term: Terminal;
   info: TerminalInfo;
-  onClose(): void;
+  onClose?(): void;
   mode?: ConversationMode;
   blocks?: RichTerminalBlock[];
   active?: boolean;
+  onLink?(text: string): void;
 }) {
   const sessionId = info.agentSessionId || info.resumeThreadId;
   const provider =
@@ -97,6 +56,9 @@ export function TerminalConversation({
   const [historyPaused, setHistoryPaused] = useState(false),
     [selected, setSelected] = useState(false);
   const [following, setFollowing] = useState(true);
+  const followingRef = useRef(following);
+  followingRef.current = following;
+  const [nativeFrame, setNativeFrame] = useState<NativeFlowFrame>();
   const [, setProofRevision] = useState(0);
   const verifiedHistory = useRef(new Map<string, string>());
   const body = useRef<HTMLDivElement>(null);
@@ -153,7 +115,7 @@ export function TerminalConversation({
     if (more) loadedOlder.current = true;
     if (more && pending.current) pending.current = merge(pending.current);
     // Polls must never replace selected DOM or collapse a work group during a drag.
-    if (hasSelection() && !more) {
+    if ((hasSelection() || !followingRef.current) && !more) {
       pending.current = next;
       return;
     }
@@ -313,7 +275,7 @@ export function TerminalConversation({
     const changed = () => {
       const present = hasSelection();
       setSelected(present);
-      if (!present && pending.current) {
+      if (!present && followingRef.current && pending.current) {
         latest.current = pending.current;
         setDetail(pending.current);
         pending.current = null;
@@ -324,6 +286,23 @@ export function TerminalConversation({
       dispose();
       node.ownerDocument.removeEventListener("selectionchange", changed);
     };
+  }, [term]);
+  const resumeFollowing = () => {
+    followingRef.current = true;
+    setFollowing(true);
+    if (!hasSelection() && pending.current) {
+      latest.current = pending.current;
+      setDetail(pending.current);
+      pending.current = null;
+    }
+    anchor.current = "bottom";
+    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+  };
+  useEffect(() => {
+    const input = term.onData?.(() => {
+      if (!hasSelection()) resumeFollowing();
+    });
+    return () => input?.dispose();
   }, [term]);
   const timeline = detail?.timeline || detail?.items || [];
   const candidate = [...timeline]
@@ -378,9 +357,13 @@ export function TerminalConversation({
   // A verified earlier Stop stays folded when the next prompt starts. The map
   // belongs only to this native session and also checks unchanged message text.
   const retainedTurns = useRef<ReturnType<typeof conversationTurns>>([]);
-  if (!hasSelection() || selectedPrepend.current?.detail === detail) {
+  const frozen = hasSelection() || !following;
+  const prepending =
+    selectedPrepend.current?.detail === detail ||
+    (!!anchor.current && anchor.current !== "bottom");
+  if (!frozen || prepending) {
     const nextTurns = conversationTurns(timeline, verifiedHistory.current);
-    if (hasSelection()) {
+    if (frozen) {
       const existing = new Map(
         retainedTurns.current.map((turn) => [turnKey(turn), turn]),
       );
@@ -395,13 +378,27 @@ export function TerminalConversation({
     retainedTurns.current = nextTurns;
   }
   const turns = retainedTurns.current;
-  const complete = !!turns.at(-1)?.complete;
-  const visible =
-    active &&
-    mode !== "terminal" &&
-    (mode === "conversation" ||
-      selected ||
-      (complete && info.agentState === "idle"));
+  const visible = active && mode !== "terminal";
+  // Only an explicit idle state permits cropping to the native composer.
+  // Unknown/waiting states may contain an approval dialog above the cursor.
+  const working = info.agentState !== "idle";
+  const lastBoundary = useRef<
+    { historyCount: number; nativeStart: number; turnCount: number } | undefined
+  >(undefined);
+  const nextBoundary = nativeFrame
+    ? transcriptBoundary(turns, nativeFrame, blocks, working)
+    : { historyCount: turns.length, nativeStart: 0 };
+  const boundary =
+    frozen && lastBoundary.current
+      ? {
+          historyCount:
+            lastBoundary.current.historyCount +
+            turns.length -
+            lastBoundary.current.turnCount,
+          nativeStart: lastBoundary.current.nativeStart,
+        }
+      : nextBoundary;
+  lastBoundary.current = { ...boundary, turnCount: turns.length };
   useLayoutEffect(() => {
     const node = body.current,
       saved = anchor.current;
@@ -433,45 +430,28 @@ export function TerminalConversation({
     <section
       className="terminal-conversation"
       role="region"
-      aria-label="현재 대화 기록"
+      aria-label="터미널 출력"
       data-terminal-rich="true"
+      data-native-start={boundary.nativeStart}
+      data-following={following}
+      data-selected={selected}
       hidden={!visible}
     >
-      <header>
-        <div>
-          <b>대화</b>
-          <small>
-            {info.agentState === "working"
-              ? "작업 중 · 아래 터미널에서 실시간 출력과 입력을 계속합니다."
-              : "질문과 답변을 이어서 선택·복사할 수 있습니다. 입력은 아래 터미널에서 계속하세요."}
-          </small>
-        </div>
-        <button
-          className="icon-button compact"
-          aria-label="현재 대화 기록 새로고침"
-          disabled={loading}
-          onClick={() => void load.current()}
-        >
-          <RotateCcw size={15} />
-        </button>
-        <button
-          className="icon-button compact"
-          aria-label="현재 대화 기록 닫기"
-          title="터미널 원문 보기"
-          onClick={onClose}
-        >
-          <X size={16} />
-        </button>
-      </header>
       <div
         className="terminal-conversation-body"
         ref={body}
         onScroll={() => {
           const node = body.current;
           if (!node) return;
-          setFollowing(
-            node.scrollHeight - node.clientHeight - node.scrollTop < 40,
-          );
+          const next =
+            node.scrollHeight - node.clientHeight - node.scrollTop < 40;
+          followingRef.current = next;
+          setFollowing(next);
+          if (next && !hasSelection() && pending.current) {
+            latest.current = pending.current;
+            setDetail(pending.current);
+            pending.current = null;
+          }
           if (node.scrollTop < 24 && detail?.nextCursor && !error)
             void load.current(true, true);
         }}
@@ -506,12 +486,15 @@ export function TerminalConversation({
             </button>
           )}
           {detail?.notice && <p role="status">{detail.notice}</p>}
-          {loading && !detail && <p role="status">대화 기록을 읽는 중…</p>}
-          {turns.map((turn) => {
+          {turns.slice(0, boundary.historyCount).map((turn) => {
             const props = {
               provider: provider === "claude" ? "Claude" : "Codex",
               hostId: info.hostId,
               cwd: detail?.thread.cwd || info.cwd,
+              sessionId,
+              historical: true,
+              completed: turn.complete,
+              selectionActive: selected,
             };
             const work = turn.items.filter(
               (item) => item.kind !== "user" && !turn.finalIds.has(item.id),
@@ -524,51 +507,51 @@ export function TerminalConversation({
               >
                 {turn.complete ? (
                   <>
-                    {turn.items
-                      .filter((item) => item.kind === "user")
-                      .map((item) => (
-                        <Message key={item.id} item={item} {...props} />
-                      ))}
+                    <TranscriptItems
+                      items={turn.items.filter((item) => item.kind === "user")}
+                      {...props}
+                    />
                     {!!work.length && (
                       <details className="conversation-work">
-                        <summary>작업 과정 {work.length}개 · 펼쳐 보기</summary>
-                        {work.map((item) => (
-                          <Message key={item.id} item={item} {...props} />
-                        ))}
+                        <summary>작업 과정 {work.length}개</summary>
+                        <TranscriptItems items={work} {...props} />
                       </details>
                     )}
-                    {turn.items
-                      .filter((item) => turn.finalIds.has(item.id))
-                      .map((item) => (
-                        <Message key={item.id} item={item} {...props} />
-                      ))}
+                    <TranscriptItems
+                      items={turn.items.filter((item) =>
+                        turn.finalIds.has(item.id),
+                      )}
+                      {...props}
+                    />
                   </>
                 ) : (
-                  turn.items.map((item) => (
-                    <Message key={item.id} item={item} {...props} />
-                  ))
+                  <TranscriptItems items={turn.items} {...props} />
                 )}
               </section>
             );
           })}
-          {detail && !turns.length && !loading && (
-            <p>
-              {detail.nextCursor
-                ? "이 구간에는 표시할 메시지가 없습니다. 이전 메시지를 계속 불러올 수 있습니다."
-                : "아직 저장된 메시지가 없습니다. 실시간 출력은 터미널에서 볼 수 있습니다."}
-            </p>
-          )}
+          <TerminalNativeFlow
+            term={term}
+            blocks={blocks}
+            active={visible}
+            frozen={selected || !following}
+            startRow={(frame) =>
+              transcriptBoundary(turns, frame, blocks, working).nativeStart
+            }
+            onFrame={setNativeFrame}
+            onLink={onLink}
+            renderAnswer={(text) => (
+              <Markdown
+                text={text}
+                location={{ hostId: info.hostId, cwd: info.cwd }}
+              />
+            )}
+          />
         </div>
       </div>
       {!following && (
-        <button
-          className="conversation-bottom"
-          onClick={() => {
-            if (body.current)
-              body.current.scrollTop = body.current.scrollHeight;
-          }}
-        >
-          <ArrowDown size={14} /> 최신 대화
+        <button className="conversation-bottom" onClick={resumeFollowing}>
+          <ArrowDown size={14} /> 맨 아래로
         </button>
       )}
     </section>,

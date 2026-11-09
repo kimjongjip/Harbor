@@ -17,7 +17,7 @@ export interface HistoryPage {
 export interface HistoryDetail {
   thread: HistoryThread;
   items: MessageItem[];
-  /** Opt-in chronological messages plus bounded, user-visible work summaries. */
+  /** Opt-in chronological messages plus exact saved work previews and lazy full-text references. */
   timeline?: MessageItem[];
   /** Compact wire timeline. Keys are `${kind}:${id}` across items + activity. */
   activity?: MessageItem[];
@@ -28,4 +28,10 @@ export interface HistoryDetail {
 }
 export interface HistoryReadOptions {
   includeActivity?: boolean;
+}
+export interface HistoryActivityPage {
+  text: string;
+  offset: number;
+  nextOffset: number | null;
+  total: number;
 }

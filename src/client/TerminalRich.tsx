@@ -53,7 +53,7 @@ export function richSelectedText(root: HTMLElement): string | null {
     )
       unique.set(id, article);
   }
-  const chunks: string[] = [];
+  const chunks: { text: string; native: boolean }[] = [];
   for (const [id, article] of unique) {
     // Closed work details are not part of the visible selected transcript.
     if (article.closest("details:not([open])")) continue;
@@ -72,9 +72,21 @@ export function richSelectedText(root: HTMLElement): string | null {
       if (!mapped) return null;
       selected.setEnd(mapped, range.endOffset);
     }
-    chunks.push(selectedRichRange(root, article, selected));
+    chunks.push({
+      text: selectedRichRange(root, article, selected),
+      native: article.hasAttribute("data-native-row"),
+    });
   }
-  return chunks.join("\n\n");
+  return chunks
+    .map(
+      (chunk, index) =>
+        (index
+          ? chunk.native && chunks[index - 1].native
+            ? "\n"
+            : "\n\n"
+          : "") + chunk.text,
+    )
+    .join("");
 }
 
 function selectedRichRange(root: HTMLElement, node: Element, range: Range) {
@@ -101,7 +113,8 @@ function selectedRichRange(root: HTMLElement, node: Element, range: Range) {
   const container = root.ownerDocument.createElement("div");
   container.append(fragment);
   if (node.classList.contains("history-message"))
-    for (const label of container.querySelectorAll(":scope > b")) label.append("\n");
+    for (const label of container.querySelectorAll(":scope > b"))
+      label.append("\n");
   // Preserve meaningful paragraph/row breaks without reading unrelated blocks.
   for (const br of container.querySelectorAll("br")) br.replaceWith("\n");
   for (const cell of container.querySelectorAll("th,td")) cell.append("\t");

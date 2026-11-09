@@ -7,6 +7,7 @@ import type { HistoryThread, HistoryPage, HistoryDetail, HistoryReadOptions } fr
 import { passwordConnection } from './ssh-connect.js';
 import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCursor, readClaudeRecordsBackwards } from './claude-history-pages.js';
 import { assembleClaudeHistory, belongsToClaudeSession, projectClaudeRecord, type ClaudeHistoryRecord } from './claude-history-items.js';
+import { activityBudget, historyActivities } from './history-activity.js';
 
 const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
@@ -105,7 +106,7 @@ export function parseClaudeHistory(hostId: string, id: string, text: string, mod
   return {
     thread: { id, hostId, provider: 'claude', title: title.slice(0, 180), cwd: rows.find(r => typeof r.cwd === 'string')?.cwd || '', preview, updatedAt: modified, source: 'claude', active: false },
     ...messages, nextCursor: null,
-    ...(activityOmitted ? { notice: '작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다.' } : {}),
+    ...(activityOmitted ? { notice: '개별 기록 하나의 작업 항목이 2,048개를 넘어 일부를 표시하지 않았습니다. 원본 기록은 유지됩니다.' } : {}),
   };
 }
 const titleFields = { 'agent-name': 'agentName', 'custom-title': 'customTitle', 'ai-title': 'aiTitle', summary: 'summary' } as const;
@@ -199,7 +200,7 @@ export class ClaudeHistory {
         titles = titleValues(sample, id);
       }
       const projected: ClaudeHistoryRecord[] = [], seen = new Set<string>(), latestTitles: Titles = {};
-      let remaining = snapshot.remaining, fallbackCwd = '', visibleCount = 0;
+      let remaining = snapshot.remaining, fallbackCwd = '', visibleCount = 0, activityCount = 0;
       const scanned = await readClaudeRecordsBackwards(read, snapshot.at, snapshot.skip, alive, (line, start) => {
         let row: any; try { row = JSON.parse(line.toString('utf8')); } catch { return false; }
         if (!belongsToClaudeSession(row, id)) return false;
@@ -216,15 +217,20 @@ export class ClaudeHistory {
         if (remaining > 0) { if (visible) remaining--; return false; }
         projected.push(record);
         if (visible) visibleCount++;
-        return visibleCount >= 50 || (options.includeActivity === true && projected.length >= 250);
+        activityCount += record.items.filter(item => item.kind !== 'user' && item.kind !== 'assistant').length;
+        return visibleCount >= 50 || (options.includeActivity === true && activityCount >= 250);
       });
       const after = r.stat ? await r.stat(entry.file) : current;
       if (after.directory || after.size < snapshot.size || (after.size === snapshot.size && after.modified !== snapshot.modified) || await claudeHistoryFingerprint(read, snapshot.size, `${host.id}\0${id}\0${entry.file}`) !== fingerprint) throw changed();
       const combined = snapshot.at === snapshot.size ? { ...titles, ...latestTitles } : { ...latestTitles, ...titles };
       const { activityOmitted, ...messages } = assembleClaudeHistory(projected.reverse(), !!options.includeActivity);
+      if (messages.timeline) {
+        const budget = activityBudget();
+        messages.timeline = messages.timeline.map(item => item.kind === 'user' || item.kind === 'assistant' ? item : historyActivities.preview(host, 'claude', id, item, budget));
+      }
       const notice = [
         scanned.oversized ? '8 MB를 넘는 개별 기록 항목은 표시하지 않았습니다. 원본 파일은 유지되며 이전 대화를 계속 불러올 수 있습니다.' : '',
-        activityOmitted ? '작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다.' : '',
+        activityOmitted ? '개별 기록 하나의 작업 항목이 2,048개를 넘어 일부를 표시하지 않았습니다. 원본 기록은 유지됩니다.' : '',
       ].filter(Boolean).join(' ');
       return {
         thread: { ...thread, updatedAt: current.modified, cwd: thread.cwd || fallbackCwd, title: Object.keys(titleFields).map(type => combined[type as keyof Titles]).find(Boolean) || thread.title },

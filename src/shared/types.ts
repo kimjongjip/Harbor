@@ -61,6 +61,9 @@ export interface MessageItem {
     "user" | "assistant" | "command" | "change" | "plan" | "tool" | "notice";
   text: string;
   detail?: string;
+  /** Lazy reference to exact saved work output, scoped to its host and native session. */
+  activityRef?: string;
+  activityTruncated?: boolean;
   phase?: string;
   status?: string;
   /** Native turn outcome. Unknown/absent is never evidence that work finished. */

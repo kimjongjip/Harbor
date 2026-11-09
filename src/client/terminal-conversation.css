@@ -1,45 +1,25 @@
 .terminal-conversation {
   position: absolute;
   z-index: 7;
-  inset: 0 0 clamp(130px, 24%, 220px);
+  inset: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   color: var(--text);
   background: var(--bg);
-  border-bottom: 2px solid var(--border);
 }
 .terminal-conversation[hidden] {
   display: none;
 }
-.terminal-conversation > header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-  background: var(--panel);
-}
-.terminal-conversation > header > div {
-  flex: 1;
-  min-width: 0;
-}
-.terminal-conversation header b {
-  font-size: var(--ui-font-size, 14px);
-  margin-right: 10px;
-}
-.terminal-conversation header small {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.5;
+.terminal-instance > .terminal-mount {
+  overflow: hidden;
 }
 .terminal-conversation-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 12px 20px;
+  padding: 6px 10px 12px;
   user-select: text;
   overflow-anchor: none;
   font-family: var(--font-ui, sans-serif);
@@ -47,11 +27,13 @@
   line-height: var(--document-line-height, 1.7);
 }
 .terminal-conversation-document {
-  max-width: 1050px;
-  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  text-align: left;
 }
 .terminal-conversation-body .history-message {
-  padding: 14px 0;
+  padding: 8px 0;
   border: 0;
 }
 .terminal-conversation-body .history-message > b {
@@ -61,8 +43,8 @@
   font-size: 12px;
 }
 .terminal-conversation-body .history-message.user {
-  padding: 12px 16px;
-  border-radius: 9px;
+  padding: 8px 10px;
+  border-radius: 0;
   background: var(--panel);
 }
 .terminal-conversation-body .history-message.user > b {
@@ -73,9 +55,7 @@
   overflow-wrap: anywhere;
 }
 .conversation-turn + .conversation-turn {
-  margin-top: 24px;
-  border-top: 1px solid var(--border);
-  padding-top: 20px;
+  margin-top: 18px;
 }
 .terminal-conversation .markdown {
   font-size: inherit;
@@ -114,13 +94,4 @@
 .terminal-conversation ::selection {
   color: var(--selection-text, #fff);
   background: var(--selection-bg, #2457b8);
-}
-.terminal-view-modes {
-  display: inline-flex;
-  flex: none;
-  gap: 2px;
-}
-.terminal-view-modes button[aria-pressed="true"] {
-  background: var(--accent-soft);
-  color: var(--accent);
 }

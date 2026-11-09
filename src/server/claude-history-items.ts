@@ -8,6 +8,7 @@ export interface ClaudeHistoryRecord {
   prompt: boolean;
   items: MessageItem[];
   outcome?: MessageItem["turnStatus"];
+  activityOmitted?: boolean;
 }
 
 export function belongsToClaudeSession(row: any, sessionId: string): boolean {
@@ -24,21 +25,20 @@ function toolDescription(part: any): string {
   const input = part.input;
   if (!input || typeof input !== "object") return "";
   // Display only public work arguments, not arbitrary tool payloads or images.
-  return ["command", "file_path", "path", "pattern", "query", "description"]
-    .flatMap(key => typeof input[key] === "string" ? [`${key}: ${bounded(input[key], 1000)}`] : [])
-    .join("\n").slice(0, 4000);
+  return ["command", "file_path", "path", "pattern", "query", "description", "target", "recipient", "message", "question", "prompt"]
+    .flatMap(key => typeof input[key] === "string" ? [`${key}: ${input[key]}`] : [])
+    .join("\n");
 }
 
 function toolResult(part: any): string {
-  if (typeof part.content === "string") return bounded(part.content);
+  if (typeof part.content === "string") return part.content;
   if (!Array.isArray(part.content)) return "";
   let text = "";
   for (const block of part.content) {
     if (block?.type === "text" && typeof block.text === "string")
-      text += (text ? "\n" : "") + block.text.slice(0, 4000 - text.length);
-    if (text.length >= 4000) break;
+      text += (text ? "\n" : "") + block.text;
   }
-  return text.slice(0, 4000);
+  return text;
 }
 
 export function projectClaudeRecord(
@@ -86,7 +86,7 @@ export function projectClaudeRecord(
     } : {}),
   });
   if (includeActivity) for (const [index, part] of content.entries()) {
-    if (record.items.length >= 202) break;
+    if (record.items.length >= 2048) { record.activityOmitted = true; break; }
     if (part?.type === "tool_use") record.items.push({
       id: `${id}:tool:${index}`, kind: part.name === "Bash" ? "command" : "tool",
       text: bounded(part.name, 200) || "도구 실행", detail: toolDescription(part), status: "started",
@@ -104,8 +104,9 @@ export function assembleClaudeHistory(records: ClaudeHistoryRecord[], includeAct
 } {
   const timeline: MessageItem[] = [], items: MessageItem[] = [];
   const byRecord = new Map<string, string>(), outcomes = new Map<string, MessageItem["turnStatus"]>();
-  let currentTurn: string | undefined, count = 0, bytes = 0, activityOmitted = false;
+  let currentTurn: string | undefined, activityOmitted = false;
   for (const record of records) {
+    activityOmitted ||= !!record.activityOmitted;
     const explicitTurn = record.userId ? `claude-user:${record.userId}` : undefined;
     if (record.prompt) currentTurn = `claude-user:${record.id}`;
     else if (explicitTurn) currentTurn = explicitTurn;
@@ -117,11 +118,6 @@ export function assembleClaudeHistory(records: ClaudeHistoryRecord[], includeAct
     for (const source of record.items) {
       const item = { ...source, ...(turnId ? { turnId } : {}) };
       if (item.kind === "user" || item.kind === "assistant") items.push(item);
-      else {
-        const size = item.text.length + (item.detail?.length || 0);
-        if (count >= 200 || bytes + size > 96000) { activityOmitted = true; continue; }
-        count++; bytes += size;
-      }
       if (includeActivity) timeline.push(item);
     }
   }

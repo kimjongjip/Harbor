@@ -33,6 +33,7 @@ import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
 import { History } from "./history.js";
 import { serializeHistoryDetailForRead } from "./history-response.js";
+import { historyActivities } from "./history-activity.js";
 import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
@@ -956,7 +957,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.16.0" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.16.1" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1682,6 +1683,14 @@ app.get("/api/hosts/:id/history", async (req, res) => {
       archived: input.archived === "true",
     }),
   );
+});
+app.get("/api/hosts/:id/history/:threadId/activity/:ref", (req, res) => {
+  const host = hub.host(String(req.params.id));
+  const provider = historyProvider.parse(req.query.provider);
+  const sessionId = historyThreadId.parse(req.params.threadId);
+  const ref = z.string().regex(/^[a-f0-9]{64}$/).parse(req.params.ref);
+  const offset = z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).parse(req.query.offset);
+  res.json(historyActivities.read(host, provider, sessionId, ref, offset));
 });
 app.get("/api/hosts/:id/history/:threadId", async (req, res) => {
   const host = hub.host(String(req.params.id));

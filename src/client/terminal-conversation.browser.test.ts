@@ -9,7 +9,7 @@ import { build } from "esbuild";
 import { _electron } from "playwright";
 
 test(
-  "automatic reader waits for completion, folds work, copies multiple turns and preserves selected DOM during refresh",
+  "one terminal surface retains native live output, folds original work and preserves cross-turn selection and session identity",
   { skip: process.platform !== "win32", timeout: 90000 },
   async () => {
     const root = resolve(".cache/terminal-conversation-browser-tests");
@@ -19,6 +19,7 @@ test(
       stdin: {
         contents: `
 import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';
+import{Terminal}from'@xterm/xterm';import'@xterm/xterm/css/xterm.css';
 import{TerminalConversation}from'./src/client/TerminalConversation';import{richSelectedText}from'./src/client/TerminalRich';
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/history.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
@@ -36,13 +37,13 @@ const timeline=window.stage===5?[message('wrong','user','WRONG SESSION RESPONSE'
 const payload={thread:{id:window.stage===5?'unrelated':sessionId,hostId:'fixture',title:'Synthetic task',cwd:'/fixture'},items:timeline.filter(item=>item.kind==='user'||item.kind==='assistant'),timeline,nextCursor:null};
 if(window.holdNext){window.holdNext=false;return new Promise(resolve=>{window.releaseHeldHistory=()=>resolve(response(payload));});}return response(payload);};
 function Fixture(){const[term,setTerm]=useState(null),[mode,setMode]=useState('auto'),[blocks,setBlocks]=useState([]),[info,setInfo]=useState({id:'same-pty',hostId:'fixture',cwd:'/fixture',title:'Synthetic task',exited:false,agentKind:'codex',agentSessionId:'native',agentState:'working'});
-window.setReaderMode=setMode;window.advanceHistory=(stage,agentState='idle')=>{window.stage=stage;setInfo(previous=>({...previous,agentState}));setBlocks(stage===4?[{id:'proof',requestId:'proof',sessionId:'legacy',text:'LEGACY FINAL',columns:80,viewportRows:24,createdAt:1,state:'ready',marker:''}]:[]);};
+window.setReaderMode=setMode;window.advanceHistory=(stage,agentState='idle')=>{window.stage=stage;window.seedNative(stage);setInfo(previous=>({...previous,agentState}));setBlocks(stage===4?[{id:'proof',requestId:'proof',sessionId:'legacy',text:'LEGACY FINAL',columns:80,viewportRows:24,createdAt:1,state:'ready',marker:''}]:[]);};
 window.unknownAgent=()=>setInfo(previous=>({...previous,agentState:undefined}));
-window.useLegacy=()=>{window.stage=3;setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'legacy',agentKind:'claude',agentState:'idle'}));};
-window.useNext=()=>{window.stage=7;setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'next',agentKind:'claude',agentState:'idle'}));};
+window.useLegacy=()=>{window.stage=3;window.seedNative(3);setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'legacy',agentKind:'claude',agentState:'idle'}));};
+window.useNext=()=>{window.stage=7;window.seedNative(7);setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'next',agentKind:'claude',agentState:'idle'}));};
 window.completeLegacy=async(sessionId='legacy',text='LEGACY FINAL')=>{const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const textHash=Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,'0')).join('');setInfo(previous=>({...previous,agentCompletion:{sessionId,textHash}}));};
-useEffect(()=>{window.nativeMounts++;const native={element:document.getElementById('native-terminal'),write:data=>window.nativeWrites.push(data)};window.fixtureTerm=native;setTerm(native);const copy=event=>{if(event.ctrlKey&&event.key.toLowerCase()==='c'){const text=richSelectedText(document.getElementById('native-mount'));if(text){event.preventDefault();window.copies.push(text);}}};document.addEventListener('keydown',copy);return()=>document.removeEventListener('keydown',copy);},[]);
-return <><div id="native-mount" style={{position:'relative',width:980,height:720,border:'1px solid gray'}}><div id="native-terminal" style={{height:'100%'}}><div id="native-output">LIVE NATIVE WORK OUTPUT</div><textarea id="native-input" defaultValue="UNSENT DRAFT" style={{position:'absolute',bottom:20,left:20,width:900,height:80}}/></div></div>{term&&<TerminalConversation term={term} info={info} mode={mode} blocks={blocks} onClose={()=>setMode('terminal')}/>}</>;}
+useEffect(()=>{window.nativeMounts++;const native=new Terminal({cols:100,rows:35,fontSize:14,convertEol:true});native.open(document.getElementById('native-terminal'));const write=native.write.bind(native);window.seedNative=stage=>write('\\x1b[2J\\x1b[H'+(stage<3?'› QUESTION TWO\\r\\nLIVE NATIVE WORK OUTPUT\\r\\n'+(stage===0?'PARTIAL ANSWER TWO':stage===2?'UPDATED FINAL ANSWER TWO':'FINAL ANSWER TWO')+'\\r\\n':'')+'❯ UNSENT DRAFT');window.seedNative(0);window.fixtureTerm=native;native.write=data=>window.nativeWrites.push(data);setTerm(native);const copy=event=>{if(event.ctrlKey&&event.key.toLowerCase()==='c'){const text=richSelectedText(document.getElementById('native-mount'));if(text){event.preventDefault();window.copies.push(text);}}};document.addEventListener('keydown',copy);return()=>{document.removeEventListener('keydown',copy);native.dispose();};},[]);
+return <><div id="native-mount" style={{position:'relative',width:980,height:720,border:'1px solid gray'}}><div id="native-terminal" style={{height:'100%'}}/></div>{term&&<TerminalConversation term={term} info={info} mode={mode} blocks={blocks} onClose={()=>setMode('terminal')}/>}</>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "terminal-conversation-fixture.tsx",
@@ -86,58 +87,74 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.waitForFunction(() => (window as any).requests?.length > 0);
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
-        false,
+        true,
       );
-      assert.equal(await page.locator("#native-output").isVisible(), true);
+      await page
+        .locator(".terminal-native-flow")
+        .getByText("LIVE NATIVE WORK OUTPUT", { exact: true })
+        .waitFor();
+      assert.equal(
+        await page.locator(".terminal-conversation > header").count(),
+        0,
+      );
+      assert.equal(
+        await page
+          .locator(".terminal-conversation")
+          .getByText("입력은 아래 터미널에서 계속하세요.", { exact: false })
+          .count(),
+        0,
+      );
       await page.evaluate(() => (window as any).advanceHistory(0, "idle"));
       await page.waitForTimeout(260);
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
-        false,
-        "an idle process and final_answer phase alone must not present partial output as complete",
+        true,
+        "native state changes must not switch to a separate conversation screen",
       );
-      await page.evaluate(() => (window as any).setReaderMode("conversation"));
-      await page
-        .locator(".terminal-conversation")
-        .waitFor({ state: "visible" });
       assert.equal(
         await page.locator('[data-turn-id="two"] .conversation-work').count(),
         0,
+        "an idle process and final_answer phase alone must not mark an in-progress turn complete",
       );
+      const secondWork = page.locator('[data-work-item="tool2"]');
       assert.equal(
-        await page.getByText("SECRET TOOL TWO", { exact: true }).isVisible(),
-        true,
+        await secondWork.count(),
+        1,
+        "Individual original work can be expanded independently of completion",
       );
-      await page.evaluate(() => (window as any).setReaderMode("auto"));
-      await page.locator(".terminal-conversation").waitFor({ state: "hidden" });
+      await secondWork.locator("summary").click();
+      assert.equal(await secondWork.locator("pre").isVisible(), true);
+      await secondWork.locator("summary").click();
       // Only state/API events change here: no scrolling or mouse movement to trigger rendering.
       await page.evaluate(() => (window as any).advanceHistory(1));
       await page
         .locator(".terminal-conversation")
         .waitFor({ state: "visible" });
-      await page.getByText("FINAL ANSWER TWO", { exact: true }).waitFor();
-      await page.evaluate(() => (window as any).unknownAgent());
-      await page.locator(".terminal-conversation").waitFor({ state: "hidden" });
-      await page.evaluate(() => (window as any).setReaderMode("conversation"));
       await page
         .locator(".terminal-conversation")
-        .waitFor({ state: "visible" });
+        .getByText("FINAL ANSWER TWO", { exact: true })
+        .waitFor();
+      await page.evaluate(() => (window as any).unknownAgent());
+      assert.equal(
+        await page.locator(".terminal-conversation").isVisible(),
+        true,
+        "Unknown agent state does not hide the unified output",
+      );
       await page.evaluate(() => {
         (window as any).advanceHistory(1);
         (window as any).setReaderMode("auto");
       });
       assert.equal(await page.locator(".conversation-work").count(), 2);
       assert.equal(await page.locator(".conversation-work[open]").count(), 0);
-      assert.equal(
-        await page.getByText("SECRET TOOL TWO", { exact: true }).isVisible(),
-        false,
-      );
-      await page.locator('[data-turn-id="two"] summary').click();
-      assert.equal(
-        await page.getByText("SECRET TOOL TWO", { exact: true }).isVisible(),
-        true,
-      );
-      await page.locator('[data-turn-id="two"] summary').click();
+      assert.equal(await secondWork.locator("pre").isVisible(), false);
+      await page
+        .locator('[data-turn-id="two"] > .conversation-work > summary')
+        .click();
+      await secondWork.locator("summary").click();
+      assert.equal(await secondWork.locator("pre").isVisible(), true);
+      await page
+        .locator('[data-turn-id="two"] > .conversation-work > summary')
+        .click();
       await page.screenshot({ path: join(root, "completed-reader.png") });
       await page.evaluate(() => {
         const start = document.querySelector(
@@ -176,6 +193,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.waitForTimeout(200);
       assert.equal(
         await page
+          .locator(".terminal-conversation")
           .getByText("UPDATED FINAL ANSWER TWO", { exact: true })
           .count(),
         0,
@@ -186,7 +204,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       assert.equal(await page.locator(".conversation-work[open]").count(), 0);
       assert.equal(
-        await page.getByText("SECRET TOOL ONE", { exact: true }).isVisible(),
+        await page.locator('[data-work-item="tool1"] pre').isVisible(),
         false,
       );
       assert.equal(
@@ -200,13 +218,20 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
       await page
+        .locator(".terminal-conversation")
         .getByText("UPDATED FINAL ANSWER TWO", { exact: true })
         .waitFor();
       // Rich completion notifications must not restructure selected legacy content either.
       await page.evaluate(() => (window as any).useLegacy());
-      await page
-        .getByText("LEGACY WORK STILL SELECTED", { exact: true })
-        .waitFor();
+      const legacyWork = page.locator('[data-work-item="legacy-tool"]');
+      await legacyWork.locator("summary").waitFor();
+      assert.equal(
+        await legacyWork.locator("pre").isVisible(),
+        false,
+        "Historic unknown-state work still offers manual expand/collapse",
+      );
+      await legacyWork.locator("summary").click();
+      await legacyWork.locator("pre").waitFor();
       await page.evaluate(() => {
         const start = document.querySelector(
           '[data-rich-block="conversation-user-legacy-q"] .conversation-question',
@@ -228,9 +253,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(150);
       assert.equal(
-        await page
-          .getByText("LEGACY WORK STILL SELECTED", { exact: true })
-          .isVisible(),
+        await legacyWork.locator("pre").isVisible(),
         true,
         "new completion blocks must not collapse selected DOM",
       );
@@ -250,15 +273,13 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         0,
         "a rich block alone is not a whole-turn completion proof",
       );
-      await page.evaluate(() => (window as any).setReaderMode("auto"));
-      await page.locator(".terminal-conversation").waitFor({ state: "hidden" });
       await page.evaluate(() =>
         (window as any).completeLegacy("different-session"),
       );
       await page.waitForTimeout(200);
       assert.equal(
-        await page.locator(".terminal-conversation").isVisible(),
-        false,
+        await page.locator(".conversation-work").count(),
+        0,
         "completion from a different native conversation must be ignored",
       );
       await page.evaluate(() =>
@@ -266,14 +287,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(200);
       assert.equal(
-        await page.locator(".terminal-conversation").isVisible(),
-        false,
+        await page.locator(".conversation-work").count(),
+        0,
         "the Stop hook must identify the actual last answer",
       );
-      await page.evaluate(() => (window as any).setReaderMode("conversation"));
-      await page
-        .locator(".terminal-conversation")
-        .waitFor({ state: "visible" });
       await page.evaluate(() => {
         const start = document.querySelector(
           '[data-rich-block="conversation-user-legacy-q"] .conversation-question',
@@ -289,13 +306,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         selection.addRange(range);
         (window as any).selectedLegacyNode = end;
       });
-      await page.evaluate(() => (window as any).setReaderMode("auto"));
       await page.evaluate(() => (window as any).completeLegacy());
       await page.waitForTimeout(250);
       assert.equal(
-        await page
-          .getByText("LEGACY WORK STILL SELECTED", { exact: true })
-          .isVisible(),
+        await legacyWork.locator("pre").isVisible(),
         true,
         "a verified Stop event must wait to fold while its turn is selected",
       );
@@ -322,11 +336,17 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(150);
       assert.equal(
-        await page.getByText("WRONG SESSION RESPONSE", { exact: true }).count(),
+        await page
+          .locator(".terminal-conversation")
+          .getByText("WRONG SESSION RESPONSE", { exact: true })
+          .count(),
         0,
       );
       assert.equal(
-        await page.getByText("LEGACY FINAL", { exact: true }).count(),
+        await page
+          .locator(".terminal-conversation")
+          .getByText("LEGACY FINAL", { exact: true })
+          .count(),
         1,
       );
       await page.evaluate(() => {
@@ -337,25 +357,42 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         () => typeof (window as any).releaseHeldHistory === "function",
       );
       await page.evaluate(() => (window as any).useNext());
-      await page.getByText("NEXT SESSION ONLY", { exact: true }).waitFor();
+      await page
+        .locator(".terminal-conversation")
+        .getByText("NEXT SESSION ONLY", { exact: true })
+        .waitFor();
       await page.evaluate(() => (window as any).releaseHeldHistory());
       await page.waitForTimeout(200);
       assert.equal(
-        await page.getByText("NEXT SESSION ONLY", { exact: true }).count(),
+        await page
+          .locator(".terminal-conversation")
+          .getByText("NEXT SESSION ONLY", { exact: true })
+          .count(),
         1,
       );
       assert.equal(
-        await page.getByText("LEGACY FINAL", { exact: true }).count(),
+        await page
+          .locator(".terminal-conversation")
+          .getByText("LEGACY FINAL", { exact: true })
+          .count(),
         0,
         "late aborted history response must not leak the previous conversation",
       );
-      await page
-        .getByRole("button", { name: "현재 대화 기록 닫기", exact: true })
-        .click();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "현재 대화 기록 닫기", exact: true })
+          .count(),
+        0,
+      );
+      await page.evaluate(() => (window as any).setReaderMode("terminal"));
       await page.locator(".terminal-conversation").waitFor({ state: "hidden" });
       assert.equal(
-        await page.locator("#native-input").inputValue(),
-        "UNSENT DRAFT",
+        await page.evaluate(() =>
+          (window as any).fixtureTerm.buffer.active
+            .getLine(0)
+            ?.translateToString(true),
+        ),
+        "❯ UNSENT DRAFT",
       );
       assert.equal(await page.evaluate(() => (window as any).nativeMounts), 1);
       assert.deepEqual(

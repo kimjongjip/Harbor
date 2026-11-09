@@ -17,7 +17,10 @@ import type {
   HistoryDetail,
 } from "../shared/history";
 import { api } from "./api";
-import { Markdown } from "./RichMarkdown";
+import { TranscriptItems } from "./TranscriptItems";
+import { expandTimeline } from "./conversation-turns";
+import { conversationSelection } from "./conversation-selection";
+import { richSelectedText } from "./TerminalRich";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import {
   historySnippet,
@@ -85,14 +88,34 @@ export default function CodexHistory({
   const [reading, setReading] = useState(false);
   const [resuming, setResuming] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
+  const [selectionActive, setSelectionActive] = useState(false);
   const [recentQuestions, setRecentQuestions] = useState<
     Record<string, string>
   >({});
   const turns = useMemo(
-    () => newestHistoryTurns(detail?.items || []),
+    () => newestHistoryTurns(detail?.timeline || detail?.items || []),
     [detail],
   );
   const recentQuestion = recentHistoryQuestion(detail?.items || []);
+  useEffect(() => {
+    const node = transcript.current;
+    setSelectionActive(false);
+    if (!node) return;
+    const dispose = conversationSelection(node);
+    const changed = () => {
+      const selection = node.ownerDocument.getSelection();
+      setSelectionActive(
+        !!selection &&
+          !selection.isCollapsed &&
+          node.contains(selection.anchorNode),
+      );
+    };
+    node.ownerDocument.addEventListener("selectionchange", changed);
+    return () => {
+      dispose();
+      node.ownerDocument.removeEventListener("selectionchange", changed);
+    };
+  }, [selected?.id, selected?.hostId]);
   const generation = useRef(0),
     readingGeneration = useRef(0),
     loadLock = useRef(false);
@@ -216,12 +239,22 @@ export default function CodexHistory({
       // Read a small number of those pages to reach the latest actual message.
       for (let attempt = 0; attempt < 4; attempt++) {
         const page = await api<HistoryDetail>(
-          `/hosts/${thread.hostId}/history/${thread.id}?${new URLSearchParams({ provider, ...(cursor ? { cursor } : {}) })}`,
+          `/hosts/${thread.hostId}/history/${thread.id}?${new URLSearchParams({ provider, includeActivity: "1", ...(cursor ? { cursor } : {}) })}`,
           undefined,
           "GET",
         );
         if (readingGeneration.current !== current) return;
-        result = { ...page, notice: page.notice || result?.notice };
+        const timeline = expandTimeline(page);
+        result = {
+          ...page,
+          notice: page.notice || result?.notice,
+          items: result
+            ? prependOlderHistory(result.items, page.items)
+            : page.items,
+          timeline: result
+            ? prependOlderHistory(result.timeline || result.items, timeline)
+            : timeline,
+        };
         if (
           page.items.length ||
           !page.nextCursor ||
@@ -247,6 +280,10 @@ export default function CodexHistory({
               ...nextDetail,
               notice: nextDetail.notice || prev.notice,
               items: prependOlderHistory(prev.items, nextDetail.items),
+              timeline: prependOlderHistory(
+                prev.timeline || prev.items,
+                nextDetail.timeline || nextDetail.items,
+              ),
             }
           : nextDetail,
       );
@@ -590,6 +627,13 @@ export default function CodexHistory({
                   className="history-transcript"
                   ref={transcript}
                   aria-label="최근 질문과 답변"
+                  onCopy={(event) => {
+                    const text = richSelectedText(event.currentTarget);
+                    if (text !== null) {
+                      event.preventDefault();
+                      event.clipboardData.setData("text/plain", text);
+                    }
+                  }}
                 >
                   {detail?.notice && (
                     <p role="status" className="muted">
@@ -625,31 +669,15 @@ export default function CodexHistory({
                       <div className="history-turn-label">
                         {turnIndex === 0 ? "가장 최근 대화" : "이전 대화"}
                       </div>
-                      {turn.items.map((item) => (
-                        <article
-                          key={item.id}
-                          className={`history-message ${item.kind}`}
-                          data-history-message={item.id}
-                        >
-                          <b>
-                            {item.kind === "user"
-                              ? "나"
-                              : item.kind === "assistant"
-                                ? label
-                                : "기록"}
-                          </b>
-                          {item.imageCount && (
-                            <small>이미지 {item.imageCount}개</small>
-                          )}
-                          <Markdown
-                            text={item.text}
-                            location={{
-                              hostId: selected.hostId,
-                              cwd: detail?.thread.cwd || selected.cwd,
-                            }}
-                          />
-                        </article>
-                      ))}
+                      <TranscriptItems
+                        items={turn.items}
+                        provider={label}
+                        hostId={selected.hostId}
+                        cwd={detail?.thread.cwd || selected.cwd}
+                        sessionId={selected.id}
+                        selectionActive={selectionActive}
+                        historical
+                      />
                     </section>
                   ))}
                   {detail?.nextCursor && (

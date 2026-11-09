@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { History } from "./history.js";
+import { historyActivities } from "./history-activity.js";
+import { serializeHistoryDetailForRead } from "./history-response.js";
 import type { HostConfig } from "../shared/types.js";
 const host: HostConfig = {
   id: "local",
@@ -264,12 +266,57 @@ test("opt-in Codex timeline preserves native completion and bounded work without
     const detail = await history.read(host, undefined, threadId, undefined, { includeActivity: true });
     assert.deepEqual(detail.timeline!.map(item => item.id), ["q", "progress", "work", "answer", "live-text", "failed-text", "unknown-text"]);
     assert.equal(detail.timeline![2].detail!.length, 4000);
+    assert.equal(detail.timeline![2].activityTruncated, true);
+    assert.equal(historyActivities.read(host, "codex", threadId, detail.timeline![2].activityRef!).text, "npm test\n" + "x".repeat(20000));
     assert.equal(detail.items.find(item => item.id === "answer")!.turnStatus, "completed");
     assert.equal(detail.items.find(item => item.id === "progress")!.phase, "commentary");
     assert.equal(detail.items.find(item => item.id === "live-text")!.turnStatus, "inProgress");
     assert.equal(detail.items.find(item => item.id === "failed-text")!.turnStatus, "failed");
     assert.equal(detail.items.find(item => item.id === "unknown-text")!.turnStatus, "unknown");
     assert.ok(!JSON.stringify(detail).includes("must never appear"));
+  } finally { history.shutdown(); }
+});
+
+test("history retains all work entries after the preview budget, successful tool results and peer messages", async () => {
+  const calls: string[] = [];
+  const command = "node script.mjs ".repeat(1000), output = "line😀\n".repeat(20000);
+  const work = Array.from({ length: 240 }, (_, i) => ({ id: `work-${i}`, type: "commandExecution", command, aggregatedOutput: output, status: "completed" }));
+  const history = new History(async () => ({ alive: true, stop() {}, async call(method) {
+    calls.push(method);
+    return method === "thread/read" ? { thread: { id: threadId } } : { data: [{ id: "turn", status: "completed", items: [
+      { id: "question", type: "userMessage", content: [{ type: "text", text: "q".repeat(60000) }] },
+      ...work,
+      { id: "mcp", type: "mcpToolCall", server: "fixture", tool: "read", result: { content: [{ type: "text", text: "public tool result" }, { type: "image", data: "secret-binary" }] } },
+      { id: "peer", type: "collabAgentToolCall", tool: "sendInput", receiverThreadIds: ["peer-1"], prompt: "Review it", agentsStates: { "peer-1": { message: "Check the boundary" } } },
+      { id: "dynamic", type: "dynamicToolCall", tool: "fixture", contentItems: [{ type: "inputText", text: "visible output" }, { type: "image", text: "not-text" }] },
+      { id: "answer", type: "agentMessage", text: "a".repeat(70000), phase: "final_answer" },
+    ] }] };
+  } }));
+  try {
+    const detail = await history.read(host, undefined, threadId, undefined, { includeActivity: true });
+    assert.equal(detail.timeline!.length, 245);
+    assert.equal(detail.items[0].text.length, 60000);
+    assert.equal(detail.items.at(-1)!.text.length, 70000);
+    const last = detail.timeline!.find(item => item.id === "work-239")!;
+    assert.ok(last.activityRef);
+    let full = "", offset = 0;
+    do {
+      const page = historyActivities.read(host, "codex", threadId, last.activityRef!, offset);
+      full += page.text;
+      if (page.nextOffset === null) break;
+      offset = page.nextOffset;
+    } while (true);
+    assert.equal(full, command + "\n" + output);
+    const original = (id: string) => {
+      const item = detail.timeline!.find(item => item.id === id)!;
+      return item.activityRef ? historyActivities.read(host, "codex", threadId, item.activityRef).text : item.text + "\n" + item.detail;
+    };
+    assert.match(original("mcp"), /public tool result/);
+    assert.match(original("peer"), /Review it\npeer-1: Check the boundary/);
+    assert.match(original("dynamic"), /visible output/);
+    assert.ok(!/secret-binary|not-text/.test(JSON.stringify(detail)));
+    assert.ok(JSON.stringify(serializeHistoryDetailForRead(detail)).length < 400000);
+    assert.deepEqual(calls, ["thread/read", "thread/turns/list"]);
   } finally { history.shutdown(); }
 });
 

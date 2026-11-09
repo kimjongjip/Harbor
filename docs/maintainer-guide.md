@@ -1,5 +1,17 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.16.1 통합 터미널과 작업 원문
+
+1.16.0의 위쪽 기록 overlay와 아래쪽 입력 분할을 제거했다. `TerminalConversation`은 전체 영역의 단일 scroller이며 `TranscriptItems`의 저장된 항목 다음에 `TerminalNativeFlow`가 같은 xterm의 현재 출력·입력을 이어 표시한다. 별도 대화 헤더/모드 선택이나 중앙 최대 폭이 없다. 원문 버튼은 같은 CLI의 가공하지 않은 화면을 확인하는 fallback이다. 네이티브 프로세스·socket·PTY 크기·입력 경로를 변경하지 않는다.
+
+`terminal-transcript-boundary.ts`는 현재 질문, 정확히 일치하는 조판 답변, 마지막 답변 원문을 이용해 겹치는 구간만 교체한다. `idle`이 명시된 경우에만 원래 입력칸으로 경계를 줄이며, 알 수 없는 상태/승인 대기에서는 원문을 임의로 없애지 않는다. 선택 또는 과거 읽기 중에는 기록·완료 접기·네이티브 경계를 함께 보존한다. 입력 또는 맨 아래로 이동하면 최신 출력에 합류한다. native DOM은 xterm 공개 buffer/cell API를 읽고 ANSI 색상·넓은 문자·원래 커서를 보존하며, 네이티브 입력은 기존 textarea와 제어권 검사에 맡긴다. 조판이나 읽기만으로 입력/resize를 보내지 않는다.
+
+`TranscriptItems`는 명령·도구·코드 변경·에이전트 작업을 원래 순서의 개별 details로 표시한다. 과거 작업은 완료 증명이 없어도 수동 펼침을 제공한다. 전체 턴의 자동 접기는 기존 명시적 완료 증명을 유지한다. `history-items.ts`는 성공한 도구 결과와 에이전트 결과의 저장된 공개 텍스트를 보존한다. 접기와 더 읽기는 모델 호출이 아닌 DOM 표시와 파일/RPC 읽기이며 요약·토큰 압축을 수행하지 않는다.
+
+`HistoryActivities`는 긴 공개 출력의 원문을 호스트 설정·공급자·native session·항목·원문 해시에 묶는다. 전체 캐시 64MiB/4,096개, TTL 15분이며 preview는 일부만 전송한다. `/api/hosts/:id/history/:threadId/activity/:ref`는 기존 인증을 유지하고 UTF-16 64K 단위로 원문을 반환한다. 만료/퇴거는 명시적 새로고침 오류이고 다른 서버/세션/공급자에서는 같은 ref를 읽지 못한다. 긴 도구를 잘라 없애지 않으며 기존 개별 JSONL 8MiB 및 비정상 단일 항목 2,048 activity 상한은 명시적 안내로 남긴다. 숨겨진 추론·이미지 바이트·알 수 없는 인수는 포함하지 않는다.
+
+회귀 검증은 `terminal-native-flow*`, `terminal-transcript-boundary`, `terminal-conversation*`, `history-preview.browser`, `history-activity`, 기존 history/Claude/mobile/control 테스트를 사용한다. 실제 세션 입력/강제 재시작 없이 격리된 원본 버퍼, 합성 기록, HTTP 서버에서 검증한다.
+
 ## 1.16.0 세션 연속성과 대화 읽기
 
 모바일 lease의 renew/release에는 획득한 token을 함께 보낸다. 모바일의 `fresh: true` claim만 새 세대를 만들며, 늦게 도착한 예전 release가 복귀 후 lease를 해제하지 못한다. 동일 대상으로 동시 claim은 합치고, 숨김·세션 변경 중 완료된 claim은 해당 token으로 반환한다. 기존 PC IDE/터미널의 claim 캐시 호환은 유지한다. Safari `pageshow.persisted` 및 온라인 복귀는 현재 snapshot을 받은 뒤 입력을 허용한다. 전송·첨부 완료는 원래 terminal/runtime/native binding과 초안을 확인하며 다른 세션 초안을 바꾸지 않는다. 전송 실패/불확실 입력을 재생하지 않는다.

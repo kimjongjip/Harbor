@@ -1,7 +1,8 @@
 import { RpcClient } from "./rpc.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
-import { normalizeItem } from "./session.js";
+import { historyItem } from "./history-items.js";
+import { activityBudget, historyActivities } from "./history-activity.js";
 import type { HostConfig, MessageItem } from "../shared/types.js";
 import { researchEfforts } from "../shared/research.js";
 import type { ResearchEffort, ResearchModel } from "../shared/research.js";
@@ -277,29 +278,24 @@ export class History {
         turns = await readLegacy(0);
       }
       const items: MessageItem[] = [], timeline: MessageItem[] = [];
-      let activityBytes = 0, activityCount = 0, omitted = false;
+      const budget = activityBudget();
       for (const turn of turns) {
         const turnStatus: MessageItem["turnStatus"] = ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
           ? turn.status : "unknown";
         for (const raw of turn.items || []) {
-          const item = normalizeItem(raw, turn.id);
+          const item = historyItem(raw, turn.id);
           if (!item) continue;
           item.turnStatus = turnStatus;
           if (["user", "assistant", "notice"].includes(item.kind)) {
             items.push(item);
             if (options.includeActivity) timeline.push(item);
           } else if (options.includeActivity) {
-            const activity = { ...item, text: item.text.slice(0, 4000), detail: item.detail?.slice(0, 4000) };
-            const size = activity.text.length + (activity.detail?.length || 0);
-            if (activityCount >= 200 || activityBytes + size > 96000) { omitted = true; continue; }
-            activityCount++; activityBytes += size;
-            timeline.push(activity);
+            timeline.push(historyActivities.preview(host, "codex", threadId, item, budget));
           }
         }
       }
       return { thread, items, nextCursor,
         ...(options.includeActivity ? { timeline } : {}),
-        ...(omitted ? { notice: "작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다." } : {}),
       };
     });
   }

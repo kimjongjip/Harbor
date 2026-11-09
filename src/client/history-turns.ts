@@ -9,10 +9,11 @@ export function prependOlderHistory(
   current: MessageItem[],
   older: MessageItem[],
 ): MessageItem[] {
-  const known = new Set(current.map((item) => item.id));
+  const key = (item: MessageItem) => `${item.kind}:${item.id}`;
+  const known = new Set(current.map(key));
   const uniqueOlder = older.filter((item) => {
-    if (known.has(item.id)) return false;
-    known.add(item.id);
+    if (known.has(key(item))) return false;
+    known.add(key(item));
     return true;
   });
   return [...uniqueOlder, ...current];
@@ -38,7 +39,7 @@ export function newestHistoryTurns(items: MessageItem[]): HistoryTurn[] {
   return turns.reverse().map((turn) => ({
     // Older pages can supply the missing question for a partial first turn.
     // The last message remains the same, so its rendered group keeps its identity.
-    id: turn.at(-1)!.id,
+    id: `${turn.at(-1)!.kind}:${turn.at(-1)!.id}`,
     items: turn,
   }));
 }

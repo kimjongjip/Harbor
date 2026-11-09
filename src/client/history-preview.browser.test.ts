@@ -28,14 +28,15 @@ window.addEventListener('harbor-history-drop',event=>window.historyDrops.push(ev
 const thread=hostId=>({id:'same-native-id',hostId,title:hostId==='remote'?'Investigate task':'Local task',preview:'Initial task description',cwd:'/home/fixture/project',updatedAt:hostId==='remote'?2000:1000,source:'cli',active:false});
 const response=value=>new Response(JSON.stringify(value),{status:200,headers:{'Content-Type':'application/json'}});
 window.fetch=async(input,options={})=>{const url=new URL(String(input),location.href),cursor=url.searchParams.get('cursor'),provider=url.searchParams.get('provider'),hostId=url.pathname.split('/')[3];
-window.historyRequests.push({path:url.pathname,cursor,provider,method:options.method,body:options.body?JSON.parse(options.body):null});
+window.historyRequests.push({path:url.pathname,cursor,provider,includeActivity:url.searchParams.get('includeActivity'),method:options.method,body:options.body?JSON.parse(options.body):null});
+if(url.pathname.includes('/activity/')){const text='Ran rg --files\\nFIRST ORIGINAL TOOL LINE\\nSECOND ORIGINAL TOOL LINE\\nLAST ORIGINAL TOOL LINE',offset=Number(url.searchParams.get('offset')||0),end=Math.min(offset+48,text.length);return response({text:text.slice(offset,end),offset,nextOffset:end<text.length?end:null,total:text.length});}
 if(url.pathname.endsWith('/resume'))return response({id:'resumed-terminal',hostId});
 if(url.pathname.endsWith('/history'))return response({data:[thread(hostId)],nextCursor:null});
 const base={thread:thread(hostId),items:[],nextCursor:null};
 if(hostId==='local')return response({...base,items:[{id:'local-q',kind:'user',text:'LOCAL QUESTION'}]});
 if(provider==='codex')return response({...base,items:[{id:'codex-q',kind:'user',text:'CODEX QUESTION'},{id:'codex-a',kind:'assistant',text:'CODEX ANSWER'}]});
 if(!cursor)return response({...base,nextCursor:'latest-bounded-page'});
-if(cursor==='latest-bounded-page')return response({...base,items:[{id:'q2',kind:'user',text:'PREVIOUS QUESTION'},{id:'a2',kind:'assistant',text:'PREVIOUS COMPLETE ANSWER'},{id:'q3',kind:'user',text:'LATEST QUESTION'},{id:'a3',kind:'assistant',text:'LATEST COMPLETE ANSWER'+('\\n\\nMore explanation to exercise a long readable conversation.').repeat(22)}],nextCursor:'older-page'});
+if(cursor==='latest-bounded-page')return response({...base,items:[{id:'q2',kind:'user',text:'PREVIOUS QUESTION'},{id:'a2',kind:'assistant',text:'PREVIOUS COMPLETE ANSWER'},{id:'q3',kind:'user',text:'LATEST QUESTION'},{id:'a3',kind:'assistant',text:'LATEST COMPLETE ANSWER'+('\\n\\nMore explanation to exercise a long readable conversation.').repeat(22)}],activity:[{id:'old-work',kind:'tool',text:'Interacted with peer',detail:'ORIGINAL PEER RESULT\\nUnmodified historical output',turnStatus:'unknown'},{id:'new-work',kind:'command',text:'Ran rg --files',detail:'FIRST ORIGINAL TOOL',activityRef:'a'.repeat(64),activityTruncated:true}],timelineIds:['user:q2','tool:old-work','assistant:a2','user:q3','command:new-work','assistant:a3'],nextCursor:'older-page'});
 if(cursor==='older-page')return response({...base,items:[{id:'q1',kind:'user',text:'EARLIEST QUESTION'},{id:'a1',kind:'assistant',text:'EARLIEST ANSWER'},{id:'a3',kind:'assistant',text:'STALE PARTIAL ANSWER'}]});
 throw Error('Unexpected request '+url);};
 const hosts=[{id:'remote',name:'Fixture remote',kind:'ssh',status:'connected'},{id:'local',name:'Fixture local',kind:'local',status:'connected'}];
@@ -94,7 +95,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
               element.getAttribute("data-history-message"),
             ),
           ),
-        ["q3", "a3", "q2", "a2"],
+        ["q3", "new-work", "a3", "q2", "old-work", "a2"],
       );
       assert.equal(
         (await page.locator(".history-recent-question").innerText()).replace(
@@ -122,12 +123,70 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         [],
       );
       assert.deepEqual(await page.evaluate(() => (window as any).resumed), []);
+      assert.equal(
+        await page.evaluate(() =>
+          (window as any).historyRequests
+            .filter((request: any) =>
+              /\/history\/same-native-id$/.test(request.path),
+            )
+            .every((request: any) => request.includeActivity === "1"),
+        ),
+        true,
+      );
+      // Old work records are independently foldable without completion metadata.
+      const historicalWork = page.locator('[data-work-item="old-work"]');
+      assert.equal(
+        await historicalWork.evaluate(
+          (element) => (element as HTMLDetailsElement).open,
+        ),
+        false,
+      );
+      await historicalWork.locator("summary").click();
+      assert.equal(
+        await historicalWork.locator("pre").innerText(),
+        "Interacted with peer\nORIGINAL PEER RESULT\nUnmodified historical output",
+      );
+      await historicalWork.locator("summary").focus();
+      await page.keyboard.press("Enter");
+      assert.equal(
+        await historicalWork.evaluate(
+          (element) => (element as HTMLDetailsElement).open,
+        ),
+        false,
+      );
+      // Long work bodies are fetched only when expanded, as exact chunks.
+      const latestWork = page.locator('[data-work-item="new-work"]');
+      assert.equal(
+        await page.evaluate(() =>
+          (window as any).historyRequests.some((request: any) =>
+            request.path.includes("/activity/"),
+          ),
+        ),
+        false,
+      );
+      await latestWork.locator("summary").click();
+      await latestWork
+        .getByRole("button", { name: "원문 더 보기", exact: true })
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector('[data-work-item="new-work"] pre')
+          ?.textContent?.endsWith("LAST ORIGINAL TOOL LINE"),
+      );
+      assert.equal(
+        await latestWork.locator("pre").innerText(),
+        "Ran rg --files\nFIRST ORIGINAL TOOL LINE\nSECOND ORIGINAL TOOL LINE\nLAST ORIGINAL TOOL LINE",
+      );
+      await latestWork.locator("summary").click();
+      await page
+        .locator(".history-transcript")
+        .evaluate((element) => (element.scrollTop = 0));
       await page.screenshot({ path: join(root, "latest-preview.png") });
       // A single browser selection can cross user, answer and another turn;
       // scrolling the shared container must not reset it.
       const selectedText = await page.evaluate(() => {
         const first = document.querySelector(
-          '[data-history-message="q3"] .markdown',
+          '[data-history-message="q3"] .conversation-question',
         )!;
         const last = document.querySelector(
           '[data-history-message="a2"] .markdown',
@@ -143,6 +202,28 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       assert.ok(
         selectedText.includes("LATEST QUESTION") &&
           selectedText.includes("PREVIOUS COMPLETE ANSWER"),
+      );
+      const copiedText = await page.evaluate(() => {
+        const transfer = new DataTransfer();
+        document
+          .querySelector(".history-transcript")!
+          .dispatchEvent(
+            new ClipboardEvent("copy", {
+              bubbles: true,
+              cancelable: true,
+              clipboardData: transfer,
+            }),
+          );
+        return transfer.getData("text/plain");
+      });
+      assert.ok(
+        copiedText.includes("LATEST QUESTION") &&
+          copiedText.includes("PREVIOUS COMPLETE ANSWER"),
+      );
+      assert.equal(
+        copiedText.includes("ORIGINAL TOOL LINE") ||
+          copiedText.includes("ORIGINAL PEER RESULT"),
+        false,
       );
       await page.locator(".history-transcript").hover();
       await page.mouse.wheel(0, 350);
@@ -165,7 +246,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
               element.getAttribute("data-history-message"),
             ),
           ),
-        ["q3", "a3", "q2", "a2", "q1", "a1"],
+        ["q3", "new-work", "a3", "q2", "old-work", "a2", "q1", "a1"],
       );
       assert.equal(
         await page.getByText("STALE PARTIAL ANSWER", { exact: true }).count(),

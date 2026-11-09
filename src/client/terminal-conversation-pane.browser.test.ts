@@ -12,7 +12,7 @@ import { TerminalControl } from "../server/terminal-control";
 import { TerminalScreen } from "../server/terminal-screen";
 
 test(
-  "TerminalPane keeps its native grid/socket/input while automatic reading and copying preserve peer control",
+  "one terminal surface keeps live output, original input, folding, cross-turn copying and peer control",
   { skip: process.platform !== "win32", timeout: 90000 },
   async () => {
     const root = resolve(".cache/terminal-conversation-pane-browser-tests");
@@ -23,7 +23,9 @@ test(
     const control = new TerminalControl(() => nativeSession);
     const screen = new TerminalScreen();
     screen.resize(100, 30);
-    screen.append("NATIVE WORK OUTPUT\r\nREADY > UNSENT DRAFT");
+    screen.append(
+      "› SECOND QUESTION\r\n• Ran compiler\r\n  └ NATIVE WORK OUTPUT\r\n› UNSENT DRAFT",
+    );
     let completed = false,
       socketsOpened = 0,
       claims = 0;
@@ -172,8 +174,17 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.waitForTimeout(350);
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
-        false,
+        true,
       );
+      assert.equal(
+        await page.locator(".terminal-conversation > header").count(),
+        0,
+      );
+      assert.equal(await page.locator(".terminal-view-modes").count(), 0);
+      await page
+        .locator(".terminal-native-flow")
+        .getByText("  └ NATIVE WORK OUTPUT", { exact: true })
+        .waitFor();
       await page.evaluate(() => (window as any).term.focus());
       await page.keyboard.type("abc");
       await page.waitForTimeout(100);
@@ -192,6 +203,28 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .waitFor({ state: "visible" });
       await page.getByText("SECOND FINAL ANSWER", { exact: true }).waitFor();
       await page.waitForTimeout(200);
+      const liveCut = await page.evaluate(() => ({
+        boundary: document
+          .querySelector(".terminal-conversation")
+          ?.getAttribute("data-native-start"),
+        following: document
+          .querySelector(".terminal-conversation")
+          ?.getAttribute("data-following"),
+        row: document
+          .querySelector(".terminal-native-row")
+          ?.getAttribute("data-native-row"),
+        text: document.querySelector(".terminal-native-flow")?.textContent,
+        cursor: (window as any).term.buffer.active.cursorY,
+        synced: (window as any).term.modes.synchronizedOutputMode,
+        selection: window.getSelection()?.toString(),
+        selected: document
+          .querySelector(".terminal-conversation")
+          ?.getAttribute("data-selected"),
+      }));
+      assert.ok(
+        !liveCut.text?.includes("NATIVE WORK OUTPUT"),
+        JSON.stringify(liveCut),
+      );
       assert.deepEqual(
         await page.evaluate(() => ({
           cols: (window as any).term.cols,
@@ -199,15 +232,37 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           text: (window as any).bufferText(),
         })),
         native,
-        "automatic reader must not resize or overwrite the native PTY buffer",
+        "folding must not resize or overwrite the native PTY buffer",
       );
       assert.equal(sizes.length, beforeSizes);
       assert.equal(socketsOpened, beforeSockets);
       assert.equal(await page.evaluate(() => (window as any).opens), 1);
-      await page.evaluate(() => {
-        const term = (window as any).term;
-        term.write("\x1b[" + (term.rows - 2) + ";1HREADY > UNSENT DRAFT");
+      const layout = await page.evaluate(() => {
+        const mount = document
+          .querySelector(".terminal-mount")!
+          .getBoundingClientRect();
+        const flow = document
+          .querySelector(".terminal-conversation")!
+          .getBoundingClientRect();
+        const documentBox = document
+          .querySelector(".terminal-conversation-document")!
+          .getBoundingClientRect();
+        return {
+          top: flow.top - mount.top,
+          bottom: mount.bottom - flow.bottom,
+          left: documentBox.left - mount.left,
+          width: documentBox.width,
+          mountWidth: mount.width,
+        };
       });
+      assert.ok(
+        Math.abs(layout.top) < 2 && Math.abs(layout.bottom) < 2,
+        "one full-height surface, no separate lower pane",
+      );
+      assert.ok(
+        layout.left < 20 && layout.width > layout.mountWidth - 40,
+        "left aligned full width",
+      );
       await page.waitForTimeout(50);
       await page.screenshot({ path: join(root, "native-reader.png") });
       await page.evaluate(() => {
@@ -234,6 +289,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           copied.includes("SECOND FINAL ANSWER"),
       );
       assert.ok(!copied.includes("HIDDEN TOOL DETAIL"));
+      await page.evaluate(() => window.getSelection()!.removeAllRanges());
+      await page.locator(".conversation-work > summary").click();
+      await page.locator('[data-work-item="tool2"] > summary').click();
+      assert.equal(
+        await page.locator('[data-work-item="tool2"] pre').innerText(),
+        "HIDDEN TOOL DETAIL",
+      );
+      await page.locator('[data-work-item="tool2"] > summary').click();
+      await page.locator(".conversation-work > summary").click();
       await page.evaluate(() => {
         const first = document.querySelector(
           '[data-rich-block="conversation-user-q1"] > b',
@@ -267,14 +331,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.evaluate(() => {
         window.getSelection()!.removeAllRanges();
-        (window as any).term.focus();
       });
+      await page.locator(".terminal-native-flow [data-native-cursor]").click();
       await page.keyboard.type("d");
       await page.waitForTimeout(100);
       assert.equal(
         received.join(""),
         "abcd",
-        "native input remains usable below the reader",
+        "same native input stays usable inline, without a separate composer",
       );
       control.change(id, "fixture-phone", "Fixture iPhone", {
         clientId: "phone",
@@ -286,7 +350,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .waitFor();
       const beforePeerSizes = sizes.length;
       await page
-        .getByRole("button", { name: "현재 대화 기록 닫기", exact: true })
+        .getByRole("button", { name: "터미널 원문", exact: true })
         .click();
       await page.locator(".terminal-conversation").waitFor({ state: "hidden" });
       await page.evaluate(() => (window as any).term.focus());

@@ -65,9 +65,9 @@ test("older pages complete a partial turn without moving or overwriting newer du
       items: turn.items.map((item) => item.id),
     })),
     [
-      { id: "a3", items: ["q3", "a3"] },
-      { id: "a2", items: ["q2", "a2"] },
-      { id: "a1", items: ["q1", "a1"] },
+      { id: "assistant:a3", items: ["q3", "a3"] },
+      { id: "assistant:a2", items: ["q2", "a2"] },
+      { id: "assistant:a1", items: ["q1", "a1"] },
     ],
   );
   assert.equal(merged.at(-1)?.text, "a3");
@@ -80,4 +80,27 @@ test("older pages complete a partial turn without moving or overwriting newer du
 test("snippets collapse line breaks without exposing a full long prompt in the list", () => {
   assert.equal(historySnippet("  첫 질문\n\n다음 줄 "), "첫 질문 다음 줄");
   assert.equal(historySnippet("1234567890", 5), "12345…");
+});
+
+test("work records preserve order and use kind plus ID when merging history pages", () => {
+  const current = [
+    message("same", "tool", "two"),
+    message("a2", "assistant", "two"),
+  ];
+  const merged = prependOlderHistory(current, [
+    message("q1", "user", "one"),
+    message("a1", "assistant", "one"),
+    message("same", "user", "two"),
+    { ...message("same", "tool", "two"), text: "older duplicate result" },
+  ]);
+  assert.deepEqual(
+    newestHistoryTurns(merged).map((turn) =>
+      turn.items.map((item) => `${item.kind}:${item.id}`),
+    ),
+    [
+      ["user:same", "tool:same", "assistant:a2"],
+      ["user:q1", "assistant:a1"],
+    ],
+  );
+  assert.equal(merged.find((item) => item.kind === "tool")?.text, "same");
 });

@@ -19,6 +19,7 @@ test(
       stdin: {
         contents: `
 import React,{useState,useEffect}from'react';import{createRoot}from'react-dom/client';import{TerminalConversation}from'./src/client/TerminalConversation';import{richSelectedText}from'./src/client/TerminalRich';
+import{Terminal}from'@xterm/xterm';import'@xterm/xterm/css/xterm.css';
 import{captureConversationSelection,restoreConversationSelection}from'./src/client/conversation-selection-snapshot';window.captureSelection=captureConversationSelection;window.restoreSelection=restoreConversationSelection;
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/history.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
@@ -34,7 +35,7 @@ else if(cursor==='empty'){nextCursor='earliest';}
 else if(cursor==='earliest'){items=[message(0,'user'),message(0,'assistant')];}
 const payload={thread:{id:sessionId,hostId:'fixture',title:'Long synthetic conversation',cwd:'/fixture'},items,activity:[],timelineIds:items.map(item=>item.kind+':'+item.id),nextCursor};
 if(cursor==='older')return new Promise(resolve=>{window.releaseOlder=()=>resolve(response(payload));});return response(payload);};
-function Fixture(){const[term,setTerm]=useState(null),[blocks,setBlocks]=useState([]),[session,setSession]=useState('long');window.queueRefresh=()=>{window.revision=2;setBlocks([])};window.useCycle=()=>setSession('cycle');useEffect(()=>setTerm({element:document.getElementById('native')}),[]);return <><div id="mount" style={{position:'relative',width:850,height:650}}><div id="native">NATIVE PROMPT REMAINS</div></div>{term&&<TerminalConversation term={term} info={{id:'fixture',hostId:'fixture',cwd:'/fixture',title:'Fixture',exited:false,agentKind:'claude',agentSessionId:session,agentState:'idle'}} blocks={blocks} mode="conversation" onClose={()=>{}}/>}</>};createRoot(document.getElementById('root')).render(<Fixture/>);`,
+function Fixture(){const[term,setTerm]=useState(null),[blocks,setBlocks]=useState([]),[session,setSession]=useState('long');window.queueRefresh=()=>{window.revision=2;setBlocks([])};window.useCycle=()=>setSession('cycle');useEffect(()=>{const native=new Terminal({cols:95,rows:32,fontSize:14,convertEol:true});native.open(document.getElementById('native'));native.write('❯ NATIVE PROMPT REMAINS',()=>setTerm(native));return()=>native.dispose();},[]);return <><div id="mount" style={{position:'relative',width:850,height:650}}><div id="native" style={{height:'100%'}}/></div>{term&&<TerminalConversation term={term} info={{id:'fixture',hostId:'fixture',cwd:'/fixture',title:'Fixture',exited:false,agentKind:'claude',agentSessionId:session,agentState:'idle'}} blocks={blocks} mode="conversation" onClose={()=>{}}/>}</>};createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "conversation-pagination-fixture.tsx",
         loader: "tsx",
@@ -168,6 +169,14 @@ function Fixture(){const[term,setTerm]=useState(null),[blocks,setBlocks]=useStat
       );
       await page.mouse.up();
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
+      assert.equal(
+        await page.getByText("UPDATED LAST ANSWER", { exact: true }).count(),
+        0,
+        "reading older output keeps live redraws deferred after the drag ends",
+      );
+      await page
+        .getByRole("button", { name: "맨 아래로", exact: true })
+        .click();
       await page.getByText("UPDATED LAST ANSWER", { exact: true }).waitFor();
       assert.equal(
         await page.locator('[data-rich-block="conversation-user-q0"]').count(),

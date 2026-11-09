@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ClaudeHistory, type ClaudeHistoryReader } from './claude-history.js';
 import { decodeClaudePageCursor } from './claude-history-pages.js';
+import { historyActivities } from './history-activity.js';
 import type { HostConfig } from '../shared/types.js';
 
 const MiB = 1024 * 1024;
@@ -221,9 +222,19 @@ test('activity pages remain bounded, preserve partial turns and never serialize 
     assert.deepEqual(first.items.map(item => item.id), ['final']);
     assert.equal(first.items[0].turnId, undefined, 'the absent user prompt must not be invented');
     assert.equal(first.items[0].turnStatus, 'completed');
-    assert.ok(first.timeline!.filter(item => item.kind === 'tool').length <= 200);
+    assert.equal(first.timeline!.filter(item => item.kind === 'tool').length, 250);
     assert.ok(JSON.stringify(first).length < 100000);
     assert.ok(!JSON.stringify(first).includes('image-base64-that-is-not-text'));
+    const result = first.timeline!.find(item => item.id === 'tool-output:result:0')!;
+    assert.equal(result.activityTruncated, true);
+    let original = '', offset = 0;
+    do {
+      const page = historyActivities.read(remote, 'claude', 'large', result.activityRef!, offset);
+      original += page.text;
+      if (page.nextOffset === null) break;
+      offset = page.nextOffset;
+    } while (true);
+    assert.equal(original, '도구 결과\n' + 'x'.repeat(2 * MiB));
     assert.ok(f.reads.every(read => read.length <= 256 * 1024));
     const older = await f.history.read(remote, 'synthetic-password', 'large', first.nextCursor!, { includeActivity: true });
     assert.equal(older.items[0].id, 'question');
@@ -232,5 +243,6 @@ test('activity pages remain bounded, preserve partial turns and never serialize 
     assert.equal(older.nextCursor, null);
     const allIds = [...older.timeline!, ...first.timeline!].map(item => item.id);
     assert.equal(new Set(allIds).size, allIds.length);
+    assert.equal(allIds.length, 323, 'all 320 tool calls plus result, question and answer remain accessible');
   } finally { f.history.shutdown(); }
 });
