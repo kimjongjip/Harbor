@@ -65,6 +65,15 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.terminal-native-answer-text {
+  margin: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font: inherit;
+}
 .conversation-work {
   margin: 12px 0;
   color: var(--muted);

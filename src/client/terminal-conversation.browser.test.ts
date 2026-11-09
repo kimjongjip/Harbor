@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { resolve, join, sep } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -32,17 +32,17 @@ window.fetch=async(input,options={})=>{const url=new URL(String(input),location.
 if(!url.pathname.startsWith('/api/hosts/fixture/history/'))throw Error('Unexpected non-history operation '+url.pathname);
 const first=[message('q1','user','QUESTION ONE','one'),message('thought1','assistant','INTERMEDIATE THOUGHT ONE','one',{phase:'commentary',turnStatus:'completed'}),message('tool1','command','SECRET TOOL ONE','one',{turnStatus:'completed'}),message('a1','assistant','ANSWER ONE middle message','one',{phase:'final_answer',turnStatus:'completed'})];
 const second=[message('q2','user','QUESTION TWO','two'),message('tool2','change','SECRET TOOL TWO','two',{turnStatus:window.stage?'completed':'inProgress'}),message('a2','assistant',window.stage===0?'PARTIAL ANSWER TWO':window.stage===2?'UPDATED FINAL ANSWER TWO':'FINAL ANSWER TWO','two',{phase:'final_answer',turnStatus:window.stage?'completed':'inProgress'})];
-const legacy=[message('legacy-q','user','LEGACY QUESTION'),message('legacy-tool','command','LEGACY WORK STILL SELECTED'),message('legacy-a','assistant','LEGACY FINAL',undefined,{turnStatus:'unknown'})];
+const legacy=[message('legacy-q','user','LEGACY QUESTION'),message('legacy-tool','command','LEGACY WORK STILL SELECTED'),message('legacy-a','assistant','LEGACY FINAL ANSWER',undefined,{turnStatus:'unknown'})];
 const timeline=window.stage===5?[message('wrong','user','WRONG SESSION RESPONSE')]:sessionId==='next'?[message('next-q','user','NEXT SESSION ONLY')]:sessionId==='legacy'?legacy.map(item=>({...item,turnId:undefined})):[...first,...second];
 const payload={thread:{id:window.stage===5?'unrelated':sessionId,hostId:'fixture',title:'Synthetic task',cwd:'/fixture'},items:timeline.filter(item=>item.kind==='user'||item.kind==='assistant'),timeline,nextCursor:null};
 if(window.holdNext){window.holdNext=false;return new Promise(resolve=>{window.releaseHeldHistory=()=>resolve(response(payload));});}return response(payload);};
 function Fixture(){const[term,setTerm]=useState(null),[mode,setMode]=useState('auto'),[blocks,setBlocks]=useState([]),[info,setInfo]=useState({id:'same-pty',hostId:'fixture',cwd:'/fixture',title:'Synthetic task',exited:false,agentKind:'codex',agentSessionId:'native',agentState:'working'});
-window.setReaderMode=setMode;window.advanceHistory=(stage,agentState='idle')=>{window.stage=stage;window.seedNative(stage);setInfo(previous=>({...previous,agentState}));setBlocks(stage===4?[{id:'proof',requestId:'proof',sessionId:'legacy',text:'LEGACY FINAL',columns:80,viewportRows:24,createdAt:1,state:'ready',marker:''}]:[]);};
+window.setReaderMode=setMode;window.advanceHistory=(stage,agentState='idle')=>{window.stage=stage;window.seedNative(stage);setInfo(previous=>({...previous,agentState}));setBlocks(stage===4?[{id:'proof',requestId:'proof',sessionId:'legacy',text:'LEGACY FINAL ANSWER',columns:80,viewportRows:24,createdAt:1,state:'ready',marker:''}]:[]);};
 window.unknownAgent=()=>setInfo(previous=>({...previous,agentState:undefined}));
 window.useLegacy=()=>{window.stage=3;window.seedNative(3);setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'legacy',agentKind:'claude',agentState:'idle'}));};
 window.useNext=()=>{window.stage=7;window.seedNative(7);setMode('conversation');setBlocks([]);setInfo(previous=>({...previous,agentSessionId:'next',agentKind:'claude',agentState:'idle'}));};
-window.completeLegacy=async(sessionId='legacy',text='LEGACY FINAL')=>{const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const textHash=Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,'0')).join('');setInfo(previous=>({...previous,agentCompletion:{sessionId,textHash}}));};
-useEffect(()=>{window.nativeMounts++;const native=new Terminal({cols:100,rows:35,fontSize:14,convertEol:true});native.open(document.getElementById('native-terminal'));const write=native.write.bind(native);window.seedNative=stage=>write('\\x1b[2J\\x1b[H'+(stage<3?'› QUESTION TWO\\r\\nLIVE NATIVE WORK OUTPUT\\r\\n'+(stage===0?'PARTIAL ANSWER TWO':stage===2?'UPDATED FINAL ANSWER TWO':'FINAL ANSWER TWO')+'\\r\\n':'')+'❯ UNSENT DRAFT');window.seedNative(0);window.fixtureTerm=native;native.write=data=>window.nativeWrites.push(data);setTerm(native);const copy=event=>{if(event.ctrlKey&&event.key.toLowerCase()==='c'){const text=richSelectedText(document.getElementById('native-mount'));if(text){event.preventDefault();window.copies.push(text);}}};document.addEventListener('keydown',copy);return()=>{document.removeEventListener('keydown',copy);native.dispose();};},[]);
+window.completeLegacy=async(sessionId='legacy',text='LEGACY FINAL ANSWER')=>{const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const textHash=Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,'0')).join('');setInfo(previous=>({...previous,agentCompletion:{sessionId,textHash}}));};
+useEffect(()=>{window.nativeMounts++;const native=new Terminal({cols:100,rows:35,fontSize:14,convertEol:true});native.open(document.getElementById('native-terminal'));const write=native.write.bind(native);window.echoNative=text=>new Promise(resolve=>write(text,resolve));window.seedNative=stage=>write('\\x1b[2J\\x1b[H'+(stage<3?'› QUESTION TWO\\r\\nLIVE NATIVE WORK OUTPUT\\r\\n'+(stage===0?'PARTIAL ANSWER TWO':stage===2?'UPDATED FINAL ANSWER TWO':'FINAL ANSWER TWO')+'\\r\\n':stage<7?'❯ LEGACY QUESTION\\r\\n• Bash LEGACY WORK STILL SELECTED\\r\\nLEGACY FINAL ANSWER\\r\\n':'❯ NEXT SESSION ONLY\\r\\n')+'❯ UNSENT DRAFT');window.seedNative(0);window.fixtureTerm=native;native.write=data=>window.nativeWrites.push(data);setTerm(native);const copy=event=>{if(event.ctrlKey&&event.key.toLowerCase()==='c'){const text=richSelectedText(document.getElementById('native-mount'));if(text){event.preventDefault();window.copies.push(text);}}};document.addEventListener('keydown',copy);return()=>{document.removeEventListener('keydown',copy);native.dispose();};},[]);
 return <><div id="native-mount" style={{position:'relative',width:980,height:720,border:'1px solid gray'}}><div id="native-terminal" style={{height:'100%'}}/></div>{term&&<TerminalConversation term={term} info={info} mode={mode} blocks={blocks} onClose={()=>setMode('terminal')}/>}</>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
@@ -54,6 +54,20 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       format: "esm",
       logLevel: "silent",
       loader: { ".woff": "file", ".woff2": "file", ".ttf": "file" },
+      plugins: [{
+        name: "count-saved-transcript-renders",
+        setup(builder) {
+          builder.onLoad({ filter: /[/\\]TranscriptItems\.tsx$/ }, async ({ path }) => {
+            const source = await readFile(path, "utf8");
+            const entry = "export function TranscriptItems({ items, ...props }: TranscriptItemsProps) {";
+            assert.ok(source.includes(entry), "the render counter must instrument the actual saved transcript");
+            return {
+              contents: source.replace(entry, entry + "\n(window as any).savedTranscriptRenders = ((window as any).savedTranscriptRenders || 0) + 1;"),
+              loader: "tsx",
+            };
+          });
+        },
+      }],
     });
     const app = express();
     app.use(express.static(directory));
@@ -119,21 +133,23 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       const secondWork = page.locator('[data-work-item="tool2"]');
       assert.equal(
         await secondWork.count(),
-        1,
-        "Individual original work can be expanded independently of completion",
+        0,
+        "stale idle status must not turn unfinished CLI output into a partial tool list",
       );
-      await secondWork.locator("summary").click();
-      assert.equal(await secondWork.locator("pre").isVisible(), true);
-      await secondWork.locator("summary").click();
+      assert.equal(await page.locator('[data-turn-id="two"]').count(), 0);
+      assert.ok((await page.locator(".terminal-native-flow").innerText()).includes("LIVE NATIVE WORK OUTPUT"));
       // Only state/API events change here: no scrolling or mouse movement to trigger rendering.
       await page.evaluate(() => (window as any).advanceHistory(1));
       await page
         .locator(".terminal-conversation")
         .waitFor({ state: "visible" });
       await page
-        .locator(".terminal-conversation")
+        .locator('[data-rich-block="conversation-assistant-a2"]')
         .getByText("FINAL ANSWER TWO", { exact: true })
         .waitFor();
+      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 1);
+      assert.equal(await page.locator('[data-rich-block="conversation-assistant-a2"]').count(), 1);
+      assert.ok(!(await page.locator(".terminal-native-flow").innerText()).includes("QUESTION TWO"));
       await page.evaluate(() => (window as any).unknownAgent());
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
@@ -155,6 +171,32 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page
         .locator('[data-turn-id="two"] > .conversation-work > summary')
         .click();
+      // Each echo must update only the native tail. Re-rendering all saved
+      // Markdown/work blocks on every key made a long conversation lag.
+      await page.evaluate(() => {
+        window.getSelection()!.removeAllRanges();
+        const body = document.querySelector(".terminal-conversation-body")!;
+        body.scrollTop = body.scrollHeight;
+      });
+      await page.waitForFunction(() =>
+        document.querySelector(".terminal-conversation")?.getAttribute("data-following") === "true",
+      );
+      await page.waitForTimeout(300);
+      const initialRenders = await page.evaluate(() => (window as any).savedTranscriptRenders);
+      assert.ok(initialRenders > 0, "the test observes actual saved-transcript renders");
+      const echo = "abcdefghijklmnopqrst";
+      for (let i = 0; i < echo.length; i++) {
+        await page.evaluate((character) => (window as any).echoNative(character), echo[i]);
+        await page.waitForFunction((suffix) =>
+          document.querySelector(".terminal-native-flow")?.textContent?.includes("UNSENT DRAFT" + suffix),
+          echo.slice(0, i + 1),
+        );
+      }
+      assert.equal(
+        await page.evaluate(() => (window as any).savedTranscriptRenders),
+        initialRenders,
+        "twenty echoed keys do not rerender saved history when its boundary is unchanged",
+      );
       await page.screenshot({ path: join(root, "completed-reader.png") });
       await page.evaluate(() => {
         const start = document.querySelector(
@@ -224,20 +266,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       // Rich completion notifications must not restructure selected legacy content either.
       await page.evaluate(() => (window as any).useLegacy());
       const legacyWork = page.locator('[data-work-item="legacy-tool"]');
-      await legacyWork.locator("summary").waitFor();
-      assert.equal(
-        await legacyWork.locator("pre").isVisible(),
-        false,
-        "Historic unknown-state work still offers manual expand/collapse",
+      await page.waitForFunction(() =>
+        document.querySelector(".terminal-native-flow")?.textContent?.includes("LEGACY FINAL ANSWER"),
       );
-      await legacyWork.locator("summary").click();
-      await legacyWork.locator("pre").waitFor();
+      await page.waitForTimeout(200);
+      assert.equal(await legacyWork.count(), 0, "an unverified latest Claude turn stays native");
+      assert.equal(await page.locator('[data-rich-block="conversation-user-legacy-q"]').count(), 0);
       await page.evaluate(() => {
         const start = document.querySelector(
-          '[data-rich-block="conversation-user-legacy-q"] .conversation-question',
+          '.terminal-native-flow [data-native-row="0"] > span',
         )!.firstChild!;
         const end = document.querySelector(
-          '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+          '.terminal-native-flow [data-native-row="2"] > span',
         )!.firstChild!;
         const range = document.createRange();
         range.setStart(start, 0);
@@ -253,15 +293,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(150);
       assert.equal(
-        await legacyWork.locator("pre").isVisible(),
-        true,
+        await legacyWork.count(),
+        0,
         "new completion blocks must not collapse selected DOM",
       );
       assert.equal(
         await page.evaluate(
           () =>
             document.querySelector(
-              '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+              '.terminal-native-flow [data-native-row="2"] > span',
             )!.firstChild === (window as any).selectedLegacyNode,
         ),
         true,
@@ -293,10 +333,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.evaluate(() => {
         const start = document.querySelector(
-          '[data-rich-block="conversation-user-legacy-q"] .conversation-question',
+          '.terminal-native-flow [data-native-row="0"] > span',
         )!.firstChild!;
         const end = document.querySelector(
-          '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+          '.terminal-native-flow [data-native-row="2"] > span',
         )!.firstChild!;
         const range = document.createRange();
         range.setStart(start, 0);
@@ -309,15 +349,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => (window as any).completeLegacy());
       await page.waitForTimeout(250);
       assert.equal(
-        await legacyWork.locator("pre").isVisible(),
-        true,
+        await legacyWork.count(),
+        0,
         "a verified Stop event must wait to fold while its turn is selected",
       );
       assert.equal(
         await page.evaluate(
           () =>
             document.querySelector(
-              '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+              '.terminal-native-flow [data-native-row="2"] > span',
             )!.firstChild === (window as any).selectedLegacyNode,
         ),
         true,
@@ -326,6 +366,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.waitForFunction(
         () => !!document.querySelector(".conversation-work:not([open])"),
       );
+      assert.equal(await page.locator('[data-rich-block="conversation-user-legacy-q"]').count(), 1);
+      assert.equal(await page.locator('[data-rich-block="conversation-assistant-legacy-a"]').count(), 1);
+      assert.equal(await legacyWork.count(), 1);
+      assert.ok(!(await page.locator(".terminal-native-flow").innerText()).includes("LEGACY FINAL ANSWER"));
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
         true,
@@ -345,7 +389,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       assert.equal(
         await page
           .locator(".terminal-conversation")
-          .getByText("LEGACY FINAL", { exact: true })
+          .getByText("LEGACY FINAL ANSWER", { exact: true })
           .count(),
         1,
       );
@@ -358,22 +402,22 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.evaluate(() => (window as any).useNext());
       await page
-        .locator(".terminal-conversation")
-        .getByText("NEXT SESSION ONLY", { exact: true })
+        .locator(".terminal-native-flow")
+        .getByText("❯ NEXT SESSION ONLY", { exact: true })
         .waitFor();
       await page.evaluate(() => (window as any).releaseHeldHistory());
       await page.waitForTimeout(200);
       assert.equal(
         await page
-          .locator(".terminal-conversation")
-          .getByText("NEXT SESSION ONLY", { exact: true })
+          .locator(".terminal-native-flow")
+          .getByText("❯ NEXT SESSION ONLY", { exact: true })
           .count(),
         1,
       );
       assert.equal(
         await page
           .locator(".terminal-conversation")
-          .getByText("LEGACY FINAL", { exact: true })
+          .getByText("LEGACY FINAL ANSWER", { exact: true })
           .count(),
         0,
         "late aborted history response must not leak the previous conversation",
@@ -392,7 +436,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
             .getLine(0)
             ?.translateToString(true),
         ),
-        "❯ UNSENT DRAFT",
+        "❯ NEXT SESSION ONLY",
       );
       assert.equal(await page.evaluate(() => (window as any).nativeMounts), 1);
       assert.deepEqual(

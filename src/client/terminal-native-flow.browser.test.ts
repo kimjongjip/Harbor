@@ -11,7 +11,7 @@ import { _electron } from "playwright";
 test(
   "native flow keeps one selectable output and existing CLI input while updates preserve selection",
   { skip: process.platform !== "win32", timeout: 60000 },
-  async () => {
+  async (context) => {
     const parent = resolve(".cache/terminal-native-flow-tests");
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(join(parent, "run-"));
@@ -215,6 +215,159 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[31
         document
           .querySelector(".terminal-native-flow")
           ?.textContent?.includes("PARTIAL ATOMIC FRAME COMPLETED"),
+      );
+      // Exercise actual xterm input and a simulated PTY echo with long history.
+      // Count public cell reads and scheduled delays as deterministic guards;
+      // parsed-to-DOM timings are recorded as evidence, not a fragile 16 ms SLA.
+      await page.evaluate(async () => {
+        const state = window as any;
+        state.setBlocks([]);
+        state.term.options.scrollback = 6000;
+        state.term.reset();
+        await state.push(
+          Array.from({ length: 5000 }, (_, i) => `history ${i}\r\n`).join("") +
+            "› ",
+        );
+      });
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('[data-native-row="5000"]')
+            ?.textContent?.trim() === "›",
+      );
+      await page.evaluate(() => {
+        const state = window as any,
+          term = state.term;
+        state.probe = {
+          target: "",
+          parsed: 0,
+          samples: [],
+          perKeyCells: [],
+          historyCells: 0,
+          liveCells: 0,
+          echoDelays: [],
+        };
+        const buffer = term.buffer.active,
+          originalGetLine = buffer.getLine.bind(buffer);
+        buffer.getLine = (row: number) => {
+          const line = originalGetLine(row);
+          if (!line) return line;
+          const getCell = line.getCell.bind(line);
+          line.getCell = (...args: unknown[]) => {
+            if (row < buffer.baseY) state.probe.historyCells++;
+            else state.probe.liveCells++;
+            return getCell(...args);
+          };
+          return line;
+        };
+        const originalTimeout = window.setTimeout;
+        window.setTimeout = ((
+          handler: TimerHandler,
+          delay?: number,
+          ...args: unknown[]
+        ) => {
+          if (state.probe.target && delay && delay >= 50 && delay <= 70)
+            state.probe.echoDelays.push(delay);
+          return originalTimeout(handler, delay, ...args);
+        }) as typeof window.setTimeout;
+        const parsed = term.onWriteParsed(
+          () => (state.probe.parsed = performance.now()),
+        );
+        const echo = term.onData((value: string) => term.write(value));
+        const observer = new MutationObserver(() => {
+          const probe = state.probe;
+          if (
+            probe.target &&
+            probe.parsed &&
+            document
+              .querySelector('[data-native-row="5000"]')
+              ?.textContent?.trimEnd() === probe.target
+          ) {
+            probe.samples.push(performance.now() - probe.parsed);
+            probe.perKeyCells.push(probe.liveCells - probe.beforeKeyCells);
+            probe.target = "";
+          }
+        });
+        observer.observe(document.querySelector(".terminal-native-flow")!, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        state.stopProbe = () => {
+          observer.disconnect();
+          echo.dispose();
+          parsed.dispose();
+          buffer.getLine = originalGetLine;
+          window.setTimeout = originalTimeout;
+        };
+        term.focus();
+      });
+      await page.evaluate(async () => {
+        // Empty/caret-only selection changes are common during textarea input.
+        // They must not schedule projection work when no text range was held.
+        document.dispatchEvent(new Event("selectionchange"));
+        document.dispatchEvent(new Event("selectionchange"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      assert.equal(
+        await page.evaluate(() => (window as any).probe.liveCells),
+        0,
+        "caret-only changes must not capture the terminal",
+      );
+      const typed = "responsive";
+      for (let index = 0; index < typed.length; index++) {
+        await page.evaluate(
+          (target) => {
+            (window as any).probe.target = target;
+            (window as any).probe.parsed = 0;
+            (window as any).probe.beforeKeyCells = (
+              window as any
+            ).probe.liveCells;
+          },
+          "› " + typed.slice(0, index + 1),
+        );
+        await page.keyboard.type(typed[index]);
+        await page.waitForFunction(
+          (length) => (window as any).probe.samples.length === length,
+          index + 1,
+        );
+      }
+      const timing = await page.evaluate(() => {
+        const state = window as any;
+        state.stopProbe();
+        return {
+          ...state.probe,
+          sent: state.sent.join(""),
+          columns: state.term.cols,
+          rows: state.term.rows,
+        };
+      });
+      assert.equal(
+        timing.historyCells,
+        0,
+        "echo must not restyle 5,000 historical rows",
+      );
+      assert.ok(
+        timing.liveCells <=
+          typed.length * (timing.columns * timing.rows + timing.columns),
+        JSON.stringify(timing),
+      );
+      assert.ok(
+        timing.perKeyCells.every(
+          (cells: number) =>
+            cells <= timing.columns * timing.rows + timing.columns,
+        ),
+        JSON.stringify(timing.perKeyCells),
+      );
+      assert.deepEqual(
+        timing.echoDelays,
+        [],
+        "normal echo must not wait behind a fixed 60 ms timer",
+      );
+      assert.ok(timing.sent.endsWith(typed));
+      assert.equal(timing.samples.length, typed.length);
+      context.diagnostic(
+        `5,000-row parsed-to-DOM latency ms: ${timing.samples.map((ms: number) => ms.toFixed(1)).join(", ")}; historical cell reads: ${timing.historyCells}; live cell reads: ${timing.liveCells}; per key: ${timing.perKeyCells.join(", ")}`,
       );
       assert.equal(await page.evaluate(() => (window as any).resizes), 0);
       assert.deepEqual(errors, []);

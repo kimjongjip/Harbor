@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import { ArrowDown } from "lucide-react";
@@ -6,7 +13,6 @@ import type { TerminalInfo } from "../shared/types";
 import type { HistoryDetail } from "../shared/history";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { api } from "./api";
-import { Markdown } from "./RichMarkdown";
 import { TranscriptItems } from "./TranscriptItems";
 import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
 import { transcriptBoundary } from "./terminal-transcript-boundary";
@@ -26,6 +32,7 @@ import "./terminal-conversation.css";
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
+const emptyTimeline: NonNullable<HistoryDetail["timeline"]> = [];
 const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
   return `${last.kind}:${last.id}`;
@@ -58,8 +65,9 @@ export function TerminalConversation({
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(following);
   followingRef.current = following;
-  const [nativeFrame, setNativeFrame] = useState<NativeFlowFrame>();
-  const [, setProofRevision] = useState(0);
+  const nativeFrame = useRef<NativeFlowFrame | undefined>(undefined);
+  const [, setBoundaryRevision] = useState(0);
+  const [proofRevision, setProofRevision] = useState(0);
   const verifiedHistory = useRef(new Map<string, string>());
   const body = useRef<HTMLDivElement>(null);
   const request = useRef<AbortController | null>(null),
@@ -304,10 +312,14 @@ export function TerminalConversation({
     });
     return () => input?.dispose();
   }, [term]);
-  const timeline = detail?.timeline || detail?.items || [];
-  const candidate = [...timeline]
-    .reverse()
-    .find((item) => item.kind === "assistant" || item.kind === "user");
+  const timeline = detail?.timeline || detail?.items || emptyTimeline;
+  const candidate = useMemo(
+    () =>
+      [...timeline]
+        .reverse()
+        .find((item) => item.kind === "assistant" || item.kind === "user"),
+    [timeline],
+  );
   const completion = info.agentCompletion;
   const proof =
     completion && completion.sessionId === sessionId && provider === "claude"
@@ -356,38 +368,90 @@ export function TerminalConversation({
   ]);
   // A verified earlier Stop stays folded when the next prompt starts. The map
   // belongs only to this native session and also checks unchanged message text.
+  const computedTurns = useMemo(
+    () => conversationTurns(timeline, verifiedHistory.current),
+    [timeline, proofRevision],
+  );
   const retainedTurns = useRef<ReturnType<typeof conversationTurns>>([]);
   const frozen = hasSelection() || !following;
   const prepending =
     selectedPrepend.current?.detail === detail ||
     (!!anchor.current && anchor.current !== "bottom");
   if (!frozen || prepending) {
-    const nextTurns = conversationTurns(timeline, verifiedHistory.current);
+    let nextTurns = computedTurns;
     if (frozen) {
       const existing = new Map(
         retainedTurns.current.map((turn) => [turnKey(turn), turn]),
       );
-      for (const turn of nextTurns) {
+      nextTurns = nextTurns.map((turn) => {
         const previous = existing.get(turnKey(turn));
-        if (previous) {
-          turn.complete = previous.complete;
-          turn.finalIds = previous.finalIds;
-        }
-      }
+        return previous
+          ? {
+              ...turn,
+              complete: previous.complete,
+              finalIds: previous.finalIds,
+            }
+          : turn;
+      });
     }
     retainedTurns.current = nextTurns;
   }
   const turns = retainedTurns.current;
   const visible = active && mode !== "terminal";
-  // Only an explicit idle state permits cropping to the native composer.
-  // Unknown/waiting states may contain an approval dialog above the cursor.
+  // Completion is verified from the saved turn, never inferred from an idle
+  // composer or an approval dialog waiting for input.
   const working = info.agentState !== "idle";
+  // Echoed keystrokes belong to the native tail. They must not rerender every
+  // saved Markdown/tool block or schedule a second full native capture.
+  const boundaryForFrame = useMemo(() => {
+    let cachedFrame: NativeFlowFrame | undefined;
+    let cachedBoundary: ReturnType<typeof transcriptBoundary>;
+    return (frame: NativeFlowFrame) => {
+      if (frame !== cachedFrame) {
+        cachedFrame = frame;
+        cachedBoundary = transcriptBoundary(turns, frame, blocks, working);
+      }
+      return cachedBoundary;
+    };
+  }, [turns, blocks, working]);
+  const startNativeRow = useCallback(
+    (frame: NativeFlowFrame) => boundaryForFrame(frame).nativeStart,
+    [boundaryForFrame],
+  );
+  const publishedBoundary = useRef<
+    ReturnType<typeof transcriptBoundary> | undefined
+  >(undefined);
+  const updateNativeFrame = useCallback(
+    (frame: NativeFlowFrame) => {
+      nativeFrame.current = frame;
+      const next = boundaryForFrame(frame);
+      if (
+        next.historyCount !== publishedBoundary.current?.historyCount ||
+        next.nativeStart !== publishedBoundary.current?.nativeStart
+      ) {
+        publishedBoundary.current = next;
+        setBoundaryRevision((value) => value + 1);
+      }
+    },
+    [boundaryForFrame],
+  );
+  const renderNativeAnswer = useCallback(
+    (text: string) => <pre className="terminal-native-answer-text">{text}</pre>,
+    [],
+  );
   const lastBoundary = useRef<
     { historyCount: number; nativeStart: number; turnCount: number } | undefined
   >(undefined);
-  const nextBoundary = nativeFrame
-    ? transcriptBoundary(turns, nativeFrame, blocks, working)
-    : { historyCount: turns.length, nativeStart: 0 };
+  const nextBoundary = nativeFrame.current
+    ? boundaryForFrame(nativeFrame.current)
+    : {
+        historyCount: Math.max(
+          0,
+          turns.length - (turns.at(-1)?.complete ? 0 : 1),
+        ),
+        nativeStart: 0,
+      };
+  publishedBoundary.current = nextBoundary;
   const boundary =
     frozen && lastBoundary.current
       ? {
@@ -486,7 +550,7 @@ export function TerminalConversation({
             </button>
           )}
           {detail?.notice && <p role="status">{detail.notice}</p>}
-          {turns.slice(0, boundary.historyCount).map((turn) => {
+          {turns.slice(0, boundary.historyCount).map((turn, turnIndex) => {
             const props = {
               provider: provider === "claude" ? "Claude" : "Codex",
               hostId: info.hostId,
@@ -496,8 +560,18 @@ export function TerminalConversation({
               completed: turn.complete,
               selectionActive: selected,
             };
+            // Old records can lack completion metadata. Group their existing
+            // work together without claiming completion. Only a trailing saved
+            // assistant message stays outside that group; an active unknown
+            // turn is kept wholly native by transcriptBoundary.
+            const last = turn.items.at(-1);
+            const replyIds = turn.complete
+              ? turn.finalIds
+              : turnIndex < turns.length - 1 && last?.kind === "assistant"
+                ? new Set([last.id])
+                : new Set<string>();
             const work = turn.items.filter(
-              (item) => item.kind !== "user" && !turn.finalIds.has(item.id),
+              (item) => item.kind !== "user" && !replyIds.has(item.id),
             );
             return (
               <section
@@ -505,7 +579,7 @@ export function TerminalConversation({
                 className="conversation-turn"
                 data-turn-id={turn.id}
               >
-                {turn.complete ? (
+                {turn.complete || turnIndex < turns.length - 1 ? (
                   <>
                     <TranscriptItems
                       items={turn.items.filter((item) => item.kind === "user")}
@@ -513,14 +587,15 @@ export function TerminalConversation({
                     />
                     {!!work.length && (
                       <details className="conversation-work">
-                        <summary>작업 과정 {work.length}개</summary>
+                        <summary>
+                          {turn.complete ? "작업 과정" : "저장된 작업"}{" "}
+                          {work.length}개
+                        </summary>
                         <TranscriptItems items={work} {...props} />
                       </details>
                     )}
                     <TranscriptItems
-                      items={turn.items.filter((item) =>
-                        turn.finalIds.has(item.id),
-                      )}
+                      items={turn.items.filter((item) => replyIds.has(item.id))}
                       {...props}
                     />
                   </>
@@ -535,17 +610,10 @@ export function TerminalConversation({
             blocks={blocks}
             active={visible}
             frozen={selected || !following}
-            startRow={(frame) =>
-              transcriptBoundary(turns, frame, blocks, working).nativeStart
-            }
-            onFrame={setNativeFrame}
+            startRow={startNativeRow}
+            onFrame={updateNativeFrame}
             onLink={onLink}
-            renderAnswer={(text) => (
-              <Markdown
-                text={text}
-                location={{ hostId: info.hostId, cwd: info.cwd }}
-              />
-            )}
+            renderAnswer={renderNativeAnswer}
           />
         </div>
       </div>

@@ -7,6 +7,7 @@ import {
   nativeFlowRows,
   nativeFlowCursorOffset,
   nativeFlowLinkAt,
+  NativeFlowReader,
 } from "./terminal-native-flow";
 
 test("native flow preserves exact styled output and wide-cell cursor without writes or resizes", async () => {
@@ -51,6 +52,151 @@ test("native flow preserves exact styled output and wide-cell cursor without wri
     );
     assert.deepEqual([term.cols, term.rows], [60, 8]);
   } finally {
+    term.dispose();
+  }
+});
+
+test("native capture reuses scrollback while tracking trim, color-only updates, erase, resize and alternate buffers", async () => {
+  const term = new headless.Terminal({
+    cols: 40,
+    rows: 8,
+    scrollback: 32,
+    allowProposedApi: true,
+  });
+  const typed = term as unknown as Terminal;
+  const reader = new NativeFlowReader(typed);
+  const write = (text: string) =>
+    new Promise<void>((resolve) => term.write(text, resolve));
+  const capture = () => {
+    const frame = reader.frame(),
+      rows = reader.rows(frame, 0);
+    assert.deepEqual(frame, nativeFlowFrame(typed));
+    assert.deepEqual(rows, nativeFlowRows(typed, frame, 0));
+    return { frame, rows };
+  };
+  try {
+    await write(
+      Array.from({ length: 55 }, (_, i) => `line ${i}\r\n`).join("") + "prompt",
+    );
+    const first = capture();
+    await write("x");
+    const second = capture();
+    assert.equal(
+      second.rows[0],
+      first.rows[0],
+      "unchanged styled history retains its identity",
+    );
+    const cursorRow = second.frame.cursorRow;
+    await write("\r\x1b[31mpromptx\x1b[0m");
+    const colorOnly = capture();
+    assert.equal(
+      colorOnly.frame.lines[cursorRow],
+      second.frame.lines[cursorRow],
+    );
+    assert.notEqual(colorOnly.rows[cursorRow], second.rows[cursorRow]);
+    assert.equal(colorOnly.rows[cursorRow][0].style.color, "#cd0000");
+    await write("\r\nnew row\r\nnext");
+    const trimmed = capture();
+    assert.equal(
+      trimmed.frame.baseY,
+      first.frame.baseY,
+      "full scrollback keeps baseY constant",
+    );
+    assert.notEqual(
+      trimmed.frame.lines[0],
+      first.frame.lines[0],
+      "marker tracks the trimmed prefix",
+    );
+    typed.options.theme = {
+      foreground: "#123456",
+      background: "#abcdef",
+      red: "#aabbcc",
+    };
+    const themed = capture();
+    assert.equal(themed.rows[0][0].style.color, "#123456");
+    await write("\x1b[3J");
+    capture();
+    term.resize(25, 10);
+    capture();
+    await write("\x1b[?1049hALT\x1b[41m\x1b[K");
+    capture();
+    await write("\x1b[?1049l");
+    capture();
+    term.reset();
+    await write("after reset");
+    capture();
+  } finally {
+    reader.dispose();
+    assert.equal(term.markers.length, 0);
+    term.dispose();
+  }
+});
+
+test("typing reads styles only in the live viewport, not thousands of history rows", async () => {
+  const term = new headless.Terminal({
+    cols: 100,
+    rows: 25,
+    scrollback: 6000,
+    allowProposedApi: true,
+  });
+  const typed = term as unknown as Terminal;
+  const reader = new NativeFlowReader(typed);
+  const write = (text: string) =>
+    new Promise<void>((resolve) => term.write(text, resolve));
+  try {
+    await write(
+      Array.from({ length: 5000 }, (_, i) => `history ${i}\r\n`).join("") +
+        "› ",
+    );
+    const frame = reader.frame();
+    const rows = reader.rows(frame, 0);
+    const buffer = term.buffer.active,
+      getLine = buffer.getLine.bind(buffer);
+    let historyCells = 0,
+      liveCells = 0,
+      historyText = 0;
+    buffer.getLine = (row: number) => {
+      const line = getLine(row);
+      if (!line) return line;
+      const getCell = line.getCell.bind(line),
+        translate = line.translateToString.bind(line);
+      line.getCell = (...args: Parameters<typeof getCell>) => {
+        if (row < buffer.baseY) historyCells++;
+        else liveCells++;
+        return getCell(...args);
+      };
+      line.translateToString = (...args: Parameters<typeof translate>) => {
+        if (row < buffer.baseY) historyText++;
+        return translate(...args);
+      };
+      return line;
+    };
+    await write("typing 한글🙂");
+    const next = reader.frame(),
+      nextRows = reader.rows(next, 0);
+    assert.equal(historyCells, 0);
+    assert.equal(historyText, 0);
+    assert.ok(liveCells <= term.rows * term.cols, String(liveCells));
+    assert.equal(nextRows[0], rows[0]);
+    assert.ok(next.lines.at(-1)?.endsWith("typing 한글🙂"));
+    // Expanding a previously hidden prefix still reads the real history.
+    reader.dispose();
+    const partial = new NativeFlowReader(typed);
+    const initial = partial.frame();
+    partial.rows(initial, initial.baseY);
+    await write("!");
+    const expanded = partial.frame();
+    assert.equal(
+      partial
+        .rows(expanded, 0)[0]
+        .map((run) => run.text)
+        .join("")
+        .trimEnd(),
+      "history 0",
+    );
+    partial.dispose();
+  } finally {
+    reader.dispose();
     term.dispose();
   }
 });

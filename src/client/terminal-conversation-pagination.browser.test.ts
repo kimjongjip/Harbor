@@ -24,7 +24,9 @@ import{captureConversationSelection,restoreConversationSelection}from'./src/clie
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/history.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
 window.requests=[];window.revision=1;window.readSelection=()=>richSelectedText(document.getElementById('mount'));
-const message=(number,kind)=>({id:(kind==='user'?'q':'a')+number,kind,text:(kind==='user'?'QUESTION ':'ANSWER ')+number+' '+('Readable conversation content. ').repeat(4)});
+// These are completed historical replies. An idle CLI alone is intentionally
+// insufficient to project an unknown latest turn into the finished transcript.
+const message=(number,kind)=>({id:(kind==='user'?'q':'a')+number,kind,text:(kind==='user'?'QUESTION ':'ANSWER ')+number+' '+('Readable conversation content. ').repeat(4),...(kind==='assistant'?{phase:'final_answer',turnStatus:'completed'}:{})});
 const pairs=(first,last)=>Array.from({length:last-first+1},(_,index)=>[message(first+index,'user'),message(first+index,'assistant')]).flat();
 const response=value=>new Response(JSON.stringify(value),{status:200,headers:{'Content-Type':'application/json'}});
 window.fetch=async(input,options={})=>{const url=new URL(String(input),location.href),cursor=url.searchParams.get('cursor'),sessionId=url.pathname.split('/').at(-1);window.requests.push({cursor,sessionId,revision:window.revision,method:options.method});let items=[],nextCursor=null;

@@ -1,19 +1,18 @@
-import { memo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import {
   mobileFlowParts,
   clipNativeRuns,
-  trimNativeRow,
   type NativeRun,
 } from "./mobile/terminal-flow";
 import {
-  nativeFlowFrame,
-  nativeFlowRows,
+  NativeFlowReader,
   nativeFlowCursorOffset,
   nativeFlowLinkAt,
   type NativeFlowFrame,
 } from "./terminal-native-flow";
+import { NativeRow } from "./TerminalNativeRow";
 export type { NativeFlowFrame } from "./terminal-native-flow";
 
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -27,73 +26,6 @@ interface View {
   lineHeight: number;
   blocks: RichTerminalBlock[];
 }
-const NativeRow = memo(function NativeRow({
-  row,
-  runs,
-  cursorOffset,
-  lineHeight,
-}: {
-  row: number;
-  runs: NativeRun[];
-  cursorOffset?: number;
-  lineHeight: number;
-}) {
-  let offset = 0;
-  const nodes: ReactNode[] = [];
-  const shown = trimNativeRow(runs);
-  if (cursorOffset !== undefined) {
-    const length = shown.reduce((n, run) => n + run.text.length, 0);
-    if (length <= cursorOffset)
-      shown.push({
-        text: " ".repeat(cursorOffset - length + 1),
-        style: runs.at(-1)?.style || {},
-      });
-  }
-  for (const [index, run] of shown.entries()) {
-    const local = cursorOffset === undefined ? -1 : cursorOffset - offset;
-    if (local >= 0 && local < run.text.length) {
-      const width = String.fromCodePoint(run.text.codePointAt(local)!).length;
-      nodes.push(
-        <span key={index} style={run.style}>
-          {run.text.slice(0, local)}
-          <span
-            data-native-cursor="true"
-            style={{
-              boxShadow: "inset 0 0 0 1px currentColor",
-              background: "color-mix(in srgb, currentColor 15%, transparent)",
-            }}
-          >
-            {run.text.slice(local, local + width)}
-          </span>
-          {run.text.slice(local + width)}
-        </span>,
-      );
-    } else
-      nodes.push(
-        <span key={index} style={run.style}>
-          {run.text}
-        </span>,
-      );
-    offset += run.text.length;
-  }
-  return (
-    <div
-      className="terminal-native-row"
-      data-native-row={row}
-      data-rich-block={`native-row:${row}`}
-      data-terminal-rich="true"
-      style={{
-        minHeight: lineHeight,
-        lineHeight: `${lineHeight}px`,
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-      }}
-    >
-      {nodes}
-    </div>
-  );
-});
-
 /** A selectable native buffer projection. It never writes, resizes or replays PTY input. */
 export function TerminalNativeFlow({
   term,
@@ -124,6 +56,7 @@ export function TerminalNativeFlow({
   const refresh = useRef(() => {});
   useLayoutEffect(() => {
     previous.current = null;
+    const reader = new NativeFlowReader(term);
     let scheduled = false,
       timer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
@@ -136,20 +69,25 @@ export function TerminalNativeFlow({
           !!root.current?.contains(selection.focusNode))
       );
     };
+    let hadSelection = selected();
     const capture = () => {
       scheduled = false;
+      const hasSelection = selected();
+      // A parsed write can observe a selection before selectionchange is
+      // delivered. Remember it so clearing that range releases deferred output.
+      if (hasSelection) hadSelection = true;
       if (
         disposed ||
         !latest.current.active ||
         latest.current.frozen ||
-        selected()
+        hasSelection
       )
         return;
       if (term.modes.synchronizedOutputMode) {
         timer = setTimeout(schedule, 60);
         return;
       }
-      const frame = nativeFlowFrame(term);
+      const frame = reader.frame();
       const start = Math.min(
         frame.end,
         Math.max(
@@ -161,14 +99,8 @@ export function TerminalNativeFlow({
           ),
         ),
       );
-      const rows = nativeFlowRows(term, frame, start);
+      const rows = reader.rows(frame, start);
       const old = previous.current;
-      // Unchanged rows retain their objects and DOM when neighboring output changes.
-      for (let index = 0; index < rows.length; index++) {
-        const before = old?.rows[start + index - old.start];
-        if (before && JSON.stringify(before) === JSON.stringify(rows[index]))
-          rows[index] = before;
-      }
       const next: View = {
         frame,
         start,
@@ -207,29 +139,33 @@ export function TerminalNativeFlow({
       // The parsed terminal buffer is ready independently of browser painting.
       // Electron can suspend RAF while occluded, leaving a history-boundary-only
       // change stale until the next mouse interaction. Coalesce without waiting
-      // for paint; stream writes still use the bounded output timer below.
+      // for paint. Parsed writes already arrive in batches; a fixed output
+      // timeout here delays every echoed key, even while the terminal is idle.
       if (!scheduled && !disposed) {
         scheduled = true;
         queueMicrotask(capture);
       }
     };
-    const output = () => {
-      if (!timer) timer = setTimeout(schedule, 60);
-    };
     refresh.current = schedule;
     const listeners = [
-      term.onWriteParsed(output),
+      term.onWriteParsed(schedule),
       term.onResize(schedule),
       term.onData(() => latest.current.onInput?.()),
     ];
     const selectionChanged = () => {
-      if (!selected()) schedule();
+      const hasSelection = selected();
+      const released = hadSelection && !hasSelection;
+      hadSelection = hasSelection;
+      // Focus and native textarea caret changes also emit selectionchange.
+      // They must not trigger a second full capture for each echoed key.
+      if (released) schedule();
     };
     document.addEventListener("selectionchange", selectionChanged);
     schedule();
     return () => {
       disposed = true;
       clearTimeout(timer);
+      reader.dispose();
       listeners.forEach((listener) => listener.dispose());
       document.removeEventListener("selectionchange", selectionChanged);
     };

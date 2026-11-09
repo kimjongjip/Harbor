@@ -1,0 +1,27 @@
+.terminal-native-row-fill {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.terminal-native-row-fill > span {
+  display: inline-block;
+  height: 1lh;
+  vertical-align: top;
+}
+
+/* Generated text measures the original glyphs, including wide/combined ones,
+   without adding a second text node to selection or cloned copy fragments. */
+.terminal-native-row-fill > span::before {
+  content: attr(data-native-fill);
+}
+
+/* Keep selectable foreground and the real character under the cursor above
+   the independent native background paint. */
+.terminal-native-row > span {
+  position: relative;
+}

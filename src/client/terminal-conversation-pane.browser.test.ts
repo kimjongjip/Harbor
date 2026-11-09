@@ -185,23 +185,39 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .locator(".terminal-native-flow")
         .getByText("  └ NATIVE WORK OUTPUT", { exact: true })
         .waitFor();
+      assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
+      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 0);
+      await page.screenshot({ path: join(root, "native-working.png") });
       await page.evaluate(() => (window as any).term.focus());
       await page.keyboard.type("abc");
       await page.waitForTimeout(100);
       assert.equal(received.join(""), "abc");
+      const beforeSizes = sizes.length,
+        beforeSockets = socketsOpened;
+      completed = true;
+      await page.evaluate(() => (window as any).setAgentState("idle"));
+      await page.waitForTimeout(300);
+      assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
+      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 0);
+      assert.ok((await page.locator(".terminal-native-flow").innerText()).includes("NATIVE WORK OUTPUT"));
+      // A saved completion cannot replace arbitrary live bytes. First deliver
+      // the matching final answer through the same synthetic PTY connection.
+      const finalOutput = "\x1b[2J\x1b[H› SECOND QUESTION\r\n• Ran compiler\r\n  └ NATIVE WORK OUTPUT\r\nSECOND FINAL ANSWER\r\n› UNSENT DRAFT";
+      screen.append(finalOutput);
+      for (const socket of sockets.clients)
+        socket.send(JSON.stringify({ type: "terminal-data", id, data: finalOutput }));
+      await page.waitForFunction(() => (window as any).bufferText().includes("SECOND FINAL ANSWER"));
       const native = await page.evaluate(() => ({
         cols: (window as any).term.cols,
         rows: (window as any).term.rows,
         text: (window as any).bufferText(),
       }));
-      const beforeSizes = sizes.length,
-        beforeSockets = socketsOpened;
-      completed = true;
-      await page.evaluate(() => (window as any).setAgentState("idle"));
       await page
         .locator(".terminal-conversation")
         .waitFor({ state: "visible" });
-      await page.getByText("SECOND FINAL ANSWER", { exact: true }).waitFor();
+      await page.locator('[data-rich-block="conversation-assistant-a2"]').getByText("SECOND FINAL ANSWER", { exact: true }).waitFor();
+      assert.equal(await page.locator('[data-rich-block="conversation-user-q2"]').count(), 1);
+      assert.equal(await page.locator('[data-rich-block="conversation-assistant-a2"]').count(), 1);
       await page.waitForTimeout(200);
       const liveCut = await page.evaluate(() => ({
         boundary: document
