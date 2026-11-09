@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CSSProperties, RefObject } from "react";
+import type { CSSProperties } from "react";
 import {
   Columns2,
   ExternalLink,
@@ -19,6 +19,7 @@ import type { HostView, TerminalInfo } from "../shared/types";
 import { api } from "./api";
 import { Modal } from "./Dialogs";
 import TerminalPane from "./TerminalPane";
+import TerminalAutoApproval from "./TerminalAutoApproval";
 import { useNotifications } from "./Notifications";
 import { useTheme, terminalColors } from "./Theme";
 import {
@@ -28,9 +29,22 @@ import {
 } from "./terminalWindows";
 import "./terminal-windows.css";
 import "./terminal-layout.css";
-import { reconcileTerminalPanes, type TerminalPanes } from "./terminal-panes";
-import { placeTerminalPane } from "./terminal-panes";
-import TerminalJunction from "./TerminalJunction";
+import {
+  decodeTree,
+  paneIds,
+  placeInTree,
+  presetTree,
+  reconcileTree,
+  resizeTree,
+  splitJunctions,
+  treeRects,
+  type TerminalTree,
+  type TerminalPlacement,
+  type DropEdge,
+  type DropScope,
+  type PaneRect,
+} from "./terminal-tree";
+import TerminalSplitHandle from "./TerminalSplitHandle";
 import type { DragEvent } from "react";
 
 export function terminalLabel(info: TerminalInfo, _terminals?: TerminalInfo[]) {
@@ -63,6 +77,10 @@ export function NewTerminalDialog({
   const [title, setTitle] = useState("");
   const [password, setPassword] = useState("");
   const [savePassword, setSavePassword] = useState(credentialStorageAvailable);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
+    "direct",
+  );
   const [launch, setLaunch] = useState<
     "shell" | "codex" | "resume" | "claude" | "claude-resume"
   >("shell");
@@ -70,6 +88,7 @@ export function NewTerminalDialog({
     <Modal
       title="새 터미널"
       subtitle="서버를 고르면 홈 디렉터리(~)에서 터미널을 시작합니다."
+      backdropClassName="new-terminal-dialog"
       onClose={onClose}
     >
       <form
@@ -82,6 +101,8 @@ export function NewTerminalDialog({
               hostId,
               title: title || undefined,
               program: launch,
+              autoApprove,
+              sshSessionMode: host?.kind === "ssh" ? sshSessionMode : undefined,
               password: password || undefined,
               savePassword: savePassword && credentialStorageAvailable,
               colors: terminalColors(theme),
@@ -115,6 +136,8 @@ export function NewTerminalDialog({
               onChange={(event) => {
                 setHostId(event.target.value);
                 setPassword("");
+                setSshSessionMode("direct");
+                setAutoApprove(false);
               }}
             >
               {hosts.map((h) => (
@@ -124,6 +147,28 @@ export function NewTerminalDialog({
               ))}
             </select>
           </label>
+          {host?.kind === "ssh" && (
+            <label className="field">
+              SSH 세션 방식
+              <select
+                aria-label="SSH 세션 방식"
+                aria-describedby="ssh-session-mode-help"
+                value={sshSessionMode}
+                disabled={busy}
+                onChange={(event) =>
+                  setSshSessionMode(event.target.value as "direct" | "tmux")
+                }
+              >
+                <option value="direct">일반 SSH (기본)</option>
+                <option value="tmux">서버에서 세션 유지 (tmux)</option>
+              </select>
+              <small id="ssh-session-mode-help">
+                {sshSessionMode === "tmux"
+                  ? "Harbor를 종료해도 서버 작업을 유지하고 재실행 시 다시 연결합니다. 터미널 탭의 X → 터미널 종료는 서버 작업도 종료합니다. 서버에 tmux와 bash가 필요합니다."
+                  : "tmux 없이 연결합니다. SSH 연결이나 Harbor가 종료되면 원격 작업도 종료될 수 있습니다."}
+              </small>
+            </label>
+          )}
           {host?.kind === "ssh" && (
             <label className="field">
               SSH 비밀번호
@@ -191,6 +236,23 @@ export function NewTerminalDialog({
                 : "선택한 CLI를 실행하고 작업 상태와 알림을 연결합니다."}
             </small>
           </label>
+          <label className="field">
+            <span className="host-check">
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                disabled={busy}
+                onChange={(event) => setAutoApprove(event.target.checked)}
+              />
+              이 세션의 실행 승인 요청을 Harbor가 자동 수락
+            </span>
+            {autoApprove && (
+              <small>
+                명령 실행·파일 삭제도 자동 허용합니다. 다른 세션과 일반 질문에는
+                적용하지 않습니다.
+              </small>
+            )}
+          </label>
           <div className="terminal-start-guide">
             <Terminal size={17} />
             <div>
@@ -231,171 +293,23 @@ export function NewTerminalDialog({
   );
 }
 
-function savedLayout(): 1 | 2 | 3 | 4 {
+function savedTree(): TerminalTree {
   try {
-    const n = Number(localStorage.getItem("harbor.terminalLayout"));
-    return n === 1 || n === 2 || n === 3 || n === 4 ? n : 2;
-  } catch {
-    return 2;
-  }
-}
-
-function savedPanes(): TerminalPanes {
-  try {
-    const saved = JSON.parse(
+    const tree = decodeTree(
+      JSON.parse(localStorage.getItem("harbor.terminalTree") || "null"),
+    );
+    if (tree) return tree;
+    const legacy = JSON.parse(
       localStorage.getItem("harbor.terminalPanes") || "null",
     );
-    if (
-      Array.isArray(saved?.ids) &&
-      saved.ids.every((id: unknown) => typeof id === "string")
-    )
-      return {
-        ids: [...new Set<string>(saved.ids)].slice(0, 4),
-        focusedId: typeof saved.focusedId === "string" ? saved.focusedId : "",
-      };
+    if (Array.isArray(legacy?.ids)) {
+      const ids = legacy.ids
+        .filter((id: unknown): id is string => typeof id === "string")
+        .slice(0, 4);
+      return presetTree(ids, legacy.focusedId || "");
+    }
   } catch {}
-  return { ids: [], focusedId: "" };
-}
-
-type SplitAxis = "column" | "row";
-type SplitRatios = Record<2 | 3 | 4, Record<SplitAxis, number>>;
-const splitStorageKey = "harbor.terminalSplitRatios";
-const dividerSize = 6;
-
-function clampSplit(value: number, minimum = 0.15) {
-  return Math.max(minimum, Math.min(1 - minimum, value));
-}
-
-function savedSplits(): SplitRatios {
-  const result: SplitRatios = {
-    2: { column: 0.5, row: 0.5 },
-    3: { column: 0.5, row: 0.5 },
-    4: { column: 0.5, row: 0.5 },
-  };
-  try {
-    const saved = JSON.parse(localStorage.getItem(splitStorageKey) || "null");
-    for (const layout of [2, 3, 4] as const)
-      for (const axis of ["column", "row"] as const) {
-        const value = saved?.[layout]?.[axis];
-        if (typeof value === "number" && Number.isFinite(value))
-          result[layout][axis] = clampSplit(value);
-      }
-  } catch {
-    // Resizing also works without browser storage.
-  }
-  return result;
-}
-
-function TerminalDivider({
-  axis,
-  ratio,
-  minimum,
-  grid,
-  onChange,
-  onDragging,
-}: {
-  axis: SplitAxis;
-  ratio: number;
-  minimum: number;
-  grid: RefObject<HTMLDivElement | null>;
-  onChange: (ratio: number, persist: boolean) => void;
-  onDragging: (axis: SplitAxis | null) => void;
-}) {
-  const pointer = useRef<number | null>(null);
-  const position = useRef(0);
-  const frame = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
-  const vertical = axis === "column";
-  function apply(persist = false) {
-    const element = grid.current;
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    const startPadding =
-      parseFloat(vertical ? style.paddingLeft : style.paddingTop) || 0;
-    const endPadding =
-      parseFloat(vertical ? style.paddingRight : style.paddingBottom) || 0;
-    const extent =
-      (vertical ? rect.width : rect.height) -
-      startPadding -
-      endPadding -
-      dividerSize;
-    if (extent <= 0) return;
-    const start = (vertical ? rect.left : rect.top) + startPadding;
-    onChange(
-      clampSplit(
-        (position.current - start - dividerSize / 2) / extent,
-        minimum,
-      ),
-      persist,
-    );
-  }
-  function finish() {
-    if (pointer.current === null) return;
-    pointer.current = null;
-    cancelAnimationFrame(frame.current);
-    apply(true);
-    onDragging(null);
-  }
-  return (
-    <div
-      className={`terminal-divider terminal-divider-${axis}`}
-      role="separator"
-      tabIndex={0}
-      aria-label={
-        vertical ? "터미널 좌우 크기 조절" : "터미널 위아래 크기 조절"
-      }
-      aria-orientation={vertical ? "vertical" : "horizontal"}
-      aria-valuemin={Math.round(minimum * 100)}
-      aria-valuemax={Math.round((1 - minimum) * 100)}
-      aria-valuenow={Math.round(ratio * 100)}
-      aria-valuetext={`${vertical ? "왼쪽" : "위쪽"} ${Math.round(ratio * 100)}%`}
-      title="끌어서 크기 조절 · 두 번 클릭하면 반반 · 방향키로 조절, Home으로 초기화"
-      onPointerDown={(event) => {
-        if (event.button !== 0 || pointer.current !== null) return;
-        event.preventDefault();
-        event.currentTarget.focus({ preventScroll: true });
-        event.currentTarget.setPointerCapture(event.pointerId);
-        pointer.current = event.pointerId;
-        position.current = vertical ? event.clientX : event.clientY;
-        onDragging(axis);
-      }}
-      onPointerMove={(event) => {
-        if (pointer.current !== event.pointerId) return;
-        position.current = vertical ? event.clientX : event.clientY;
-        cancelAnimationFrame(frame.current);
-        frame.current = requestAnimationFrame(() => apply());
-      }}
-      onPointerUp={(event) => {
-        if (pointer.current !== event.pointerId) return;
-        position.current = vertical ? event.clientX : event.clientY;
-        finish();
-        if (event.currentTarget.hasPointerCapture(event.pointerId))
-          event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
-      onPointerCancel={finish}
-      onLostPointerCapture={finish}
-      onDoubleClick={() => onChange(0.5, true)}
-      onKeyDown={(event) => {
-        const decrease = vertical ? "ArrowLeft" : "ArrowUp";
-        const increase = vertical ? "ArrowRight" : "ArrowDown";
-        if (event.key === "Home" || event.key === "Enter") {
-          event.preventDefault();
-          onChange(0.5, true);
-        } else if (event.key === decrease || event.key === increase) {
-          event.preventDefault();
-          const step = event.shiftKey ? 0.1 : 0.02;
-          onChange(
-            clampSplit(
-              ratio + (event.key === increase ? step : -step),
-              minimum,
-            ),
-            true,
-          );
-        }
-      }}
-    />
-  );
+  return { tree: null, focusedId: "" };
 }
 
 export default function TerminalWorkspace({
@@ -407,6 +321,7 @@ export default function TerminalWorkspace({
   ready,
   terminalColorsSupported = false,
   onFocus,
+  onCloseTerminal,
   onNew,
   onFiles,
   onError,
@@ -420,31 +335,24 @@ export default function TerminalWorkspace({
   ready: boolean;
   terminalColorsSupported?: boolean;
   onFocus: (id: string) => void;
+  onCloseTerminal: (terminal: TerminalInfo) => void;
   onNew: (hostId?: string, cwd?: string) => void;
   onFiles: (hostId: string, cwd: string) => void;
   onError: (message: string) => void;
   onMessages: (id: string) => void;
 }) {
-  const [layout, setLayout] = useState<1 | 2 | 3 | 4>(() =>
-    popoutId ? 1 : savedLayout(),
-  );
-  const [splits, setSplits] = useState(savedSplits);
-  const splitRef = useRef(splits);
+  const [panes, setPanes] = useState<TerminalTree>(savedTree);
   const gridRef = useRef<HTMLDivElement>(null);
   const [gridSize, setGridSize] = useState({ width: 0, height: 0 });
-  const [resizing, setResizing] = useState<SplitAxis | "both" | null>(null);
-  const [dropSlot, setDropSlot] = useState<number | null>(null);
-  const [placements, setPlacements] = useState<
-    {
-      terminalId: string;
-      slot?: number;
-      targetTerminalId?: string;
-    }[]
-  >([]);
+  const [resizing, setResizing] = useState(false);
+  const [dropTarget, setDropTarget] = useState<{
+    edge: DropEdge;
+    scope: DropScope;
+    targetTerminalId?: string;
+    rect: PaneRect;
+  } | null>(null);
+  const [placements, setPlacements] = useState<TerminalPlacement[]>([]);
   const placement = placements[0];
-  const [panes, setPanes] = useState<TerminalPanes>(savedPanes);
-  const [ending, setEnding] = useState<TerminalInfo | null>(null);
-  const [closing, setClosing] = useState(false);
   const [renaming, setRenaming] = useState<TerminalInfo | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const { notices, read } = useNotifications();
@@ -462,45 +370,32 @@ export default function TerminalWorkspace({
     notices.find(
       (n) => n.target === "terminal" && n.targetId === id && !n.read,
     );
-  useEffect(() => {
-    try {
-      if (!popoutId)
-        localStorage.setItem("harbor.terminalLayout", String(layout));
-    } catch {
-      // A browser storage restriction must not prevent changing the layout.
-    }
-  }, [layout, popoutId]);
   const current = attachedTerminals.find(
     (t) => t.id === (popoutId || activeId),
   );
-  const resolvedPanes = reconcileTerminalPanes(
-    panes,
-    attachedTerminals.map((terminal) => terminal.id),
-    activeId,
-    layout,
-  );
-  const paneKey = resolvedPanes.ids.join(",");
-  useLayoutEffect(() => {
-    if (
-      !popoutId &&
-      ready &&
-      (panes.focusedId !== resolvedPanes.focusedId ||
-        panes.ids.join(",") !== paneKey)
-    )
-      setPanes(resolvedPanes);
-  }, [paneKey, resolvedPanes.focusedId, popoutId, ready]);
-  useEffect(() => {
-    if (popoutId || !ready || !resolvedPanes.ids.length) return;
-    try {
-      localStorage.setItem(
-        "harbor.terminalPanes",
-        JSON.stringify(resolvedPanes),
+  const resolvedPanes = popoutId
+    ? presetTree(
+        terminals.some((t) => t.id === popoutId) ? [popoutId] : [],
+        popoutId,
+      )
+    : reconcileTree(
+        panes,
+        attachedTerminals.map((t) => t.id),
+        activeId,
       );
-    } catch {}
-  }, [paneKey, resolvedPanes.focusedId, popoutId, ready]);
-  const shownIds = popoutId
-    ? terminals.filter((t) => t.id === popoutId).map((t) => t.id)
-    : resolvedPanes.ids;
+  const paneKey = JSON.stringify(resolvedPanes);
+  useLayoutEffect(() => {
+    if (!popoutId && ready && JSON.stringify(panes) !== paneKey)
+      setPanes(resolvedPanes);
+  }, [paneKey, popoutId, ready]);
+  useEffect(() => {
+    if (!popoutId && ready) {
+      try {
+        localStorage.setItem("harbor.terminalTree", paneKey);
+      } catch {}
+    }
+  }, [paneKey, popoutId, ready]);
+  const shownIds = paneIds(resolvedPanes.tree);
   const focusId = current?.id || resolvedPanes.focusedId || shownIds[0];
   const shown = terminals.filter((t) => shownIds.includes(t.id));
   const displayTerminals = popoutId
@@ -510,54 +405,43 @@ export default function TerminalWorkspace({
   useEffect(() => {
     const element = gridRef.current;
     if (!element) return;
-    const observer = new ResizeObserver(([entry]) => {
+    const observer = new ResizeObserver(([entry]) =>
       setGridSize({
         width: entry.contentRect.width,
         height: entry.contentRect.height,
-      });
-    });
+      }),
+    );
     observer.observe(element);
     return () => observer.disconnect();
   }, [hasGrid]);
-  useEffect(() => setResizing(null), [layout, shown.length]);
-  const splitLayout = layout >= 3 ? (layout as 3 | 4) : 2;
-  const splitMinimum = {
-    column: Math.min(
-      0.45,
-      Math.max(0.15, 260 / Math.max(1, gridSize.width - dividerSize)),
-    ),
-    row: Math.min(
-      0.45,
-      Math.max(0.15, 150 / Math.max(1, gridSize.height - dividerSize)),
-    ),
-  };
-  const columnRatio = clampSplit(
-    splits[splitLayout].column,
-    splitMinimum.column,
+  const geometry = treeRects(
+    resolvedPanes.tree,
+    gridSize.width,
+    gridSize.height,
   );
-  const rowRatio = clampSplit(splits[splitLayout].row, splitMinimum.row);
-  const canResize = !popoutId && layout > 1 && shown.length > 1;
-  function changeSplit(axis: SplitAxis, ratio: number, persist: boolean) {
-    const next = {
-      ...splitRef.current,
-      [splitLayout]: { ...splitRef.current[splitLayout], [axis]: ratio },
-    };
-    splitRef.current = next;
-    setSplits(next);
-    if (persist) {
-      try {
-        localStorage.setItem(splitStorageKey, JSON.stringify(next));
-      } catch {
-        // Keep the current sizes even when they cannot be saved.
-      }
-    }
+  const junctions = splitJunctions(geometry.dividers);
+  const layout = Math.min(shownIds.length || 1, 4);
+  function changeRatios(ratios: Record<string, number>) {
+    setPanes((previous) => ({
+      ...previous,
+      tree: resizeTree(previous.tree, ratios),
+    }));
+  }
+  function chooseLayout(count: number) {
+    const ids =
+      count === 1
+        ? [focusId]
+        : [
+            ...new Set([...shownIds, ...displayTerminals.map((t) => t.id)]),
+          ].slice(0, count);
+    setPanes(presetTree(ids.filter(Boolean), focusId));
   }
   useEffect(() => {
     if (popoutId) return;
     const receive = (event: Event) => {
-      const detail = (event as CustomEvent).detail;
-      if (typeof detail?.terminalId !== "string") return;
-      setPlacements((previous) => [...previous, detail]);
+      const detail = (event as CustomEvent<TerminalPlacement>).detail;
+      if (typeof detail?.terminalId === "string")
+        setPlacements((previous) => [...previous, detail]);
     };
     window.addEventListener("harbor-terminal-place", receive);
     return () => window.removeEventListener("harbor-terminal-place", receive);
@@ -568,13 +452,40 @@ export default function TerminalWorkspace({
       !attachedTerminals.some((t) => t.id === placement.terminalId)
     )
       return;
-    const target = placement.targetTerminalId
-      ? shownIds.indexOf(placement.targetTerminalId)
-      : -1;
-    const slot = target >= 0 ? target : (placement.slot ?? 0);
-    setPanes(
-      placeTerminalPane(resolvedPanes, placement.terminalId, slot, layout),
-    );
+    if (placement.pairTerminalIds?.length === 2) {
+      if (
+        !placement.pairTerminalIds.every((id) =>
+          attachedTerminals.some((t) => t.id === id),
+        )
+      )
+        return;
+      setPanes(presetTree(placement.pairTerminalIds, placement.terminalId));
+    } else {
+      let previous = resolvedPanes;
+      if (placement.layout === 1)
+        previous = presetTree([placement.terminalId], placement.terminalId);
+      if (placement.layout === 2) {
+        const ids = [...new Set([...shownIds, placement.terminalId])].slice(
+          0,
+          2,
+        );
+        previous = presetTree(ids, focusId);
+      }
+      const target =
+        placement.targetTerminalId ||
+        (placement.slot === undefined
+          ? previous.focusedId
+          : paneIds(previous.tree)[placement.slot]);
+      setPanes(
+        placeInTree(
+          previous,
+          placement.terminalId,
+          target,
+          placement.edge,
+          placement.scope,
+        ),
+      );
+    }
     onFocus(placement.terminalId);
     setPlacements((previous) => previous.slice(1));
   }, [placement, paneKey, terminals]);
@@ -585,7 +496,55 @@ export default function TerminalWorkspace({
         event.dataTransfer.types.includes("application/x-harbor-terminal-tab"))
     );
   }
-  function dragOver(event: DragEvent, slot: number) {
+  function dropLocation(event: DragEvent, targetTerminalId?: string) {
+    const grid = gridRef.current?.getBoundingClientRect();
+    const rect = targetTerminalId
+      ? geometry.panes[targetTerminalId]
+      : undefined;
+    if (!grid || !rect)
+      return {
+        edge: "center" as DropEdge,
+        scope: "workspace" as DropScope,
+        targetTerminalId,
+        rect: { x: 0, y: 0, width: gridSize.width, height: gridSize.height },
+      };
+    const x = event.clientX - grid.left,
+      y = event.clientY - grid.top;
+    const outer = [
+      { edge: "left", distance: x },
+      { edge: "right", distance: grid.width - x },
+      { edge: "top", distance: y },
+      { edge: "bottom", distance: grid.height - y },
+    ].sort((a, b) => a.distance - b.distance)[0];
+    let edge: DropEdge = "center",
+      scope: DropScope = "pane";
+    let preview = { ...rect };
+    if (outer.distance < 24) {
+      edge = outer.edge as DropEdge;
+      scope = "workspace";
+      preview = { x: 0, y: 0, width: grid.width, height: grid.height };
+    } else {
+      const px = (x - rect.x) / Math.max(1, rect.width),
+        py = (y - rect.y) / Math.max(1, rect.height);
+      const closest = [
+        { edge: "left", distance: px },
+        { edge: "right", distance: 1 - px },
+        { edge: "top", distance: py },
+        { edge: "bottom", distance: 1 - py },
+      ].sort((a, b) => a.distance - b.distance)[0];
+      if (closest.distance < 0.27) edge = closest.edge as DropEdge;
+    }
+    if (edge === "left" || edge === "right") {
+      preview.width /= 2;
+      if (edge === "right") preview.x += preview.width;
+    }
+    if (edge === "top" || edge === "bottom") {
+      preview.height /= 2;
+      if (edge === "bottom") preview.y += preview.height;
+    }
+    return { edge, scope, targetTerminalId, rect: preview };
+  }
+  function dragOver(event: DragEvent, id?: string) {
     if (!acceptsDrop(event)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -594,18 +553,27 @@ export default function TerminalWorkspace({
     )
       ? "copy"
       : "move";
-    setDropSlot(slot);
+    setDropTarget(dropLocation(event, id));
   }
-  function drop(event: DragEvent, slot: number) {
+  function drop(event: DragEvent, id?: string) {
     if (!acceptsDrop(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    setDropSlot(null);
+    const location = dropLocation(event, id);
+    setDropTarget(null);
     const terminalId = event.dataTransfer.getData(
       "application/x-harbor-terminal-tab",
     );
     if (terminalId && attachedTerminals.some((t) => t.id === terminalId)) {
-      setPanes(placeTerminalPane(resolvedPanes, terminalId, slot, layout));
+      setPanes(
+        placeInTree(
+          resolvedPanes,
+          terminalId,
+          location.targetTerminalId,
+          location.edge,
+          location.scope,
+        ),
+      );
       onFocus(terminalId);
       return;
     }
@@ -622,8 +590,9 @@ export default function TerminalWorkspace({
         new CustomEvent("harbor-history-drop", {
           detail: {
             ...payload,
-            slot,
-            targetTerminalId: shownIds[slot],
+            targetTerminalId: location.targetTerminalId,
+            edge: location.edge,
+            scope: location.scope,
           },
         }),
       );
@@ -635,29 +604,45 @@ export default function TerminalWorkspace({
     const index = shownIds.indexOf(focusId);
     onFocus(shownIds[(index + 1) % shownIds.length]);
   }
-  const panePosition = (index: number): CSSProperties =>
-    ({
-      "--terminal-pane-column":
-        layout === 3 && index === 2 ? "1 / -1" : (index % 2) * 2 + 1,
-      "--terminal-pane-row": Math.floor(index / 2) * 2 + 1,
-    }) as CSSProperties;
   const renderActions = (info: TerminalInfo) => (
     <>
-      {info.exited && <span className="terminal-ended">종료됨</span>}
-      {!info.exited && (
-        <span
-          className={`terminal-agent-state ${info.agentConnected ? "connected" : ""}`}
-          title={
-            info.integration === "unavailable"
-              ? "이 연결에서는 세션 메시지를 사용할 수 없습니다."
-              : "codex 또는 claude를 실행하면 작업 상태가 연결됩니다."
-          }
-        >
-          {info.agentConnected
-            ? `${info.agentKind === "claude" ? "Claude" : "Codex"} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}`
-            : "셸"}
+      <TerminalAutoApproval terminal={info} />
+      {info.exited && (
+        <span className="terminal-ended" title={info.disconnectReason}>
+          {info.persistent === false &&
+          info.connectionIssue &&
+          info.connectionIssue !== "remote-exit"
+            ? "SSH 연결 끊김"
+            : "종료됨"}
         </span>
       )}
+      {!info.exited && info.connectionState === "reconnecting" && (
+        <span className="terminal-ended">재연결 중</span>
+      )}
+      {!info.exited && info.connectionState === "disconnected" && (
+        <span className="terminal-ended" title={info.disconnectReason}>
+          {info.connectionIssue === "remote-missing"
+            ? "서버 세션 없음"
+            : "세션 상태 확인 필요"}
+        </span>
+      )}
+      {!info.exited &&
+        !["disconnected", "reconnecting"].includes(
+          info.connectionState || "",
+        ) && (
+          <span
+            className={`terminal-agent-state ${info.agentConnected ? "connected" : ""}`}
+            title={
+              info.integration === "unavailable"
+                ? "이 연결에서는 세션 메시지를 사용할 수 없습니다."
+                : "codex 또는 claude를 실행하면 작업 상태가 연결됩니다."
+            }
+          >
+            {info.agentConnected
+              ? `${info.agentKind === "claude" ? "Claude" : "Codex"} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}`
+              : "셸"}
+          </span>
+        )}
       <button
         className="icon-button compact"
         aria-label={`세션 이름 변경: ${info.title}`}
@@ -699,7 +684,7 @@ export default function TerminalWorkspace({
         className="icon-button compact"
         title="터미널 프로세스 종료"
         aria-label={`터미널 종료: ${terminalLabel(info, terminals)}`}
-        onClick={() => setEnding(info)}
+        onClick={() => onCloseTerminal(info)}
       >
         <X size={14} />
       </button>
@@ -712,9 +697,9 @@ export default function TerminalWorkspace({
       hidden={!visible}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-          setDropSlot(null);
+          setDropTarget(null);
       }}
-      onDragEnd={() => setDropSlot(null)}
+      onDragEnd={() => setDropTarget(null)}
       onKeyDownCapture={(event) => {
         if (
           event.target instanceof Element &&
@@ -751,7 +736,7 @@ export default function TerminalWorkspace({
                 onClick={() => onFocus(t.id)}
               >
                 <span
-                  className={`connection-dot ${t.exited ? "disconnected" : "connected"}`}
+                  className={`connection-dot ${t.exited || (t.connectionState && t.connectionState !== "connected") ? "disconnected" : "connected"}`}
                 />
                 {terminalLabel(t, terminals)}
                 {pending(t.id) && (
@@ -793,7 +778,7 @@ export default function TerminalWorkspace({
                 title={n === 3 ? "3분할 · 아래 창을 넓게" : `${n}분할 보기`}
                 className={layout === n ? "active" : ""}
                 aria-pressed={layout === n}
-                onClick={() => setLayout(n)}
+                onClick={() => chooseLayout(n)}
               >
                 {n === 1 ? (
                   <Square size={14} />
@@ -812,18 +797,15 @@ export default function TerminalWorkspace({
       {displayTerminals.length ? (
         <div
           ref={gridRef}
-          className={`terminal-grid layout-${layout} ${shown.length === 1 ? "single-terminal" : ""} ${canResize ? "terminal-resizable-grid" : ""}`}
+          className={"terminal-grid terminal-tree-grid"}
           data-resizing={resizing || undefined}
-          data-layout={layout}
-          style={
-            {
-              "--terminal-grid-columns": `minmax(0, ${columnRatio}fr) ${dividerSize}px minmax(0, ${1 - columnRatio}fr)`,
-              "--terminal-grid-rows":
-                layout >= 3
-                  ? `minmax(0, ${rowRatio}fr) ${dividerSize}px minmax(0, ${1 - rowRatio}fr)`
-                  : "minmax(0, 1fr)",
-            } as CSSProperties
-          }
+          data-layout={shownIds.length}
+          onDragLeave={(event) => {
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null)
+            )
+              setDropTarget(null);
+          }}
         >
           {displayTerminals.map((info) => {
             const host = hosts.find((h) => h.id === info.hostId);
@@ -834,20 +816,14 @@ export default function TerminalWorkspace({
                 className={`terminal-card ${focusId === info.id ? "focused" : ""} ${pending(info.id) ? "has-notice" : ""}`}
                 style={{
                   display: isShown ? "flex" : "none",
-                  order: shownIds.indexOf(info.id),
-                  ...panePosition(shownIds.indexOf(info.id)),
+                  left: geometry.panes[info.id]?.x,
+                  top: geometry.panes[info.id]?.y,
+                  width: geometry.panes[info.id]?.width,
+                  height: geometry.panes[info.id]?.height,
                 }}
                 data-terminal-id={info.id}
-                data-drop-active={
-                  (isShown && dropSlot === shownIds.indexOf(info.id)) ||
-                  undefined
-                }
-                onDragOverCapture={(event) =>
-                  dragOver(event, shownIds.indexOf(info.id))
-                }
-                onDropCapture={(event) =>
-                  drop(event, shownIds.indexOf(info.id))
-                }
+                onDragOverCapture={(event) => dragOver(event, info.id)}
+                onDropCapture={(event) => drop(event, info.id)}
                 onPointerDown={() => {
                   if (focusId !== info.id) onFocus(info.id);
                 }}
@@ -898,63 +874,59 @@ export default function TerminalWorkspace({
               </article>
             );
           })}
-          {shown.length < layout && !popoutId && shown.length > 1 && (
-            <button
-              className="terminal-add-pane"
-              data-drop-active={dropSlot === shown.length || undefined}
-              onDragOver={(event) => dragOver(event, shown.length)}
-              onDrop={(event) => drop(event, shown.length)}
-              style={{ order: 5, ...panePosition(shown.length) }}
-              onClick={() => onNew(current?.hostId, current?.cwd)}
-            >
-              <Plus size={20} />
-              <b>터미널 추가</b>
-              <span>대화 기록이나 탭을 여기에 끌어 놓기</span>
-            </button>
-          )}
-          {canResize && (
-            <TerminalDivider
-              axis="column"
-              ratio={columnRatio}
-              minimum={splitMinimum.column}
-              grid={gridRef}
-              onChange={(ratio, persist) =>
-                changeSplit("column", ratio, persist)
-              }
-              onDragging={setResizing}
-            />
-          )}
-          {canResize && layout >= 3 && (
-            <TerminalDivider
-              axis="row"
-              ratio={rowRatio}
-              minimum={splitMinimum.row}
-              grid={gridRef}
-              onChange={(ratio, persist) => changeSplit("row", ratio, persist)}
-              onDragging={setResizing}
-            />
-          )}
-          {canResize && layout >= 3 && (
-            <TerminalJunction
-              grid={gridRef}
-              onDragging={(dragging) => setResizing(dragging ? "both" : null)}
-              onChange={(column, row, persist) => {
-                changeSplit(
-                  "column",
-                  clampSplit(column, splitMinimum.column),
-                  false,
-                );
-                changeSplit("row", clampSplit(row, splitMinimum.row), persist);
+          {!popoutId &&
+            geometry.dividers.map((divider) => (
+              <TerminalSplitHandle
+                key={divider.id}
+                dividers={[divider]}
+                grid={gridRef}
+                onChange={changeRatios}
+                onDragging={setResizing}
+              />
+            ))}
+          {!popoutId &&
+            junctions.map((junction) => (
+              <TerminalSplitHandle
+                key={junction.ids.join("-")}
+                dividers={geometry.dividers.filter((d) =>
+                  junction.ids.includes(d.id),
+                )}
+                grid={gridRef}
+                x={junction.x}
+                y={junction.y}
+                onChange={changeRatios}
+                onDragging={setResizing}
+              />
+            ))}
+          {dropTarget && (
+            <div
+              className="terminal-drop-preview"
+              style={{
+                left: dropTarget.rect.x,
+                top: dropTarget.rect.y,
+                width: dropTarget.rect.width,
+                height: dropTarget.rect.height,
               }}
-            />
+            >
+              <span>
+                {dropTarget.edge === "center"
+                  ? "이 창에서 열기"
+                  : {
+                      left: "왼쪽",
+                      right: "오른쪽",
+                      top: "위쪽",
+                      bottom: "아래쪽",
+                    }[dropTarget.edge] + "에 분할하여 열기"}
+              </span>
+            </div>
           )}
         </div>
       ) : (
         <div
           className="terminal-welcome"
-          data-drop-active={dropSlot === 0 || undefined}
-          onDragOver={(event) => dragOver(event, 0)}
-          onDrop={(event) => drop(event, 0)}
+          data-drop-active={!!dropTarget || undefined}
+          onDragOver={(event) => dragOver(event)}
+          onDrop={(event) => drop(event)}
         >
           <div className="terminal-welcome-icon">
             <Terminal size={30} />
@@ -1013,42 +985,6 @@ export default function TerminalWorkspace({
             <span>$</span> cd my-project <span>→</span> codex
           </div>
         </div>
-      )}
-      {ending && (
-        <Modal
-          title="터미널 종료"
-          subtitle={`${terminalLabel(ending, terminals)}의 셸과 실행 중인 프로그램을 종료합니다.`}
-          onClose={() => setEnding(null)}
-        >
-          <div className="modal-body">
-            <p>창만 따로 열려면 패널의 새 창 버튼을 사용하세요.</p>
-          </div>
-          <footer className="modal-footer">
-            <button
-              className="button secondary"
-              onClick={() => setEnding(null)}
-            >
-              취소
-            </button>
-            <button
-              className="button primary"
-              disabled={closing}
-              onClick={async () => {
-                setClosing(true);
-                try {
-                  await api(`/terminals/${ending.id}/close`, {});
-                  setEnding(null);
-                } catch (err) {
-                  onError((err as Error).message);
-                } finally {
-                  setClosing(false);
-                }
-              }}
-            >
-              터미널 종료
-            </button>
-          </footer>
-        </Modal>
       )}
       {renaming && (
         <Modal

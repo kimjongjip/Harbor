@@ -1,28 +1,69 @@
 import express from "express";
+import { MobileAccess } from "./mobile-access.js";
+import { MobileGateway } from "./mobile-gateway.js";
+import { MobileNetwork } from "./mobile-network.js";
+import { TailscaleSetup } from "./tailscale-setup.js";
+import {
+  EditorFiles,
+  createEditorRouter,
+  EditorError,
+} from "./editor-files.js";
+import { MobileConversations } from "./mobile-conversation.js";
+import { IdeChats, IdeChatError, createIdeChatRouter } from "./ide-chat.js";
+import { IdeLiveChats } from "./ide-chat-live.js";
+import { ResearchLabManager } from "./research-manager.js";
+import {
+  researchSettings,
+  validateResearchSettings,
+  researchReconnectOptions,
+} from "./research-settings.js";
 import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
-import { resolve, join } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { resolve, join, posix } from "node:path";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
+import { AutoApproval } from "./auto-approval.js";
 import { Store } from "./store.js";
+import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
+import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
 import { Hub, errorText } from "./hub.js";
 import { Terminals } from "./terminals.js";
+import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
 import { History } from "./history.js";
+import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
 import {
+  ResearchLabs,
+  researchCreateSchema,
+  researchPrepareSchema,
+  researchProposalSchema,
+  researchStartSchema,
+} from "./research-lab.js";
+import { researchConversation } from "./research-conversation.js";
+import {
+  prepareResearchWorkspaces,
+  prepareRemoteResearchWorkspaces,
+} from "./research-workspaces.js";
+import {
   annotationCaptureSchema,
   annotationCommentsSchema,
   annotationNumbersSchema,
 } from "./terminal-annotations.js";
+import { TerminalAnnotations } from "./terminal-annotations.js";
+import { annotationReference } from "../shared/annotations.js";
+import { isTerminalProtocolResponse } from "../shared/terminal-protocol-response.js";
 import { Requests, answerSchema } from "./requests.js";
 import { TerminalNotices } from "./terminal-notices.js";
+import { RichTerminals } from "./rich-terminal.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { Files, MAX_UPLOAD_BYTES } from "./files.js";
+import { HtmlPreviews } from "./html-preview.js";
+import { UPLOAD_ENTRY_LIMIT } from "../shared/upload-tree.js";
 import { pipeline } from "node:stream/promises";
 import { allowedHost, allowedOrigin, validToken } from "./security.js";
 import { sshAliases } from "./ssh.js";
@@ -33,8 +74,14 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535)
   throw new Error("PORT must be between 1024 and 65535");
 const token = randomBytes(32).toString("hex");
 const store = new Store();
+const runtimeDiagnostics = startRuntimeDiagnostics(store.directory);
 const hub = new Hub(store);
-const terminals = new Terminals();
+const terminals = new Terminals({ directory: store.directory });
+const richTerminals = new RichTerminals(
+  12000,
+  join(store.directory, "rich-answers.json"),
+);
+const terminalAnnotations = new TerminalAnnotations(store.directory);
 const credentials = new Credentials(store.directory);
 const history = new History();
 const claudeHistory = new ClaudeHistory();
@@ -46,11 +93,18 @@ const requests = new Requests(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
   host: (id) => store.data.hosts.find((item) => item.id === id),
 });
+const autoApproval = new AutoApproval(
+  requests,
+  (id) => terminals.list().find((terminal) => terminal.id === id),
+  () => broadcastState(),
+);
 const mailbox = new Mailbox(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
   host: (id) => store.data.hosts.find((item) => item.id === id),
 });
 const peerFlushes = new Set<string>();
+let researchManager: import("./research-manager.js").ResearchLabManager;
+let research: ResearchLabs;
 const peerGenerations = new Map<string, number>();
 const codexPeers = new CodexPeerRuntime({
   connect: (id, peerPort) => terminals.connectPeerRuntime(id, peerPort),
@@ -93,6 +147,30 @@ const codexPeers = new CodexPeerRuntime({
   onAvailable: (id) => {
     void flushPeerMessages(id);
   },
+  onTurnFailed: (id, sessionId, notice) => {
+    research?.nativeFailure(id, sessionId, notice);
+  },
+  onTurnCompleted: (id, sessionId, turnId) =>
+    mobile.completions.completed(id, sessionId, `codex-turn:${turnId}`),
+  onAnswer: (id, answer) => {
+    const terminal = terminals
+      .list()
+      .find((item) => item.id === id && !item.exited);
+    if (
+      !terminal ||
+      terminal.agentKind !== "codex" ||
+      terminal.agentSessionId !== answer.sessionId
+    )
+      return;
+    richTerminals.publishCard(id, {
+      requestId: answer.id,
+      sessionId: answer.sessionId,
+      text: answer.text,
+      cwd: answer.cwd || terminal.cwd,
+      columns: 80,
+      viewportRows: 30,
+    });
+  },
 });
 async function flushPeerMessages(id: string) {
   if (peerFlushes.has(id) || !codexPeers.available(id)) return;
@@ -113,6 +191,10 @@ async function flushPeerMessages(id: string) {
   }
 }
 const bridge = new AgentBridge(mailbox, {
+  manager: () => researchManager,
+  annotations: terminalAnnotations,
+  onRichRequest: (id, input) => richTerminals.request(id, input),
+  research: () => research,
   requests,
   onChange: () => broadcastState(),
   terminals: () => terminals.list(),
@@ -154,8 +236,13 @@ const bridge = new AgentBridge(mailbox, {
       void flushPeerMessages(id);
     }
   },
+  onClaudeContinuation: (id, sessionId) => {
+    terminals.markClaudeContinuation(id, sessionId);
+    mobile.completions.continued(id);
+  },
   onClaudeEvent: (id, event) => {
     terminals.markClaudeEvent(id, event);
+    mobile.completions.claudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
       const title =
         terminals.list().find((t) => t.id === id)?.title || "Claude";
@@ -167,6 +254,72 @@ const bridge = new AgentBridge(mailbox, {
     }
   },
 });
+terminals.on("peer-runtime-restored", (id, runtime) =>
+  bridge.setPeerRuntime(id, runtime),
+);
+research = new ResearchLabs(store.directory, mailbox, {
+  terminal: (id) => terminals.list().find((t) => t.id === id),
+  host: (id) => store.data.hosts.find((h) => h.id === id),
+  runtime: (id) => bridge.peers.runtime(id),
+  artifact: async (hostId, root, cwd, filename) => {
+    const host = hub.host(hostId);
+    await passwordFor(host.id);
+    return files.researchArtifact(host, root, cwd, filename);
+  },
+});
+research.on("change", () => broadcastState());
+researchManager = new ResearchLabManager({
+  labs: research,
+  terminals: () => terminals.list(),
+  runtime: (id) => bridge.peers.runtime(id),
+  hosts: () => store.data.hosts,
+  close: (id) => terminals.close(id),
+  prepare: async (input) => {
+    const host = hub.host(input.hostId);
+    if (input.sshSessionMode === "tmux" && host.kind !== "ssh")
+      throw new Error("tmux는 SSH 서버에서만 선택할 수 있습니다.");
+    const password = await passwordFor(host.id);
+    const settings = await Promise.all(
+      (["claude", "codex"] as const).map((kind) =>
+        validateResearchSettings(
+          kind,
+          researchSettings(kind, input[kind], input.effort),
+          () => history.models(host, password),
+        ),
+      ),
+    );
+    const cwd = await files.researchDirectory(host, input.cwd);
+    const prepared =
+      host.kind === "ssh"
+        ? await prepareRemoteResearchWorkspaces(host, cwd, input.kind, files)
+        : await prepareResearchWorkspaces(store.directory, cwd, input.kind);
+    return {
+      cwd,
+      workspace: prepared.workspace,
+      spawn: async (index) => {
+        const kind = (["claude", "codex"] as const)[index];
+        const terminal = await terminals.create(host, "", password, {
+          program: kind,
+          title: `${input.title.slice(0, 65)} · ${kind === "claude" ? "Claude" : "Codex"}`,
+          sshSessionMode: input.sshSessionMode,
+          researchLaunch: { cwd: prepared.folders[index], ...settings[index] },
+        });
+        return {
+          terminalId: terminal.id,
+          hostId: host.id,
+          sessionId: terminal.agentSessionId,
+          name: terminal.title,
+          kind,
+          cwd: prepared.folders[index],
+          owned: true,
+          settings: settings[index],
+        };
+      },
+    };
+  },
+});
+const researchTick = setInterval(() => research.tick(), 5000);
+researchTick.unref();
 // SSH forwards only this listener. Never expose bootstrap/UI routes through it.
 const bridgeApp = express();
 bridgeApp.disable("x-powered-by");
@@ -175,6 +328,7 @@ bridgeApp.all("/bridge/permission", bridge.permissionHandle);
 bridgeApp.all("/bridge/claude", bridge.claudeHandle);
 bridgeApp.all("/bridge/annotation", bridge.annotationHandle);
 bridgeApp.use("/bridge/peers", bridge.peerHandle);
+bridgeApp.all("/bridge/rich", bridge.richHandle);
 bridgeApp.use((_req, res) => res.sendStatus(404));
 const bridgeServer = createServer(bridgeApp);
 await new Promise<void>((resolve, reject) => {
@@ -187,13 +341,20 @@ terminals.configureBridge({
   port: bridgePort,
   issue: (id) => bridge.issue(id),
   revoke: (id) => bridge.revoke(id),
+  restore: (id, issued) => bridge.restore(id, issued),
+});
+terminals.configureRecovery({
+  hosts: () => store.data.hosts,
+  password: (host) => passwordFor(host.id),
 });
 bridge.peers.on("change", () => {
+  queueMicrotask(() => research.tick());
   for (const terminal of terminals.list())
     if (terminal.agentKind === "codex" && !terminal.exited)
       void flushPeerMessages(terminal.id);
 });
 const files = new Files((id) => hub.passwords.get(id));
+const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
 const server = createServer(app);
@@ -201,7 +362,8 @@ app.disable("x-powered-by");
 app.use((req, res, next) => {
   if (
     !allowedHost(req.headers.host, port) ||
-    !allowedOrigin(req.headers.origin, port)
+    (!req.path.startsWith("/html-preview/") &&
+      !allowedOrigin(req.headers.origin, port))
   ) {
     res.status(403).json({ error: "허용되지 않은 요청 출처입니다." });
     return;
@@ -223,6 +385,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use("/html-preview", htmlPreviews.router);
 app.use(express.json({ limit: "30mb" }));
 const state = () => {
   const current = hub.state();
@@ -236,13 +399,299 @@ const state = () => {
         (terminal) => terminal.hostId === host.id && !terminal.exited,
       ),
     })),
-    terminals: opened,
+    terminals: opened.map((terminal) => ({
+      ...terminal,
+      autoApproval: autoApproval.state(terminal.id),
+    })),
     mailbox: mailbox.list(),
     requests: requests.list(),
     connections: bridge.connections(),
     notices: notices.list(),
+    researchLabs: research.list(),
   };
 };
+const mobileRuntimeId = randomUUID();
+const mobileConversations = new MobileConversations(
+  (id) => terminals.list().find((item) => item.id === id),
+  async (hostId, provider, sessionId, cursor) =>
+    historyReader(provider).read(
+      hub.host(hostId),
+      await passwordFor(hostId),
+      sessionId,
+      cursor,
+    ),
+);
+const liveIdeChats = new IdeLiveChats({
+  terminals: () => terminals.list(),
+  terminal: (id) => terminals.list().find((terminal) => terminal.id === id),
+  cacheScope: (id) => {
+    const host = hub.host(id);
+    return JSON.stringify([
+      host.id,
+      host.kind,
+      host.address,
+      host.username,
+      host.port,
+      host.identityFile,
+      host.codexPath,
+    ]);
+  },
+  readHistory: async (id, provider, nativeId, cursor) =>
+    historyReader(provider).read(
+      hub.host(id),
+      await passwordFor(id),
+      nativeId,
+      cursor,
+    ),
+  codex: codexPeers,
+  claude: {
+    available: (id, nativeId) => {
+      const runtime = bridge.peers.runtime(id);
+      return (
+        runtime?.kind === "claude" &&
+        runtime.sessionId === nativeId &&
+        runtime.delivery === "automatic" &&
+        runtime.userInputVersion === 1 &&
+        runtime.state !== "offline"
+      );
+    },
+    send: async (id, input, beforeDispatch) => {
+      await beforeDispatch();
+      const runtime = bridge.peers.runtime(id);
+      if (
+        runtime?.kind !== "claude" ||
+        runtime.sessionId !== input.sessionId ||
+        runtime.delivery !== "automatic" ||
+        runtime.userInputVersion !== 1 ||
+        runtime.state === "offline"
+      )
+        throw Object.assign(
+          new IdeChatError(
+            "현재 Claude 채널에 연결할 수 없습니다. 같은 터미널에서 입력할 수 있습니다.",
+            409,
+          ),
+          { definiteRejection: true },
+        );
+      mailbox.sendIdeUser({
+        toTerminalId: id,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        text: input.text,
+      });
+      return "queued";
+    },
+  },
+});
+const ideChats = new IdeChats({
+  runtimeId: mobileRuntimeId,
+  hub,
+  live: liveIdeChats,
+  host: (id) => hub.host(id),
+  password: passwordFor,
+  resolveCwd: async (id, cwd) => {
+    await passwordFor(id);
+    const host = hub.host(id);
+    const path = await files.resolvePath(host, cwd || "~", "~");
+    return (await files.list(host, path)).path;
+  },
+  historyList: async (id, provider, options) =>
+    historyReader(provider).list(hub.host(id), await passwordFor(id), {
+      ...options,
+      includeAutomation: true,
+    }),
+  historyRead: async (id, provider, nativeId, cursor) =>
+    historyReader(provider).read(
+      hub.host(id),
+      await passwordFor(id),
+      nativeId,
+      cursor,
+    ),
+  nativeActive: (hostId, provider, nativeId) =>
+    terminals
+      .list()
+      .some(
+        (terminal) =>
+          !terminal.exited &&
+          terminal.hostId === hostId &&
+          terminal.agentKind === provider &&
+          (terminal.agentSessionId || terminal.resumeThreadId) === nativeId,
+      ),
+});
+const editorFiles = new EditorFiles({
+  files,
+  terminal: (id) => terminals.list().find((t) => t.id === id),
+  host: (id) => hub.host(id),
+  prepareHost: (id) => passwordFor(id),
+});
+app.use(
+  "/api/editor",
+  createEditorRouter(editorFiles, {
+    authorize: (_req, id, write) => {
+      if (!write) return;
+      try {
+        mobile.controls.local(id);
+      } catch {
+        throw new EditorError(
+          403,
+          "CONTROL_REQUIRED",
+          "다른 기기에서 제어 중입니다. ‘여기서 제어’를 누른 뒤 다시 저장하세요.",
+        );
+      }
+    },
+  }),
+);
+const mobile = new MobileGateway(new MobileAccess(store.directory), {
+  editor: editorFiles,
+  ideChat: ideChats,
+  resize: (id, cols, rows) => terminals.resize(id, cols, rows),
+  annotate: (id, text, comment) => {
+    const terminal = annotationTerminal(id);
+    const capture = bridge.annotations.capture(id, {
+      text,
+      source: {
+        hostName: hub.host(terminal.hostId).name,
+        title: terminal.title,
+        ...(terminal.cwd ? { cwd: terminal.cwd } : {}),
+      },
+    });
+    bridge.annotations.attach(id, [
+      { number: capture.number, annotation: comment },
+    ]);
+    return { reference: annotationReference(capture.number) };
+  },
+  state: () => ({
+    runtimeId: mobileRuntimeId,
+    hosts: store.data.hosts.map(({ id, name, kind }) => ({ id, name, kind })),
+    terminals: terminals
+      .list()
+      .map((t) => ({ ...t, autoApproval: autoApproval.state(t.id) })),
+    requests: requests.list(),
+    labs: [],
+  }),
+  snapshot: (id) => terminals.bufferSnapshot(id),
+  write: (id, data) => terminals.write(id, data),
+  answer: (id, answer) => requests.respond(id, answer),
+  answers: (id) => richTerminals.list(id),
+  conversation: (id, sessionId, cursor) =>
+    mobileConversations.read(id, sessionId, cursor),
+  upload: async (id, name, input) => {
+    const target = await attachmentTarget(id);
+    return files.upload(target.host, target.path, name, input, 0o600);
+  },
+});
+app.use(
+  "/api/ide-chat",
+  createIdeChatRouter(ideChats, {
+    authorize: (_request, { hostId, terminalId, write }) => {
+      hub.host(hostId);
+      if (write && terminalId) {
+        try {
+          mobile.controls.local(terminalId);
+        } catch (error) {
+          throw new IdeChatError(
+            error instanceof Error
+              ? error.message
+              : "터미널 제어권을 확인하세요.",
+            409,
+          );
+        }
+      }
+    },
+    actor: () => "local",
+  }),
+);
+await mobile.start();
+terminals.on("data", (id, data) => mobile.output(id, data));
+terminals.on("resize", (id, cols, rows) => mobile.resize(id, cols, rows));
+terminals.on("change", () => mobile.changed());
+requests.on("change", () => mobile.changed());
+research.on("change", () => mobile.changed());
+app.get("/api/mobile", (_req, res) => res.json(mobile.view()));
+const mobileNetwork = new MobileNetwork();
+const tailscaleSetup = new TailscaleSetup();
+app.get("/api/mobile/setup", async (_req, res) =>
+  res.json(await tailscaleSetup.status()),
+);
+app.post("/api/mobile/setup", (req, res) => {
+  const { action } = z
+    .object({ action: z.enum(["install", "login"]) })
+    .strict()
+    .parse(req.body);
+  res.json(tailscaleSetup.start(action));
+});
+let mobileSetupBusy = false;
+app.get("/api/mobile/network", async (_req, res) =>
+  res.json(await mobileNetwork.status(mobile.access.config.port)),
+);
+app.post("/api/mobile/network", async (_req, res) => {
+  if (mobileSetupBusy)
+    throw new Error("모바일 연결 설정 중입니다. 잠시 기다려주세요.");
+  if (!mobile.view().listening)
+    throw new Error("먼저 모바일 연결 설정을 저장하세요.");
+  mobileSetupBusy = true;
+  try {
+    res.json(await mobileNetwork.connect(mobile.access.config));
+  } finally {
+    mobileSetupBusy = false;
+  }
+});
+app.put("/api/mobile", async (req, res) => {
+  if (mobileSetupBusy)
+    throw new Error("모바일 연결 설정 중입니다. 잠시 기다려주세요.");
+  const config = z
+    .object({
+      enabled: z.boolean(),
+      origin: z.string().max(250),
+      port: z.number().int().min(1024).max(65535),
+      mode: z.enum(["private", "funnel"]).optional(),
+    })
+    .strict()
+    .parse(req.body);
+  if (config.port === port)
+    throw new Error("PC와 모바일 포트는 달라야 합니다.");
+  mobileSetupBusy = true;
+  try {
+    res.json(
+      await mobile.configure(
+        config.enabled,
+        config.origin,
+        config.port,
+        config.mode,
+      ),
+    );
+  } finally {
+    mobileSetupBusy = false;
+  }
+});
+app.post("/api/mobile/pair", (req, res) => {
+  if (!mobile.view().listening)
+    throw new Error(
+      "모바일 접속 창구가 실행되지 않았습니다. 설정을 확인하세요.",
+    );
+  const { kind } = z
+    .object({ kind: z.enum(["mobile", "desktop"]).default("mobile") })
+    .parse(req.body || {});
+  res.json(mobile.access.pairing(kind));
+});
+app.get("/api/terminals/:id/control", (req, res) =>
+  res.json({ control: mobile.controls.view(req.params.id) }),
+);
+app.post("/api/terminals/:id/control", (req, res) => {
+  z.object({ action: z.literal("claim") })
+    .strict()
+    .parse(req.body);
+  res.json(
+    mobile.controls.change(req.params.id, "local", "호스트 PC", {
+      clientId: "local",
+      action: "claim",
+      takeover: true,
+    }),
+  );
+});
+app.delete("/api/mobile/devices/:id", (req, res) => {
+  mobile.revoke(z.string().uuid().parse(req.params.id));
+  res.json(mobile.view());
+});
 async function passwordFor(id: string, supplied?: string) {
   if (supplied) return supplied;
   const cached = hub.passwords.get(id);
@@ -255,25 +704,38 @@ const wsServer = new WebSocketServer({
   noServer: true,
   maxPayload: 128 * 1024,
 });
+const viewConnections = new ViewConnections(store.directory);
+const pongReceived = new WeakSet<WebSocket>();
 const subscriptions = new Map<
   WebSocket,
   {
     sessions: Set<string>;
     terminals: Set<string>;
     pending: Map<string, { events: ServerEvent[]; bytes: number }>;
+    state: boolean;
   }
 >();
-function send(socket: WebSocket, event: ServerEvent) {
+function send(socket: WebSocket, event: ServerEvent | string) {
   if (socket.readyState !== WebSocket.OPEN) return;
   if (socket.bufferedAmount > 4 * 1024 * 1024) {
+    viewConnections.trace({ reason: "slow-client" });
     socket.close(1013, "Client too slow; reconnect");
     return;
   }
-  socket.send(JSON.stringify(event));
+  socket.send(typeof event === "string" ? event : JSON.stringify(event));
 }
+let stateBroadcast: ReturnType<typeof setTimeout> | undefined;
 function broadcastState() {
-  for (const socket of subscriptions.keys())
-    send(socket, { type: "state", state: state() });
+  if (stateBroadcast) return;
+  stateBroadcast = setTimeout(() => {
+    stateBroadcast = undefined;
+    const recipients = [...subscriptions].filter(
+      ([socket, sub]) => sub.state && socket.readyState === WebSocket.OPEN,
+    );
+    if (!recipients.length) return;
+    const message = JSON.stringify({ type: "state", state: state() });
+    for (const [socket] of recipients) send(socket, message);
+  }, 20);
 }
 function sendTerminal(socket: WebSocket, id: string, event: ServerEvent) {
   const sub = subscriptions.get(socket);
@@ -282,6 +744,7 @@ function sendTerminal(socket: WebSocket, id: string, event: ServerEvent) {
   if (!pending) return send(socket, event);
   pending.bytes += event.type === "terminal-data" ? event.data.length : 1;
   if (pending.bytes > 4 * 1024 * 1024) {
+    viewConnections.trace({ terminalId: id, reason: "slow-replay" });
     socket.close(1013, "Replay client too slow; reconnect");
     sub.pending.delete(id);
     return;
@@ -295,6 +758,7 @@ hub.on("session", (session) => {
       send(socket, { type: "session", session });
 });
 terminals.on("change", broadcastState);
+terminals.on("change", autoApproval.refresh);
 mailbox.on("change", broadcastState);
 requests.on("change", broadcastState);
 notices.on("change", broadcastState);
@@ -306,8 +770,16 @@ terminals.on("data", (id, data) => {
 });
 terminals.on("exit", (id, exitCode) => {
   notices.close(id);
+  const terminal = terminals.list().find((item) => item.id === id);
   for (const socket of subscriptions.keys())
-    sendTerminal(socket, id, { type: "terminal-exit", id, exitCode });
+    sendTerminal(socket, id, {
+      type: "terminal-exit",
+      id,
+      exitCode,
+      connectionIssue: terminal?.connectionIssue,
+      disconnectReason: terminal?.disconnectReason,
+      persistent: terminal?.persistent,
+    });
 });
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url || "/", `http://127.0.0.1:${port}`);
@@ -334,6 +806,7 @@ const clientMessage = z.discriminatedUnion("type", [
     type: z.literal("subscribe"),
     sessions: z.array(z.string()).max(64),
     terminals: z.array(z.string()).max(16),
+    state: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("terminal-input"),
@@ -357,7 +830,10 @@ wsServer.on("connection", (socket: WebSocket) => {
     sessions: new Set(),
     terminals: new Set(),
     pending: new Map(),
+    state: true,
   });
+  pongReceived.add(socket);
+  socket.on("pong", () => pongReceived.add(socket));
   send(socket, { type: "state", state: state() });
   socket.on("message", (data) => {
     try {
@@ -367,6 +843,7 @@ wsServer.on("connection", (socket: WebSocket) => {
         const next = {
           sessions: new Set(message.sessions),
           terminals: new Set(message.terminals),
+          state: message.state !== false,
           pending: new Map(
             [...prev.pending].filter(([id]) => message.terminals.includes(id)),
           ),
@@ -380,6 +857,15 @@ wsServer.on("connection", (socket: WebSocket) => {
           if (prev.terminals.has(id)) continue;
           const pending = { events: [] as ServerEvent[], bytes: 0 };
           next.pending.set(id, pending);
+          const replayDeadline = setTimeout(() => {
+            if (subscriptions.get(socket)?.pending.get(id) !== pending) return;
+            viewConnections.trace({
+              terminalId: id,
+              reason: "snapshot-timeout",
+            });
+            socket.terminate();
+          }, 25000);
+          replayDeadline.unref();
           // Freeze the snapshot at this output boundary. Later process output
           // waits until its complete screen has been delivered, in FIFO order.
           void terminals
@@ -394,26 +880,57 @@ wsServer.on("connection", (socket: WebSocket) => {
             .catch((error) => {
               if (subscriptions.get(socket)?.pending.get(id) !== pending)
                 return;
+              viewConnections.trace({
+                terminalId: id,
+                reason: "snapshot-failed",
+              });
               send(socket, { type: "error", message: errorText(error) });
               socket.close(1011, "Terminal snapshot failed");
-            });
+            })
+            .finally(() => clearTimeout(replayDeadline));
         }
-      } else if (message.type === "terminal-input")
+      } else if (message.type === "terminal-input") {
+        if (isTerminalProtocolResponse(message.data)) {
+          if (mobile.controls.canResizeLocally(message.id))
+            terminals.write(message.id, message.data);
+          return;
+        }
+        mobile.controls.local(message.id);
         terminals.write(message.id, message.data);
-      else if (message.type === "terminal-colors")
+      } else if (message.type === "terminal-colors")
         terminals.setColors(message.id, message.colors);
-      else terminals.resize(message.id, message.cols, message.rows);
+      else if (mobile.controls.canResizeLocally(message.id))
+        terminals.resize(message.id, message.cols, message.rows);
     } catch (error) {
       send(socket, { type: "error", message: errorText(error) });
     }
   });
-  socket.on("close", () => subscriptions.delete(socket));
+  socket.on("close", (code) => {
+    viewConnections.trace({ reason: "socket-close", code });
+    subscriptions.delete(socket);
+  });
   socket.on("error", () => subscriptions.delete(socket));
 });
+let lastHeartbeatAt = Date.now();
 const heartbeat = setInterval(() => {
-  for (const socket of subscriptions.keys())
-    if (socket.readyState === WebSocket.OPEN) socket.ping();
-}, 25000);
+  const delayed = Date.now() - lastHeartbeatAt > 30000;
+  lastHeartbeatAt = Date.now();
+  for (const socket of subscriptions.keys()) {
+    if (socket.readyState !== WebSocket.OPEN) {
+      socket.terminate();
+      continue;
+    }
+    // A stalled server event loop may not have dispatched queued pong events yet.
+    if (!delayed && !pongReceived.has(socket)) {
+      viewConnections.trace({ reason: "pong-timeout" });
+      socket.terminate();
+      continue;
+    }
+    pongReceived.delete(socket);
+    socket.ping();
+    send(socket, { type: "connection-heartbeat" });
+  }
+}, 15000);
 heartbeat.unref();
 
 const name = z.string().trim().min(1).max(100);
@@ -437,7 +954,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.2.1" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.15.4" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -451,9 +968,14 @@ app.get("/api/bootstrap", (_req, res) =>
       terminalInputOptimized: true,
       terminalReplayState: true,
       claudeIntegration: true,
+      connectionMonitoring: true,
     },
   }),
 );
+app.post("/api/diagnostics/view-connection", (req, res) => {
+  viewConnections.trace(viewConnectionEvent.parse(req.body));
+  res.json({ ok: true });
+});
 app.get("/api/mailbox", (_req, res) => res.json(mailbox.list()));
 app.post("/api/requests/:id/respond", (req, res) =>
   res.json(
@@ -502,6 +1024,15 @@ app.patch("/api/hosts/:id", (req, res) => {
   hub.passwords.delete(id);
   files.close(id);
   res.json({ ...host, hasSavedPassword: credentials.has(host) });
+});
+// UI-authenticated preference only. No peer/MCP route can change approvals.
+// Unlike connection settings, this affects future launches and closes nothing.
+app.patch("/api/hosts/:id/cli-approval", (req, res) => {
+  const { mode } = z
+    .object({ mode: z.enum(["native", "full-access"]) })
+    .strict()
+    .parse(req.body);
+  res.json(hub.setCliApprovalMode(String(req.params.id), mode));
 });
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));
@@ -667,6 +1198,401 @@ app.post("/api/discussions/:id/cancel", (req, res) => {
   hub.cancelDiscussion(String(req.params.id));
   res.json({ ok: true });
 });
+app.get("/api/hosts/:id/research-models", async (req, res) => {
+  if (!validToken(req.headers["x-harbor-token"], token)) {
+    res
+      .status(403)
+      .json({ error: "화면을 새로고침한 뒤 모델 목록을 다시 불러오세요." });
+    return;
+  }
+  const host = hub.host(String(req.params.id));
+  res.json({ data: await history.models(host, await passwordFor(host.id)) });
+});
+app.post("/api/research/prepare", async (req, res) => {
+  const body = researchPrepareSchema.parse(req.body);
+  const existing = body.terminalId
+    ? terminals.list().find((t) => t.id === body.terminalId && !t.exited)
+    : undefined;
+  if (body.terminalId && !existing?.agentKind)
+    throw new Error("실행 중인 AI 대화를 선택하세요.");
+  if (existing && body.agentSettings)
+    throw new Error("기존 대화의 모델·effort는 해당 CLI에서 변경하세요.");
+  let settings = existing
+    ? existing.researchSettings
+    : researchSettings(body.leadKind, body.agentSettings, body.effort);
+  const hostId =
+    existing?.hostId ||
+    body.hostId ||
+    store.data.hosts.find((h) => h.kind === "local")?.id;
+  if (!hostId) throw new Error("연구할 서버를 선택하세요.");
+  const host = hub.host(hostId),
+    password = await passwordFor(host.id);
+  if (!existing)
+    settings = await validateResearchSettings(body.leadKind, settings!, () =>
+      history.models(host, password),
+    );
+  const cwd = await files.researchDirectory(host, existing?.cwd || body.cwd);
+  let ownedId: string | undefined;
+  try {
+    const terminal =
+      existing ||
+      (await terminals.create(host, "", password, {
+        program: body.leadKind,
+        title: `${body.title.slice(0, 65)} · 주 대화`,
+        researchLaunch: { cwd, ...settings! },
+      }));
+    if (!existing) ownedId = terminal.id;
+    res.json(
+      research.prepare(
+        { ...body, cwd, hostId },
+        {
+          terminalId: terminal.id,
+          hostId,
+          sessionId: terminal.agentSessionId,
+          name: terminal.title,
+          kind: terminal.agentKind || body.leadKind,
+          cwd,
+          owned: !existing,
+          ...(settings ? { settings } : {}),
+        },
+      ),
+    );
+  } catch (error) {
+    if (ownedId) await terminals.close(ownedId).catch(() => {});
+    throw error;
+  }
+});
+
+async function preparationConversation(labId: string) {
+  const lab = research.preparing(labId),
+    lead = lab.participants[0];
+  const host = hub.host(lead.hostId || lab.hostId),
+    password = await passwordFor(host.id);
+  const detail = await (lead.kind === "claude" ? claudeHistory : history).read(
+    host,
+    password,
+    lead.sessionId!,
+  );
+  const snapshot = researchConversation(detail);
+  if (!snapshot.text.trim())
+    throw new Error(
+      "아직 읽을 수 있는 대화가 없습니다. 주 대화에서 이야기를 나눈 뒤 다시 시도하세요.",
+    );
+  return snapshot;
+}
+app.get("/api/research/:id/preparation-context", async (req, res) => {
+  res.json(await preparationConversation(String(req.params.id)));
+});
+app.post("/api/research/:id/proposal", (req, res) => {
+  const { revision, ...proposal } = researchProposalSchema
+    .extend({ revision: z.number().int().min(1) })
+    .parse(req.body);
+  res.json(
+    research.proposal(String(req.params.id), proposal, "user", revision),
+  );
+});
+app.post("/api/research/:id/plan-request", (req, res) => {
+  res.json(research.requestPlan(String(req.params.id)));
+});
+app.delete("/api/research/:id/preparation", (req, res) => {
+  res.json(research.removePreparation(String(req.params.id)));
+});
+app.delete("/api/research/:id", (req, res) => {
+  res.json(research.remove([String(req.params.id)]));
+});
+app.delete("/api/research", (req, res) => {
+  const body = z
+    .object({ ids: z.array(z.string().min(1).max(256)).min(1).max(100) })
+    .strict()
+    .parse(req.body);
+  res.json(research.remove(body.ids));
+});
+const startingResearch = new Set<string>();
+app.post("/api/research/:id/start", async (req, res) => {
+  const id = String(req.params.id),
+    body = researchStartSchema.parse(req.body);
+  if (startingResearch.has(id))
+    throw new Error("공동 작업을 준비 중입니다. 잠시 기다리세요.");
+  startingResearch.add(id);
+  let ownedId: string | undefined;
+  try {
+    const lab = research.preparing(id),
+      lead = lab.participants[0];
+    if (bridge.peers.runtime(lead.terminalId)?.state === "working")
+      throw new Error("주 대화의 답변이 끝난 뒤 공동 작업을 시작하세요.");
+    if (body.revision !== lab.revision)
+      throw new Error("계획이 변경되었습니다. 최신 내용을 확인하세요.");
+    if (body.manualContext && !body.context.trim())
+      throw new Error("대화 기록 대신 공유할 배경을 입력하세요.");
+    const conversation = body.manualContext
+      ? undefined
+      : await preparationConversation(id);
+    const existing = body.partnerTerminalId
+      ? terminals
+          .list()
+          .find((t) => t.id === body.partnerTerminalId && !t.exited)
+      : undefined;
+    if (body.partnerTerminalId && !existing?.agentKind)
+      throw new Error("실행 중인 추가 AI 대화를 선택하세요.");
+    if (existing && body.partnerSettings)
+      throw new Error("기존 대화의 모델·effort는 해당 CLI에서 변경하세요.");
+    let settings = existing
+      ? existing.researchSettings
+      : researchSettings(body.partnerKind, body.partnerSettings, lab.effort);
+    const host = hub.host(existing?.hostId || body.partnerHostId || lab.hostId);
+    const password = await passwordFor(host.id);
+    if (!existing)
+      settings = await validateResearchSettings(
+        body.partnerKind,
+        settings!,
+        () => history.models(host, password),
+      );
+    let workspace: import("../shared/research.js").ResearchLab["workspace"];
+    let partner: import("../shared/research.js").ResearchParticipant;
+    if (existing) {
+      if (
+        body.kind === "code" &&
+        existing.hostId === lead.hostId &&
+        (host.kind === "ssh"
+          ? posix.normalize(existing.cwd) === posix.normalize(lead.cwd)
+          : resolve(existing.cwd).toLowerCase() ===
+            resolve(lead.cwd).toLowerCase())
+      )
+        throw new Error(
+          "코드 수정에는 서로 다른 작업 폴더의 대화를 선택하세요.",
+        );
+      partner = {
+        terminalId: existing.id,
+        hostId: host.id,
+        sessionId: existing.agentSessionId,
+        kind: existing.agentKind!,
+        name: existing.title,
+        cwd: existing.cwd,
+        owned: false,
+        ...(settings ? { settings } : {}),
+      };
+    } else {
+      if (host.id !== lab.hostId && !body.partnerCwd)
+        throw new Error("추가 AI 서버의 프로젝트 폴더를 입력하세요.");
+      const cwd = await files.researchDirectory(
+        host,
+        body.partnerCwd || lab.cwd,
+      );
+      const prepared =
+        host.kind === "ssh"
+          ? await prepareRemoteResearchWorkspaces(host, cwd, body.kind, files, [
+              body.partnerKind,
+            ])
+          : await prepareResearchWorkspaces(store.directory, cwd, body.kind, [
+              body.partnerKind,
+            ]);
+      workspace = prepared.workspace;
+      const terminal = await terminals.create(host, "", password, {
+        program: body.partnerKind,
+        title: `${lab.title.slice(0, 65)} · ${body.partnerKind === "claude" ? "Claude" : "Codex"}`,
+        researchLaunch: { cwd: prepared.folders[0], ...settings! },
+      });
+      ownedId = terminal.id;
+      partner = {
+        terminalId: terminal.id,
+        hostId: host.id,
+        kind: body.partnerKind,
+        name: terminal.title,
+        cwd: prepared.folders[0],
+        owned: true,
+        settings,
+      };
+    }
+    res.json(research.start(id, body, partner, conversation, workspace));
+  } catch (error) {
+    if (ownedId) await terminals.close(ownedId).catch(() => {});
+    throw error;
+  } finally {
+    startingResearch.delete(id);
+  }
+});
+
+app.post("/api/research", async (req, res) => {
+  const body = researchCreateSchema.parse(req.body);
+  const selectedHostId =
+    body.hostId ||
+    (body.terminalIds
+      ? terminals.list().find((t) => t.id === body.terminalIds![0])?.hostId
+      : undefined) ||
+    store.data.hosts.find((h) => h.kind === "local")?.id;
+  if (!selectedHostId) throw new Error("연구할 서버를 선택하세요.");
+  const host = hub.host(selectedHostId);
+  const password = await passwordFor(host.id);
+  const cwd = await files.researchDirectory(host, body.cwd);
+  let participants: import("../shared/research.js").ResearchParticipant[];
+  let workspace: import("../shared/research.js").ResearchLab["workspace"];
+  const owned: string[] = [];
+  try {
+    if (body.terminalIds) {
+      participants = body.terminalIds.map((id) => {
+        const terminal = terminals.list().find((t) => t.id === id && !t.exited);
+        if (!terminal || !terminal.agentKind)
+          throw new Error("실행 중인 AI 세션을 선택하세요.");
+        return {
+          terminalId: id,
+          hostId: terminal.hostId,
+          sessionId: terminal.agentSessionId,
+          name: terminal.title,
+          kind: terminal.agentKind,
+          cwd: terminal.cwd,
+          owned: false,
+        };
+      });
+      if (
+        body.kind === "code" &&
+        participants[0].hostId === participants[1].hostId &&
+        (host.kind === "ssh"
+          ? posix.normalize(participants[0].cwd) ===
+            posix.normalize(participants[1].cwd)
+          : resolve(participants[0].cwd).toLowerCase() ===
+            resolve(participants[1].cwd).toLowerCase())
+      )
+        throw new Error(
+          "코드 공동 수정에는 서로 다른 작업 폴더의 세션을 선택하거나 새 연구 세션을 만드세요.",
+        );
+    } else {
+      const prepared =
+        host.kind === "ssh"
+          ? await prepareRemoteResearchWorkspaces(host, cwd, body.kind, files)
+          : await prepareResearchWorkspaces(store.directory, cwd, body.kind);
+      workspace = prepared.workspace;
+      participants = [];
+      for (const [i, kind] of (["claude", "codex"] as const).entries()) {
+        const terminal = await terminals.create(host, "", password, {
+          program: kind,
+          title: `${body.title.slice(0, 65)} · ${kind === "claude" ? "Claude" : "Codex"}`,
+          researchLaunch: { cwd: prepared.folders[i], effort: body.effort },
+        });
+        owned.push(terminal.id);
+        participants.push({
+          terminalId: terminal.id,
+          hostId: host.id,
+          name: terminal.title,
+          kind,
+          cwd: prepared.folders[i],
+          owned: true,
+        });
+      }
+    }
+    const lab = research.create(
+      { ...body, cwd, hostId: host.id },
+      participants,
+      workspace,
+    );
+    res.json(lab);
+  } catch (error) {
+    await Promise.allSettled(owned.map((id) => terminals.close(id)));
+    throw error;
+  }
+});
+app.post("/api/research/:id/control", (req, res) => {
+  const body = z
+    .object({
+      action: z.enum(["pause", "resume", "retry", "answer"]),
+      directive: z.string().max(4000).optional(),
+      decisionAssignmentId: z.string().min(1).max(256).optional(),
+    })
+    .strict()
+    .parse(req.body);
+  res.json(
+    research.control(
+      String(req.params.id),
+      body.action,
+      body.directive,
+      body.decisionAssignmentId,
+    ),
+  );
+});
+app.post("/api/research/:id/rebind", (req, res) => {
+  const body = z
+    .object({ terminalIds: z.array(z.string()).min(1).max(2) })
+    .strict()
+    .parse(req.body);
+  res.json(research.rebind(String(req.params.id), body.terminalIds));
+});
+app.post("/api/research/:id/export", (req, res) => {
+  const lab = research.get(String(req.params.id));
+  if (!lab.bestResult.trim())
+    throw new Error("아직 저장된 연구 결과가 없습니다.");
+  const directory = join(store.directory, "research-results");
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, `${lab.id}.md`);
+  writeFileSync(
+    path,
+    `# ${lab.title}\n\n${lab.status === "completed" ? "최종 검토를 마친 결과" : "현재까지의 결과 · 검토 진행 중"}\n\n${lab.bestResult}\n`,
+    { mode: 0o600 },
+  );
+  const local = store.data.hosts.find((h) => h.kind === "local");
+  if (!local) throw new Error("결과 문서를 볼 로컬 서버가 없습니다.");
+  res.json({ path, hostId: local.id });
+});
+const resumingThreads = new Map<
+  string,
+  Promise<import("../shared/types.js").TerminalInfo>
+>();
+app.post("/api/research/:id/reopen", async (req, res) => {
+  const lab = research.get(String(req.params.id));
+  if (!["preparing", "paused", "needs-input"].includes(lab.status))
+    throw new Error("과제를 일시정지한 뒤 원래 대화를 다시 연결하세요.");
+  if (lab.participants.some((p) => !p.sessionId))
+    throw new Error(
+      "아직 원래 대화 ID가 없습니다. CLI 연결을 먼저 확인하세요.",
+    );
+  const ids: string[] = [];
+  for (const participant of lab.participants) {
+    const host = hub.host(participant.hostId || lab.hostId);
+    const existing = terminals
+      .list()
+      .find(
+        (t) =>
+          !t.exited &&
+          t.hostId === host.id &&
+          (t.agentSessionId
+            ? t.agentSessionId === participant.sessionId
+            : t.resumeThreadId === participant.sessionId) &&
+          (t.agentKind ||
+            (t.program?.startsWith("claude") ? "claude" : "codex")) ===
+            participant.kind,
+      );
+    if (existing) ids.push(existing.id);
+    else {
+      const key = `research:${host.id}:${participant.kind}:${participant.sessionId}`;
+      let opening = resumingThreads.get(key);
+      if (!opening) {
+        opening = (async () => {
+          const password = await passwordFor(host.id);
+          const settings = participant.owned
+            ? await validateResearchSettings(
+                participant.kind,
+                participant.settings || { effort: lab.effort },
+                () => history.models(host, password),
+              )
+            : undefined;
+          return terminals.create(host, "", password, {
+            program: participant.kind === "claude" ? "claude-resume" : "resume",
+            resumeThreadId: participant.sessionId,
+            title: participant.name,
+            ...researchReconnectOptions(participant, settings),
+          });
+        })();
+        resumingThreads.set(key, opening);
+        void opening.finally(() => resumingThreads.delete(key)).catch(() => {});
+      }
+      const terminal = await opening;
+      ids.push(terminal.id);
+    }
+  }
+  res.json({
+    terminalIds: ids,
+    labId: lab.id,
+    note: "원래 대화가 연결되면 재연결을 누르세요.",
+  });
+});
 app.post("/api/terminals", async (req, res) => {
   const body = z
     .object({
@@ -676,6 +1602,9 @@ app.post("/api/terminals", async (req, res) => {
         .enum(["shell", "codex", "resume", "claude", "claude-resume"])
         .default("shell"),
       title: name.optional(),
+      startupPlaceholder: z.boolean().optional(),
+      autoApprove: z.boolean().default(false),
+      sshSessionMode: z.enum(["direct", "tmux"]).default("direct"),
       password: z.string().max(2000).optional(),
       savePassword: z.boolean().optional(),
       colors: terminalColorsInput.optional(),
@@ -687,19 +1616,33 @@ app.post("/api/terminals", async (req, res) => {
     host,
     body.cwd || host.defaultCwd,
     password,
-    { program: body.program, title: body.title, colors: body.colors },
+    {
+      program: body.program,
+      title: body.title,
+      colors: body.colors,
+      startupPlaceholder: body.startupPlaceholder,
+      sshSessionMode: body.sshSessionMode,
+    },
   );
   try {
+    if (body.autoApprove) autoApproval.set(terminal.id, true);
     if (host.kind === "ssh" && password) {
       if (body.savePassword) await credentials.set(host, password);
       hub.passwords.set(host.id, password);
     }
   } catch (error) {
-    terminals.close(terminal.id);
+    await terminals.close(terminal.id).catch(() => {});
     throw error;
   }
   broadcastState();
-  res.json(terminal);
+  res.json({ ...terminal, autoApproval: autoApproval.state(terminal.id) });
+});
+app.patch("/api/terminals/:id/auto-approval", (req, res) => {
+  const { enabled } = z
+    .object({ enabled: z.boolean() })
+    .strict()
+    .parse(req.body);
+  res.json(autoApproval.set(String(req.params.id), enabled));
 });
 app.post("/api/terminals/:id/rename", (req, res) => {
   res.json(
@@ -749,64 +1692,57 @@ app.get("/api/hosts/:id/history/:threadId", async (req, res) => {
     ),
   );
 });
-const resumingThreads = new Map<
-  string,
-  Promise<import("../shared/types.js").TerminalInfo>
->();
+const historyResumer = new HistoryResumer(
+  terminals,
+  passwordFor,
+  (provider, host, password, threadId) =>
+    historyReader(provider).summary(host, password, threadId),
+  (cwd) => cleanPath.min(1).parse(cwd),
+);
 app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
   const body = z
     .object({
       colors: terminalColorsInput.optional(),
       provider: historyProvider,
+      sshSessionMode: z.enum(["direct", "tmux"]).default("direct"),
     })
     .parse(req.body || {});
   const host = hub.host(String(req.params.id));
   const threadId = historyThreadId.parse(req.params.threadId);
-  const key = `${body.provider}:${host.id}:${threadId}`;
-  const existing = terminals
-    .list()
-    .find(
-      (t) =>
-        t.hostId === host.id &&
-        (t.agentKind ||
-          (t.program?.startsWith("claude") ? "claude" : "codex")) ===
-          body.provider &&
-        (t.resumeThreadId === threadId || t.agentSessionId === threadId) &&
-        !t.exited,
-    );
-  if (existing) {
-    if (body.colors) terminals.setColors(existing.id, body.colors);
-    res.json(existing);
-    return;
-  }
-  let opening = resumingThreads.get(key);
-  if (!opening) {
-    opening = (async () => {
-      const password = await passwordFor(host.id);
-      const thread = await historyReader(body.provider).summary(
-        host,
-        password,
-        threadId,
-      );
-      if (thread.active)
-        throw new Error("이 대화는 실행 중입니다. 기존 터미널에서 이어가세요.");
-      const cwd = cleanPath.min(1).parse(thread.cwd);
-      return terminals.create(host, cwd, password, {
-        program: body.provider === "claude" ? "claude-resume" : "resume",
-        title: thread.title.slice(0, 100),
-        resumeThreadId: threadId,
-        ...(body.provider === "claude" ? { resumeCwd: cwd } : {}),
-        colors: body.colors,
-      });
-    })();
-    resumingThreads.set(key, opening);
-    void opening.finally(() => resumingThreads.delete(key)).catch(() => {});
-  }
-  res.json(await opening);
+  res.json(await historyResumer.resume(host, threadId, body));
 });
-app.post("/api/terminals/:id/close", (req, res) => {
-  terminals.close(String(req.params.id));
+app.post("/api/terminals/:id/close", async (req, res) => {
+  await terminals.close(String(req.params.id));
+  richTerminals.clear(String(req.params.id));
   res.json({ ok: true });
+});
+app.post("/api/terminals/:id/reconnect", async (req, res) => {
+  const { password } = z
+    .object({ password: z.string().max(4096).optional() })
+    .parse(req.body || {});
+  try {
+    res.json(await terminals.reconnect(String(req.params.id), password));
+  } catch (error) {
+    res
+      .status(409)
+      .json({ error: errorText(error), code: disconnectCategory(error) });
+  }
+});
+app.get("/api/terminals/:id/rich", (req, res) => {
+  res.json({
+    enabled: richTerminals.enabled(String(req.params.id)),
+    blocks: richTerminals.list(String(req.params.id)),
+  });
+});
+app.post("/api/terminals/:id/rich/:blockId/layout", (req, res) => {
+  const terminal = terminals.list().find((t) => t.id === String(req.params.id));
+  if (!terminal || terminal.agentSessionId !== req.body?.sessionId)
+    throw new Error("현재 대화의 조판 요청이 아닙니다.");
+  richTerminals.acknowledge(terminal.id, String(req.params.blockId), req.body);
+  res.json({ ok: true });
+});
+app.post("/api/terminals/:id/dismiss-startup", (req, res) => {
+  res.json({ dismissed: terminals.dismissStartup(String(req.params.id)) });
 });
 function annotationTerminal(id: string) {
   const terminal = terminals
@@ -966,6 +1902,14 @@ app.get("/api/hosts/:id/files/preview", async (req, res) => {
     ),
   );
 });
+app.post("/api/hosts/:id/files/html", async (req, res) => {
+  res.json(
+    await htmlPreviews.open(
+      String(req.params.id),
+      cleanPath.min(1).parse(req.body.path),
+    ),
+  );
+});
 app.get("/api/hosts/:id/files/image", async (req, res) => {
   if (!validToken(req.query.token, token)) {
     res.status(403).json({ error: "이미지 연결이 만료되었습니다." });
@@ -1016,6 +1960,34 @@ app.put("/api/hosts/:id/files/upload", async (req, res) => {
   hub.activity("transfer", `${host.name} · 파일 업로드: ${result.path}`);
   res.json(result);
 });
+app.post("/api/hosts/:id/files/upload-plan", async (req, res) => {
+  const body = z
+    .object({
+      path: cleanPath.min(1),
+      directories: z.array(cleanPath.min(1)).max(UPLOAD_ENTRY_LIMIT),
+      files: z
+        .array(
+          z.object({
+            relativePath: cleanPath.min(1),
+            size: z.number().int().min(0).max(MAX_UPLOAD_BYTES),
+          }),
+        )
+        .max(UPLOAD_ENTRY_LIMIT),
+    })
+    .parse(req.body);
+  const controller = new AbortController();
+  res.once("close", () => {
+    if (!res.writableFinished) controller.abort();
+  });
+  res.json(
+    await files.prepareUpload(
+      hub.host(String(req.params.id)),
+      body.path,
+      body,
+      controller.signal,
+    ),
+  );
+});
 app.post("/api/hosts/:id/files/mkdir", async (req, res) => {
   const body = z.object({ path: cleanPath.min(1), name: name }).parse(req.body);
   res.json(
@@ -1040,7 +2012,12 @@ app.use(
       });
       return;
     }
-    res.status(400).json({ error: errorText(error).slice(0, 5000) });
+    res.status(400).json({
+      error: errorText(error).slice(0, 5000),
+      ...(error?.level === "client-authentication"
+        ? { code: "SSH_AUTH_REQUIRED" }
+        : {}),
+    });
   },
 );
 
@@ -1061,6 +2038,13 @@ if (development) {
     res.sendFile(join(clientDirectory, "index.html")),
   );
 }
+await terminals.restore();
+terminalAnnotations.retain(new Set(terminals.list().map((t) => t.id)));
+richTerminals.on("block", (id, block) => {
+  for (const [socket, subscription] of subscriptions)
+    if (subscription.terminals.has(id))
+      send(socket, { type: "terminal-rich", id, block });
+});
 server.listen(port, "127.0.0.1", () => {
   writeFileSync(
     join(store.directory, "server.json"),
@@ -1076,14 +2060,26 @@ server.on("error", (error) => {
   console.error(errorText(error));
   process.exitCode = 1;
 });
-function shutdown() {
+let shuttingDown = false;
+function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  runtimeDiagnostics.shutdown(reason);
+  void mobile.stop();
+  tailscaleSetup.close();
+  clearTimeout(stateBroadcast);
+  clearInterval(researchTick);
+  research.shutdown();
   clearInterval(heartbeat);
   codexPeers.disposeAll();
+  ideChats.close();
   hub.shutdown();
   history.shutdown();
   claudeHistory.shutdown();
   requests.shutdown();
+  autoApproval.dispose();
   terminals.shutdown();
+  richTerminals.dispose();
   files.shutdown();
   wsServer.close();
   server.close();
@@ -1091,14 +2087,25 @@ function shutdown() {
   bridgeServer.closeAllConnections();
   setTimeout(() => process.exit(0), 1000).unref();
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => shutdown("signal-int"));
+process.on("SIGTERM", () => shutdown("signal-term"));
 process.on("message", (message: unknown) => {
+  if (
+    message &&
+    typeof message === "object" &&
+    "type" in message &&
+    message.type === "harbor:power" &&
+    "event" in message &&
+    (message.event === "suspend" || message.event === "resume")
+  ) {
+    terminals.powerEvent(message.event);
+    return;
+  }
   if (
     message &&
     typeof message === "object" &&
     "type" in message &&
     message.type === "harbor:shutdown"
   )
-    shutdown();
+    shutdown("desktop-request");
 });

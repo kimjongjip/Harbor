@@ -40,7 +40,12 @@ export class Hub extends EventEmitter {
   private publishTimers = new Map<string, NodeJS.Timeout>();
   private requestOwners = new Map<
     string,
-    { client: RpcClient; sessionId: string; approval: Approval }
+    {
+      client: RpcClient;
+      sessionId: string;
+      approval: Approval;
+      requestedPermissions?: Record<string, unknown>;
+    }
   >();
   private jobControllers = new Map<string, AbortController>();
   private stateTimer?: NodeJS.Timeout;
@@ -147,6 +152,25 @@ export class Hub extends EventEmitter {
     this.hosts.set(host.id, view);
     this.activity("connection", `${host.name} 서버 등록`);
     return view;
+  }
+  setCliApprovalMode(
+    id: string,
+    mode: import("../shared/types.js").CliApprovalMode,
+  ) {
+    const host = this.host(id);
+    const original = this.store.data.hosts.find((item) => item.id === id)!;
+    const previous = original.cliApprovalMode;
+    original.cliApprovalMode = mode;
+    host.cliApprovalMode = mode;
+    try {
+      this.store.save();
+    } catch (error) {
+      original.cliApprovalMode = previous;
+      host.cliApprovalMode = previous;
+      throw error;
+    }
+    this.changed();
+    return { cliApprovalMode: mode };
   }
   updateHost(id: string, input: Partial<HostConfig>) {
     const h = this.host(id);
@@ -515,6 +539,7 @@ export class Hub extends EventEmitter {
       readOnly?: boolean;
       jobId?: string;
       images?: string[];
+      beforeDispatch?: () => void | Promise<void>;
     } = {},
   ) {
     const s = this.session(id);
@@ -541,6 +566,7 @@ export class Hub extends EventEmitter {
         ...(text.trim() ? [{ type: "text", text, text_elements: [] }] : []),
         ...images.map((url) => ({ type: "image", url })),
       ];
+      await options.beforeDispatch?.();
       let result;
       if (busy) {
         if (!s.activeTurnId)
@@ -738,7 +764,18 @@ export class Hub extends EventEmitter {
       this.publish(s);
       return;
     }
-    this.requestOwners.set(approval.id, { client, sessionId: s.id, approval });
+    this.requestOwners.set(approval.id, {
+      client,
+      sessionId: s.id,
+      approval,
+      requestedPermissions:
+        approval.kind === "permissions" &&
+        p.permissions &&
+        typeof p.permissions === "object" &&
+        !Array.isArray(p.permissions)
+          ? structuredClone(p.permissions)
+          : undefined,
+    });
     if (!s.approvals.some((a) => a.id === approval.id))
       s.approvals.push(approval);
     s.status = "waiting";
@@ -765,7 +802,10 @@ export class Hub extends EventEmitter {
         ),
       });
     else if (approval.kind === "permissions")
-      client.respond(approval.requestId, { permissions: {}, scope: "turn" });
+      client.respond(approval.requestId, {
+        permissions: value.approved ? owner.requestedPermissions || {} : {},
+        scope: "turn",
+      });
     else if (
       ["execCommandApproval", "applyPatchApproval"].includes(approval.method)
     )

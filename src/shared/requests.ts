@@ -5,6 +5,7 @@ export interface HarborRequest {
   id: string;
   kind: "question" | "permission";
   permission?: {
+    sessionId?: string;
     toolName: string;
     command?: string;
     cwd?: string;
@@ -18,6 +19,7 @@ export interface HarborRequest {
   createdAt: number;
   answer?: HarborAnswer;
   answeredAt?: number;
+  answeredBy?: "user" | "automatic";
   /** The requesting MCP call actually retrieved this answer. */
   consumedAt?: number;
   cancelledAt?: number;

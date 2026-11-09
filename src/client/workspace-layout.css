@@ -52,7 +52,7 @@
   height: 25px;
 }
 .harbor-app .harbor-brand b {
-  font-size: 19px;
+  font-size: calc(var(--ui-font-size, 14px) * 19 / 12);
 }
 .harbor-app .harbor-side-switch {
   flex-shrink: 0;
@@ -117,13 +117,13 @@
 .harbor-app .harbor-top-actions .button {
   min-height: 29px;
   padding: 5px 10px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .harbor-app .harbor-statusbar {
   min-height: 20px;
   height: 20px;
   padding: 0 12px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 @media (max-width: 700px) {
   .harbor-app .harbor-sidebar,
@@ -154,7 +154,7 @@
     background: var(--surface);
   }
   .harbor-app .harbor-side-switch button {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
     gap: 5px;
   }
   .harbor-app .harbor-top-actions {

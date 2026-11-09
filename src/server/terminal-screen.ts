@@ -2,11 +2,18 @@ import headless from "@xterm/headless";
 import serialize from "@xterm/addon-serialize";
 import { TerminalReplay } from "./terminal-replay.js";
 import type { TerminalReplayMetadata } from "../shared/types.js";
-import { serializeTerminalLinks, terminalLinkSuffix } from "./terminal-screen-links.js";
 import {
-  alternateBufferPrefix,
+  serializeTerminalLinks,
+  terminalLinkSuffix,
+} from "./terminal-screen-links.js";
+import {
+  terminalModeSuffix,
   terminalStateSuffix,
 } from "./terminal-screen-state.js";
+import {
+  canSerializeAlternateScreen,
+  serializeAlternateScreen,
+} from "./terminal-screen-alternate.js";
 
 const { Terminal } = headless;
 const { SerializeAddon } = serialize;
@@ -95,28 +102,41 @@ export class TerminalScreen {
     return this.schedule(() => {
       const core = (this.terminal as any)._core;
       const normal = core._bufferService.buffers.normal;
+      const view = this.terminal.buffer.active;
+      const lastCell = view
+        .getLine(view.baseY + view.cursorY)
+        ?.getCell(this.terminal.cols - 1);
+      const emptyPendingWrap =
+        view.cursorX === this.terminal.cols &&
+        lastCell?.getWidth() !== 0 &&
+        !lastCell?.getChars();
       // Designated legacy character sets have no public serialization API.
       // Preserve their original control stream rather than claiming a snapshot.
       if (
         rawImages ||
+        emptyPendingWrap ||
         core._charsetService.charset ||
         core._charsetService._charsets.some(Boolean) ||
         core._bufferService.buffer.savedCharset ||
+        (this.terminal.buffer.active.type === "alternate" &&
+          !canSerializeAlternateScreen(this.terminal)) ||
         (this.terminal.buffer.active.type === "alternate" &&
           (normal.scrollTop !== 0 ||
             normal.scrollBottom !== this.terminal.rows - 1))
       )
         return raw;
       return {
-        // The addon serializes normal and alternate buffers separately, but
-        // leaves the normal cursor's SGR active at the alternate transition.
-        // Start that independent cell stream from its assumed default style.
         data:
-          serializeTerminalLinks(this.terminal, () => this.serializer.serialize())
-            .replace(
-              "\x1b[?1049h\x1b[H",
-              alternateBufferPrefix(this.terminal),
-            ) +
+          serializeTerminalLinks(this.terminal, () =>
+            this.serializer.serialize({
+              excludeAltBuffer: true,
+              excludeModes: true,
+            }),
+          ) +
+          (this.terminal.buffer.active.type === "alternate"
+            ? serializeAlternateScreen(this.terminal)
+            : "") +
+          terminalModeSuffix(this.terminal) +
           terminalStateSuffix(this.terminal) +
           terminalLinkSuffix(this.terminal) +
           pending,

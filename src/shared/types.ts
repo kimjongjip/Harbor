@@ -2,8 +2,11 @@ export type HostStatus = "disconnected" | "connecting" | "connected" | "error";
 export type SessionStatus =
   "idle" | "running" | "waiting" | "error" | "offline";
 export type PermissionMode = "read-only" | "workspace-write";
+export type CliApprovalMode = "native" | "full-access";
 
 export interface HostConfig {
+  /** User-selected default for new terminals, never an instruction from a peer. */
+  cliApprovalMode?: CliApprovalMode;
   id: string;
   name: string;
   kind: "local" | "ssh";
@@ -125,23 +128,56 @@ export interface TerminalColors {
   foreground: string;
   background: string;
 }
+export type TerminalConnectionIssue =
+  | "network"
+  | "timeout"
+  | "authentication"
+  | "forwarding"
+  | "remote-missing"
+  | "management"
+  | "capability"
+  | "transport"
+  | "remote-exit"
+  | "backend-stop";
 export interface TerminalInfo {
+  autoApproval?: {
+    enabled: boolean;
+    accepted: number;
+    sessionId?: string;
+    lastAcceptedAt?: number;
+    detail?: string;
+  };
+  /** Launch-time setting; does not claim to observe later native CLI changes. */
+  cliApprovalMode?: CliApprovalMode;
   id: string;
+  startupPlaceholder?: boolean;
   hostId: string;
   cwd: string;
   title: string;
   exited: boolean;
+  connectionState?:
+    "connecting" | "connected" | "reconnecting" | "disconnected" | "exited";
+  persistent?: boolean;
+  persistenceDetail?: string;
+  disconnectReason?: string;
+  connectionIssue?: TerminalConnectionIssue;
+  lastDisconnectedAt?: number;
+  reconnectAttempt?: number;
+  exitCode?: number;
+  exitSignal?: string;
   program?: "shell" | "codex" | "resume" | "claude" | "claude-resume";
   agentKind?: "codex" | "claude";
   agentState?: "working" | "idle" | "waiting";
   agentSessionId?: string;
   integration?: "ready" | "unavailable";
   agentConnected?: boolean;
-  peerDelivery?: "automatic" | "poll" | "unavailable";
+  peerDelivery?: "automatic" | "hook" | "poll" | "unavailable";
   peerDetail?: string;
   resumeThreadId?: string;
+  researchSettings?: import("./research.js").ResearchAgentSettings;
 }
 export interface AppState {
+  researchLabs?: import("./research.js").ResearchLabView[];
   requests?: import("./requests.js").HarborRequest[];
   connections?: import("./requests.js").HarborConnection[];
   notices?: import("./notices.js").TerminalNotice[];
@@ -163,6 +199,8 @@ export interface TerminalReplayMetadata {
   truncated?: boolean;
 }
 export type ServerEvent =
+  | { type: "connection-heartbeat" }
+  | import("./rich-terminal.js").RichTerminalEvent
   | { type: "state"; state: AppState }
   | { type: "session"; session: SessionView }
   | {
@@ -171,7 +209,14 @@ export type ServerEvent =
       data: string;
       replay?: TerminalReplayMetadata;
     }
-  | { type: "terminal-exit"; id: string; exitCode: number }
+  | {
+      type: "terminal-exit";
+      id: string;
+      exitCode: number;
+      connectionIssue?: TerminalConnectionIssue;
+      disconnectReason?: string;
+      persistent?: boolean;
+    }
   | { type: "error"; message: string };
 
 export const sessionKey = (hostId: string, threadId: string) =>

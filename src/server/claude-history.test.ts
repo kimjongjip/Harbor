@@ -4,6 +4,19 @@ import { ClaudeHistory, parseClaudeHistory, type ClaudeHistoryReader } from './c
 import type { HostConfig } from '../shared/types.js';
 const host = { id: 'fixture', kind: 'local' } as HostConfig;
 const jsonl = (rows: any[]) => rows.map(r => JSON.stringify(r)).join('\n');
+
+test('saved conversation keeps earlier messages across compaction and resumed rendering', () => {
+  const detail = parseClaudeHistory('fixture', 'native-session', jsonl([
+    { type: 'user', uuid: 'old-user', message: { content: 'Earlier question' } },
+    { type: 'assistant', uuid: 'old-answer', message: { content: 'Earlier answer' } },
+    { type: 'system', subtype: 'compact_boundary' },
+    { type: 'user', uuid: 'summary', isCompactSummary: true, message: { content: 'Continuation summary' } },
+    { type: 'assistant', uuid: 'latest-answer', message: { content: 'Latest answer' } },
+  ]), 42);
+  assert.ok(detail.items.some(item => item.id === 'old-user' && item.text === 'Earlier question'));
+  assert.ok(detail.items.some(item => item.id === 'old-answer' && item.text === 'Earlier answer'));
+  assert.ok(detail.items.some(item => item.id === 'latest-answer' && item.text === 'Latest answer'));
+});
 test('Claude metadata and visible text exclude tools, meta, sidechain and thinking', () => {
   const detail = parseClaudeHistory('h', 'id', jsonl([
     { type: 'user', uuid: 'u', cwd: '/project', message: { content: [{ type: 'text', text: '질문' }, { type: 'image' }] } },
@@ -14,6 +27,22 @@ test('Claude metadata and visible text exclude tools, meta, sidechain and thinki
   ]) + '\n{"partial":', 42);
   assert.equal(detail.thread.title, '제목'); assert.equal(detail.thread.cwd, '/project');
   assert.deepEqual(detail.items.map(i => i.text), ['질문', '답변']); assert.equal(detail.items[0].imageCount, 1);
+});
+
+test('IDE channel user prompts survive meta filtering without displaying their internal envelope', () => {
+  const prompt = 'Question "quoted"\nC:\\fixture\\path';
+  const envelope = { sender: { kind: 'user' }, userInput: { version: 1, requestId: 'fixture-request-1' }, text: prompt };
+  const detail = parseClaudeHistory('fixture', 'native-session', jsonl([
+    { type: 'user', uuid: 'channel-message', isMeta: true, message: { content: [{ type: 'text', text: `<channel source="harbor">${JSON.stringify(envelope)}</channel>` }] } },
+    { type: 'user', uuid: 'peer-note', isMeta: true, message: { content: JSON.stringify({ sender: { kind: 'terminal' }, text: 'Peer note' }) } },
+    { type: 'user', uuid: 'invalid-marker', isMeta: true, message: { content: JSON.stringify({ ...envelope, sender: { kind: 'terminal' } }) } },
+    { type: 'assistant', uuid: 'normal-answer', message: { content: 'Normal answer' } },
+  ]), 1);
+  assert.deepEqual(detail.items.map(item => ({ id: item.id, text: item.text })), [
+    { id: 'harbor-ide-user:fixture-request-1', text: prompt },
+    { id: 'normal-answer', text: 'Normal answer' },
+  ]);
+  assert.equal(detail.thread.title, prompt);
 });
 function fixture() {
   let closed = 0;
@@ -41,6 +70,65 @@ test('Claude detail pages newest messages first as chronologically ordered batch
   assert.equal((await f.history.summary(host, undefined, 'session-1')).cwd, '/project');
 });
 
+test('live Claude detail reads appended and replaced JSONL without rescanning its cached catalog', async () => {
+  let contents = Buffer.from(jsonl([{ type: 'user', uuid: 'u1', message: { content: 'Original question' } }]));
+  let modified = 1, entries = 0, stats = 0;
+  const reads: number[] = [];
+  let statOverride: { directory: boolean; size: number; modified: number } | undefined;
+  const reader: ClaudeHistoryReader = {
+    root: '/claude/projects', join: (...parts) => parts.join('/'),
+    async entries(directory) {
+      entries++;
+      return directory === this.root
+        ? [{ name: 'project', directory: true, size: 0, modified: 0 }]
+        : [{ name: 'live.jsonl', directory: false, size: contents.length, modified }];
+    },
+    async stat(file) {
+      assert.equal(file, '/claude/projects/project/live.jsonl');
+      stats++;
+      return statOverride || { directory: false, size: contents.length, modified };
+    },
+    async read(_file, start, length) { reads.push(length); return contents.subarray(start, start + length).toString('utf8'); },
+    close() {},
+  };
+  const history = new ClaudeHistory(async () => reader);
+  try {
+    await history.list(host);
+    assert.equal(entries, 2);
+    const originalSize = contents.length;
+    contents = Buffer.concat([contents, Buffer.from('\n' + jsonl([{ type: 'assistant', uuid: 'a1', message: { content: 'New answer 한글' } }]))]);
+    modified = 2;
+    const appended = await history.read(host, undefined, 'live');
+    assert.deepEqual(appended.items.map(item => item.text), ['Original question', 'New answer 한글']);
+    assert.equal(appended.thread.updatedAt, 2);
+    assert.ok(reads.some(length => length > originalSize));
+    assert.ok(reads.includes(contents.length));
+
+    contents = Buffer.from(jsonl([{ type: 'user', uuid: 'replacement', message: { content: 'Replaced' } }]));
+    modified = 3;
+    const replaced = await history.read(host, undefined, 'live');
+    assert.deepEqual(replaced.items.map(item => item.text), ['Replaced']);
+    assert.equal(replaced.thread.updatedAt, 3);
+    assert.ok(reads.includes(contents.length));
+
+    const pendingRecord = jsonl([{ type: 'assistant', uuid: 'next', message: { content: 'Completed after refresh' } }]);
+    contents = Buffer.concat([contents, Buffer.from('\n' + pendingRecord.slice(0, -1))]);
+    assert.deepEqual((await history.read(host, undefined, 'live')).items.map(item => item.text), ['Replaced']);
+    contents = Buffer.concat([contents, Buffer.from(pendingRecord.slice(-1))]);
+    assert.deepEqual((await history.read(host, undefined, 'live')).items.map(item => item.text), ['Replaced', 'Completed after refresh']);
+    assert.equal(stats, 8);
+    assert.equal(entries, 2, 'refresh must not enumerate all projects again');
+
+    const readCount = reads.length;
+    statOverride = { directory: true, size: 1, modified: 4 };
+    await assert.rejects(history.read(host, undefined, 'live'), /파일을 읽을 수 없습니다/);
+    statOverride = { directory: false, size: -1, modified: 4 };
+    await assert.rejects(history.read(host, undefined, 'live'), /파일을 읽을 수 없습니다/);
+    assert.equal(reads.length, readCount, 'invalid files must not be allocated/read');
+    assert.equal(entries, 2);
+  } finally { history.shutdown(); }
+});
+
 test('actual local reader honors CLAUDE_CONFIG_DIR in an isolated temporary folder', async () => {
   const fs = await import('node:fs/promises'); const os = await import('node:os'); const path = await import('node:path');
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harbor-claude-history-')); const old = process.env.CLAUDE_CONFIG_DIR;
@@ -48,7 +136,12 @@ test('actual local reader honors CLAUDE_CONFIG_DIR in an isolated temporary fold
     process.env.CLAUDE_CONFIG_DIR = root; await fs.mkdir(path.join(root, 'projects', 'fixture'), { recursive: true });
     await fs.writeFile(path.join(root, 'projects', 'fixture', 'local-fixture.jsonl'), jsonl([{ type: 'user', cwd: '/fixture', message: { content: 'synthetic question' } }]));
     const history = new ClaudeHistory(); const page = await history.list(host); assert.equal(page.data.length, 1); assert.equal(page.data[0].provider, 'claude');
-    assert.equal((await history.read(host, undefined, 'local-fixture')).items[0].text, 'synthetic question'); history.shutdown();
+    assert.equal((await history.read(host, undefined, 'local-fixture')).items[0].text, 'synthetic question');
+    await fs.appendFile(path.join(root, 'projects', 'fixture', 'local-fixture.jsonl'), '\n' + jsonl([{ type: 'assistant', message: { content: 'synthetic live answer' } }]));
+    assert.deepEqual((await history.read(host, undefined, 'local-fixture')).items.map(item => item.text), ['synthetic question', 'synthetic live answer']);
+    await fs.writeFile(path.join(root, 'projects', 'fixture', 'local-fixture.jsonl'), jsonl([{ type: 'user', message: { content: 'reset' } }]));
+    assert.deepEqual((await history.read(host, undefined, 'local-fixture')).items.map(item => item.text), ['reset']);
+    history.shutdown();
     await assert.rejects(history.list(host), /closed/);
   } finally {
     if (old === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = old;

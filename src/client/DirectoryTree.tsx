@@ -14,9 +14,12 @@ import {
   X,
 } from "lucide-react";
 import type { DirectoryView, FileEntry, HostView } from "../shared/types";
-import { api, getToken } from "./api";
+import { api, ApiError, getToken } from "./api";
 import { fileUrl, usePreview } from "./ResourcePreview";
 import { useFileDrop } from "./useFileDrop";
+import { selectionFromFiles, type UploadSelection } from "./upload-selection";
+import { prepareUploadSelection } from "./upload-plan";
+import { needsFileAuthentication } from "./file-errors";
 
 export default function DirectoryTree({
   host,
@@ -38,6 +41,11 @@ export default function DirectoryTree({
   const [expanded, setExpanded] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [authRequired, setAuthRequired] = useState(false);
+  function reportError(value: unknown) {
+    setError(typeof value === "string" ? value : (value as Error).message);
+    setAuthRequired(needsFileAuthentication(value));
+  }
   const [showHidden, setShowHidden] = useState(false);
   const [selected, setSelected] = useState("");
   const [menu, setMenu] = useState<{
@@ -50,12 +58,19 @@ export default function DirectoryTree({
   const generation = useRef(0);
   const uploadBusy = useRef(false);
   const uploadInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const uploadAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    folderInput.current?.setAttribute("webkitdirectory", "");
+    return () => uploadAbort.current?.abort();
+  }, []);
   const hostId = host?.id;
   const drop = useFileDrop({
+    scopeKey: hostId,
     rootPath: root?.path,
     busy: uploading || busy,
-    onFiles: (files, path) => void upload(files, path),
-    onError: setError,
+    onFiles: (selection, path) => upload(selection, path),
+    onError: reportError,
   });
   async function load(path: string) {
     if (!hostId) return;
@@ -75,7 +90,7 @@ export default function DirectoryTree({
       setNodes({});
       setExpanded([]);
     } catch (err) {
-      if (gen === generation.current) setError((err as Error).message);
+      if (gen === generation.current) reportError(err);
     } finally {
       if (gen === generation.current) setBusy(false);
     }
@@ -108,24 +123,52 @@ export default function DirectoryTree({
         if (generation.current !== gen) return;
         setNodes((prev) => ({ ...prev, [entry.path]: view }));
       } catch (err) {
-        if (generation.current === gen) setError((err as Error).message);
+        if (generation.current === gen) reportError(err);
         return;
       }
     }
     if (generation.current === gen)
       setExpanded((prev) => [...new Set([...prev, entry.path])]);
   }
-  async function upload(files: File[], target = root?.path) {
-    if (!target || !hostId || uploadBusy.current || !files.length) return;
+  async function upload(selection: UploadSelection, target = root?.path) {
+    if (
+      !target ||
+      !hostId ||
+      uploadBusy.current ||
+      (!selection.files.length && !selection.directories.length)
+    )
+      return;
     uploadBusy.current = true;
+    const controller = new AbortController();
+    uploadAbort.current = controller;
     setUploading(true);
     setError("");
     const gen = generation.current;
+    const rootPath = root?.path;
+    let completed = 0;
+    let changed = false;
     try {
-      for (const [i, file] of files.entries()) {
-        setUploadState(`${i + 1}/${files.length} · ${file.name} → ${target}`);
+      setUploadState(`${host?.name} · 폴더와 파일 업로드 준비 → ${target}`);
+      const plan = await prepareUploadSelection(
+        hostId,
+        target,
+        selection,
+        controller.signal,
+      );
+      const originals = new Map(
+        selection.files.map((item) => [item.relativePath, item.file]),
+      );
+      changed = plan.directoryCount > 0;
+      for (const [i, item] of plan.files.entries()) {
+        controller.signal.throwIfAborted();
+        const file = originals.get(item.relativePath);
+        if (!file) throw new Error("업로드할 파일 목록을 확인하지 못했습니다.");
+        if (generation.current === gen)
+          setUploadState(
+            `${i + 1}/${plan.files.length} · ${item.relativePath} → ${target}`,
+          );
         const response = await fetch(
-          `/api/hosts/${hostId}/files/upload?${new URLSearchParams({ path: target, name: file.name })}`,
+          `/api/hosts/${hostId}/files/upload?${new URLSearchParams({ path: item.directory, name: item.name })}`,
           {
             method: "PUT",
             headers: {
@@ -133,32 +176,52 @@ export default function DirectoryTree({
               "Content-Type": "application/octet-stream",
             },
             body: file,
+            signal: controller.signal,
           },
         );
         const result = await response.json();
         if (!response.ok)
-          throw new Error(result.error || "업로드에 실패했습니다.");
+          throw new ApiError(
+            result.error || "업로드에 실패했습니다.",
+            response.status,
+            result.code,
+          );
+        completed++;
+        changed = true;
       }
-      if (generation.current === gen) {
-        const view = await api<DirectoryView>(
-          `/hosts/${hostId}/files?${new URLSearchParams({ path: target })}`,
-          undefined,
-          "GET",
+      if (generation.current === gen)
+        setUploadState(
+          `${completed}개 파일${plan.directoryCount ? ` · ${plan.directoryCount}개 폴더` : ""} 업로드 완료 · ${target}`,
         );
-        if (generation.current === gen) {
-          if (target === root!.path) setRoot(view);
-          else {
-            setNodes((prev) => ({ ...prev, [target]: view }));
-            setExpanded((prev) => [...new Set([...prev, target])]);
-          }
-          setUploadState(`${files.length}개 업로드 완료 · ${target}`);
-        }
-      }
     } catch (err) {
-      setError((err as Error).message);
+      if (generation.current === gen) {
+        if (!controller.signal.aborted) reportError(err);
+        setUploadState(
+          `${controller.signal.aborted ? "업로드 취소" : "업로드 중단"} · ${completed}개 파일 완료 · ${target}`,
+        );
+      }
     } finally {
       uploadBusy.current = false;
+      uploadAbort.current = null;
       setUploading(false);
+      if (changed && generation.current === gen) {
+        try {
+          const view = await api<DirectoryView>(
+            `/hosts/${hostId}/files?${new URLSearchParams({ path: target })}`,
+            undefined,
+            "GET",
+          );
+          if (generation.current === gen) {
+            if (target === rootPath) setRoot(view);
+            else {
+              setNodes((prev) => ({ ...prev, [target]: view }));
+              setExpanded((prev) => [...new Set([...prev, target])]);
+            }
+          }
+        } catch (err) {
+          if (generation.current === gen) reportError(err);
+        }
+      }
     }
   }
   function entries(view: DirectoryView, depth = 0) {
@@ -249,10 +312,19 @@ export default function DirectoryTree({
           className="icon-button compact"
           title="파일 업로드"
           aria-label="탐색기 파일 업로드"
-          disabled={!root || uploading}
+          disabled={!root || uploading || drop.collecting}
           onClick={() => uploadInput.current?.click()}
         >
           <Upload size={14} />
+        </button>
+        <button
+          className="icon-button compact"
+          title="폴더 업로드"
+          aria-label="탐색기 폴더 업로드"
+          disabled={!root || uploading || drop.collecting}
+          onClick={() => folderInput.current?.click()}
+        >
+          <Folder size={14} />
         </button>
         <button
           className="icon-button compact"
@@ -292,7 +364,7 @@ export default function DirectoryTree({
       {error && (
         <div className="explorer-error" role="alert">
           <p>{error}</p>
-          {host?.kind === "ssh" && (
+          {host?.kind === "ssh" && authRequired && (
             <button
               className="button secondary small"
               onClick={() => onConnect(host)}
@@ -327,9 +399,16 @@ export default function DirectoryTree({
             <p>서버의 작업 폴더를 선택하세요.</p>
           </div>
         )}
-        {root && !root.entries.length && (
-          <p className="explorer-placeholder">빈 폴더입니다.</p>
-        )}
+        {root &&
+          !root.entries.some(
+            (entry) => showHidden || !entry.name.startsWith("."),
+          ) && (
+            <p className="explorer-placeholder">
+              {root.entries.length
+                ? "숨김 항목만 있습니다. ‘숨김 파일’을 켜서 확인하세요."
+                : "빈 폴더입니다."}
+            </p>
+          )}
         {root?.truncated && (
           <p className="explorer-placeholder">
             처음 5,000개 항목만 표시합니다.
@@ -364,7 +443,21 @@ export default function DirectoryTree({
         <div className="explorer-upload" role="status">
           {uploading && <LoaderCircle size={12} className="spin" />}
           {uploadState}
+          {uploading && (
+            <button
+              className="button ghost small"
+              onClick={() => uploadAbort.current?.abort()}
+            >
+              취소
+            </button>
+          )}
         </div>
+      )}
+      {drop.collecting && (
+        <p className="explorer-upload" role="status">
+          <LoaderCircle size={12} className="spin" />
+          폴더와 파일 목록을 읽는 중…
+        </p>
       )}
       <input
         ref={uploadInput}
@@ -373,7 +466,26 @@ export default function DirectoryTree({
         hidden
         aria-label="탐색기 업로드 파일"
         onChange={(event) => {
-          void upload([...(event.target.files || [])]);
+          try {
+            void upload(selectionFromFiles(event.target.files || []));
+          } catch (err) {
+            reportError(err);
+          }
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={folderInput}
+        type="file"
+        multiple
+        hidden
+        aria-label="탐색기 업로드 폴더"
+        onChange={(event) => {
+          try {
+            void upload(selectionFromFiles(event.target.files || []));
+          } catch (err) {
+            reportError(err);
+          }
           event.target.value = "";
         }}
       />
@@ -429,7 +541,7 @@ export default function DirectoryTree({
                   await navigator.clipboard.writeText(menu.entry.path);
                   setMenu(null);
                 } catch {
-                  setError("경로를 복사하지 못했습니다.");
+                  reportError("경로를 복사하지 못했습니다.");
                 }
               }}
             >

@@ -3,10 +3,20 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
 import "@xterm/xterm/css/xterm.css";
-import { api, getToken } from "./api";
+import {
+  api,
+  getToken,
+  ApiError,
+  hasConnectionMonitoring,
+  reportViewConnection,
+} from "./api";
+import { SocketWatchdog } from "./socket-watchdog";
+import { registerTerminalDraft } from "./terminalDraft";
+import { registerIdeAnnotation } from "./ide/annotationBridge";
+import { selectionText } from "./ide/state";
 import type { ServerEvent, TerminalInfo } from "../shared/types";
 import { installTerminalLinks } from "./terminalLinks";
-import { restoreTerminalReplay } from "./terminalReplay";
+import { restoreTerminalReplay, writeTerminal } from "./terminalReplay";
 import {
   installTerminalSelection,
   writeLocalClipboard,
@@ -19,6 +29,7 @@ import {
   annotationApiError,
   annotationUnavailable,
   type TerminalAnnotationReference,
+  type TerminalAnnotationSnapshot,
 } from "./terminalAnnotation";
 import { TerminalAnnotationDialog } from "./TerminalAnnotationDialog";
 import {
@@ -28,6 +39,13 @@ import {
 } from "./terminalAttachmentQueue";
 import { usePreview } from "./ResourcePreview";
 import { terminalTheme, terminalColors, useTheme } from "./Theme";
+import { useTypography } from "./Typography";
+import { terminalFontFamily } from "./typography-settings";
+import { TerminalRich, richSelectedText } from "./TerminalRich";
+import { TerminalConversation } from "./TerminalConversation";
+import { TerminalControlStatus } from "./TerminalControlStatus";
+import { ReconnectTerminalDialog } from "./ReconnectTerminalDialog";
+import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { useNotifications } from "./Notifications";
 import {
   CheckCircle2,
@@ -37,6 +55,7 @@ import {
   LoaderCircle,
   Upload,
   X,
+  History,
 } from "lucide-react";
 import {
   droppedTerminalFiles,
@@ -67,6 +86,21 @@ interface TransferItem {
   error?: string;
 }
 
+function mergeRichBlocks(
+  previous: RichTerminalBlock[],
+  incoming: RichTerminalBlock[],
+) {
+  const merged = new Map(previous.map((block) => [block.id, block]));
+  for (const block of incoming) {
+    const live = merged.get(block.id);
+    // A replay fetch may finish after the live layout-ready event.
+    if (!live || live.state !== "ready") merged.set(block.id, block);
+  }
+  return [...merged.values()]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-64);
+}
+
 export default function TerminalPane({
   info,
   active,
@@ -82,6 +116,13 @@ export default function TerminalPane({
 }) {
   const open = usePreview();
   const { theme } = useTheme();
+  const { settings: typography, fontsReady } = useTypography();
+  const typographyRef = useRef(typography);
+  typographyRef.current = typography;
+  const [nativeTerminal, setNativeTerminal] = useState<Terminal | null>(null);
+  const [richBlocks, setRichBlocks] = useState<RichTerminalBlock[]>([]);
+  const [reconnectDialog, setReconnectDialog] = useState(false);
+  const [conversationOpen, setConversationOpen] = useState(false);
   const { push, isServerNoticeEnabled } = useNotifications();
   const openRef = useRef(open);
   openRef.current = open;
@@ -102,6 +143,15 @@ export default function TerminalPane({
   const visibilityRef = useRef({ active, focused });
   visibilityRef.current = { active, focused };
   const [connected, setConnected] = useState(false);
+  const [viewEpoch, setViewEpoch] = useState(0);
+  const [connectionStatus, setConnectionStatus] = useState("터미널 연결 중…");
+  const [inputError, setInputError] = useState("");
+  const [controlReason, setControlReason] = useState("");
+  const readOnlyRef = useRef(false);
+  const [controlRefresh, setControlRefresh] = useState(0);
+  const controlClaimedRef = useRef<(() => void) | null>(null);
+  const reconnectViewRef = useRef<(() => void) | null>(null);
+  const recoveryFailures = useRef(0);
   const infoRef = useRef(info);
   infoRef.current = info;
   const hostNameRef = useRef(hostName);
@@ -152,9 +202,9 @@ export default function TerminalPane({
   useEffect(() => {
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
-      fontFamily: '"Cascadia Code", Consolas, monospace',
-      lineHeight: 1.3,
+      fontSize: typographyRef.current.terminalSize,
+      fontFamily: terminalFontFamily(typographyRef.current.terminalFont),
+      lineHeight: typographyRef.current.terminalLineHeight,
       scrollback: 5000,
       minimumContrastRatio: 4.5,
       theme: terminalTheme(theme),
@@ -183,8 +233,11 @@ export default function TerminalPane({
       setLinkHint,
     );
     termRef.current = term;
+    setNativeTerminal(term);
     fitRef.current = fit;
     let socket: WebSocket | undefined;
+    let watchdog: SocketWatchdog | undefined;
+    let restoreAbort: AbortController | undefined;
     let stopped = false;
     let replayReceived = false;
     let notificationsReady = false;
@@ -282,8 +335,12 @@ export default function TerminalPane({
     };
     const terminalReady = () =>
       !stopped &&
+      !readOnlyRef.current &&
       !terminalEnded &&
       !infoRef.current.exited &&
+      !["disconnected", "reconnecting", "connecting"].includes(
+        infoRef.current.connectionState || "",
+      ) &&
       screenReady &&
       notificationsReady &&
       socket?.readyState === WebSocket.OPEN;
@@ -595,8 +652,20 @@ export default function TerminalPane({
       void pasteFiles(images);
     };
     const mount = element.current!;
-    const disposeSelection = installTerminalSelection(mount, term, () => true);
-    const selectedText = () => terminalSelectedText(mount, term.getSelection());
+    const disposeSelection = installTerminalSelection(mount, term, () => true, {
+      onChange: () => setHasSelection(Boolean(selectedText())),
+      onNotice: (message) => {
+        setCopyStatus(message);
+        clearTimeout(copyStatusTimeout);
+        copyStatusTimeout = setTimeout(() => setCopyStatus(""), 7000);
+      },
+    });
+    const selectedText = () =>
+      richSelectedText(mount) ??
+      terminalSelectedText(
+        mount,
+        disposeSelection.getSelection() ?? term.getSelection(),
+      );
     let copyStatusTimeout: ReturnType<typeof setTimeout>;
     const copyFeedback = (failed = false) => {
       if (stopped) return;
@@ -620,9 +689,15 @@ export default function TerminalPane({
       );
     };
     copySelectionRef.current = copySelected;
-    quoteSelectionRef.current = async () => {
-      if (annotationRegistering || annotationInserting) return;
-      const text = selectedText();
+    const captureAnnotation = async (external?: TerminalAnnotationSnapshot) => {
+      if (annotationRegistering || annotationInserting) {
+        if (external)
+          throw new Error(
+            "인용 연결을 확인 중입니다. 잠시 뒤 다시 시도해주세요.",
+          );
+        return;
+      }
+      const text = external?.text || selectedText();
       if (!text) return;
       const epoch = annotationEpoch.current;
       const thread =
@@ -636,13 +711,15 @@ export default function TerminalPane({
           throw new Error(
             `인용은 한 번에 ${annotationLimit}개까지 가능합니다. 일부 참조를 삭제해주세요.`,
           );
-        const snapshot = snapshotTerminalAnnotation(term, text, {
-          terminalId: info.id,
-          hostName: hostNameRef.current || infoRef.current.hostId,
-          title: infoRef.current.title,
-          threadId: thread,
-          cwd: infoRef.current.cwd,
-        });
+        const snapshot =
+          external ||
+          snapshotTerminalAnnotation(term, text, {
+            terminalId: info.id,
+            hostName: hostNameRef.current || infoRef.current.hostId,
+            title: infoRef.current.title,
+            threadId: thread,
+            cwd: infoRef.current.cwd,
+          });
         setCopyStatus("인용 번호를 연결하고 있습니다…");
         let registered: { number: number };
         try {
@@ -655,6 +732,10 @@ export default function TerminalPane({
         }
         if (stopped || annotationEpoch.current !== epoch) {
           releaseAnnotations([registered.number]);
+          if (external)
+            throw new Error(
+              "인용 연결 중 대화가 변경되었습니다. 다시 선택해주세요.",
+            );
           return;
         }
         if (
@@ -689,10 +770,38 @@ export default function TerminalPane({
       } catch (error) {
         if (!stopped && annotationEpoch.current === epoch)
           setCopyStatus((error as Error).message);
+        if (external) throw error;
       } finally {
         annotationRegistering = false;
       }
     };
+    quoteSelectionRef.current = () => {
+      void captureAnnotation();
+    };
+    const unregisterIdeAnnotation = registerIdeAnnotation(
+      info.id,
+      async (selection) => {
+        const current = infoRef.current;
+        if (
+          selection.terminalId !== current.id ||
+          selection.hostId !== current.hostId
+        )
+          throw new Error("인용할 파일과 입력할 터미널의 서버가 다릅니다.");
+        await captureAnnotation(
+          Object.freeze({
+            text: selectionText(selection),
+            source: Object.freeze({
+              terminalId: current.id,
+              hostName: hostNameRef.current || current.hostId,
+              title: current.title,
+              threadId: current.agentSessionId || current.resumeThreadId,
+              cwd: selection.root,
+            }),
+            capturedAt: new Date().toISOString(),
+          }),
+        );
+      },
+    );
     insertAnnotationRef.current = async (references) => {
       if (annotationInserting || annotationRegistering)
         return "인용 연결을 확인 중입니다. 잠시 기다려주세요.";
@@ -757,6 +866,7 @@ export default function TerminalPane({
         term.paste(prompt);
         for (const item of references)
           pendingAnnotationNumbers.current.delete(item.number);
+        disposeSelection.clear();
         term.clearSelection();
         mount.ownerDocument.getSelection()?.removeAllRanges();
         requestAnimationFrame(() => {
@@ -803,7 +913,7 @@ export default function TerminalPane({
         (event.target instanceof Node && mount.contains(event.target)) ||
         (visibilityRef.current.active &&
           visibilityRef.current.focused &&
-          Boolean(term.getSelection()) &&
+          Boolean(selectedText()) &&
           (event.target === mount.ownerDocument.body ||
             event.target === mount.ownerDocument.documentElement))
       );
@@ -905,7 +1015,7 @@ export default function TerminalPane({
     window.addEventListener("dragend", dragEnd);
     const unprotectNavigation = protectTerminalFileNavigation();
     const sendSize = (cols: number, rows: number) => {
-      if (socket?.readyState !== WebSocket.OPEN) return;
+      if (socket?.readyState !== WebSocket.OPEN || readOnlyRef.current) return;
       const key = `${cols}:${rows}`;
       if (key === lastSentSize) return;
       lastSentSize = key;
@@ -922,7 +1032,8 @@ export default function TerminalPane({
     const resize = () => {
       // Replaying cursor-addressed output at today's size corrupts the screen.
       // Both observers and visibility effects wait for the replay write barrier.
-      if (!screenReady || repaintTimer || !visible()) return;
+      if (!screenReady || repaintTimer || !visible() || readOnlyRef.current)
+        return;
       if (!element.current?.clientWidth || !element.current?.clientHeight)
         return;
       fit.fit();
@@ -942,7 +1053,11 @@ export default function TerminalPane({
         // size change so it redraws, without sending any keyboard input.
         repaintTimer = setTimeout(() => {
           repaintTimer = undefined;
-          if (stopped) return;
+          if (stopped || readOnlyRef.current) {
+            repaintTarget = undefined;
+            needsRedraw = true;
+            return;
+          }
           if (visible()) fit.fit();
           else if (repaintTarget)
             term.resize(repaintTarget.cols, repaintTarget.rows);
@@ -953,7 +1068,15 @@ export default function TerminalPane({
       } else sendSize(size.cols, size.rows);
     };
     resizeRef.current = resize;
+    controlClaimedRef.current = () => {
+      // Sizes rejected while a phone owned input must be sent again after the
+      // user's explicit takeover. Never replay keystrokes rejected before it.
+      lastSentSize = "";
+      resize();
+    };
     const connect = () => {
+      setConnected(false);
+      setConnectionStatus("터미널 화면에 연결 중…");
       const connection = new WebSocket(
         `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${getToken()}`,
       );
@@ -963,19 +1086,82 @@ export default function TerminalPane({
         !stopped &&
         generation === connectionGeneration &&
         socket === connection;
+      const recover = (reason: string, code?: number, recreate = false) => {
+        if (!current()) return;
+        connectionGeneration++;
+        watchdog?.dispose();
+        restoreAbort?.abort();
+        notificationsReady = false;
+        screenReady = false;
+        clearTimeout(repaintTimer);
+        repaintTimer = undefined;
+        repaintTarget = undefined;
+        cancellationReason =
+          "터미널 화면 연결이 끊겨 파일 전송을 중단했습니다.";
+        imageUpload?.abort();
+        setConnected(false);
+        setConnectionStatus("화면 연결을 복구하고 있습니다…");
+        reportViewConnection(info.id, reason, code);
+        connection.close();
+        const delay = Math.min(
+          1000 * 2 ** Math.min(recoveryFailures.current++, 4),
+          10000,
+        );
+        retry = setTimeout(
+          recreate ? () => setViewEpoch((value) => value + 1) : connect,
+          delay,
+        );
+      };
+      restoreAbort = new AbortController();
+      const restoreSignal = restoreAbort.signal;
+      watchdog = new SocketWatchdog({
+        expectsReplay: true,
+        heartbeat: hasConnectionMonitoring(),
+        onStall: (reason) =>
+          recover(
+            reason,
+            undefined,
+            reason === "replay-timeout" && replayReceived,
+          ),
+      });
+      reconnectViewRef.current = () => {
+        reportViewConnection(info.id, "manual");
+        setViewEpoch((value) => value + 1);
+      };
       let waiting: string[] = [];
       connection.onopen = () => {
         if (!current()) return;
+        watchdog?.opened();
+        setConnectionStatus("터미널 화면 복원 중…");
         setConnected(false);
         replayReceived = false;
         notificationsReady = false;
         screenReady = false;
         lastSentSize = "";
         sendColors();
-        send({ type: "subscribe", sessions: [], terminals: [info.id] });
+        send({
+          type: "subscribe",
+          sessions: [],
+          terminals: [info.id],
+          state: false,
+        });
+        // A completed answer may have arrived while this view was offline.
+        void api<{ blocks: RichTerminalBlock[] }>(
+          `/terminals/${info.id}/rich`,
+          undefined,
+          "GET",
+        )
+          .then((value) => {
+            if (current())
+              setRichBlocks((previous) =>
+                mergeRichBlocks(previous, value.blocks),
+              );
+          })
+          .catch(() => {});
       };
       connection.onmessage = (e) => {
         if (!current()) return;
+        watchdog?.message();
         const event: ServerEvent = JSON.parse(e.data);
         const output = (data: string) => {
           if (!notificationsReady) waiting.push(data);
@@ -996,6 +1182,7 @@ export default function TerminalPane({
                     current,
                     () =>
                       resetPasteModeEvidence(event.replay?.snapshot === true),
+                    restoreSignal,
                   ))
                 )
                   return;
@@ -1004,9 +1191,13 @@ export default function TerminalPane({
                 waiting = [];
                 // New output now follows the restored parser state. Fit only
                 // after these buffered live writes, never in the middle of them.
-                await new Promise<void>((resolve) => term.write("", resolve));
+                await writeTerminal(term, "", restoreSignal);
                 if (!current()) return;
                 screenReady = true;
+                watchdog?.ready();
+                if (recoveryFailures.current)
+                  reportViewConnection(info.id, "ready");
+                recoveryFailures.current = 0;
                 setConnected(true);
                 resize();
               })
@@ -1018,7 +1209,7 @@ export default function TerminalPane({
                   title: "터미널 화면 복원 실패",
                   body: (error as Error).message,
                 });
-                connection.close();
+                recover("restore-failed", undefined, true);
               });
           } else output(event.data);
         }
@@ -1026,24 +1217,38 @@ export default function TerminalPane({
           terminalEnded = true;
           cancellationReason = "터미널이 종료되어 파일 전송을 중단했습니다.";
           imageUpload?.abort();
-          output(`\r\n\x1b[90m[터미널 종료: ${event.exitCode}]\x1b[0m\r\n`);
+          const ended =
+            event.persistent === false &&
+            event.connectionIssue &&
+            event.connectionIssue !== "remote-exit"
+              ? "SSH 연결 끊김 · 원격 종료 상태 미확인"
+              : `터미널 종료: ${event.exitCode}`;
+          output(`\r\n\x1b[90m[${ended}]\x1b[0m\r\n`);
         }
-        if (event.type === "error") output(`\r\n${event.message}\r\n`);
+        if (event.type === "terminal-rich" && event.id === info.id) {
+          setRichBlocks((previous) =>
+            [
+              ...previous.filter((block) => block.id !== event.block.id),
+              event.block,
+            ].slice(-64),
+          );
+        }
+        if (event.type === "terminal-rich-reset" && event.id === info.id)
+          setRichBlocks([]);
+        if (event.type === "error") {
+          // Harbor errors are UI notices, not bytes produced by the remote PTY.
+          // Injecting one per rejected key corrupts cursor-addressed CLI output.
+          if (event.message.includes("여기서 제어")) {
+            setControlReason(event.message);
+            if (!readOnlyRef.current) {
+              readOnlyRef.current = true;
+              setControlRefresh((value) => value + 1);
+            }
+          } else setInputError(event.message);
+        }
       };
-      connection.onclose = () => {
-        if (!current()) return;
-        connectionGeneration++;
-        notificationsReady = false;
-        screenReady = false;
-        clearTimeout(repaintTimer);
-        repaintTimer = undefined;
-        repaintTarget = undefined;
-        cancellationReason = "터미널 연결이 끊겨 파일 전송을 중단했습니다.";
-        imageUpload?.abort();
-        setConnected(false);
-        if (!stopped) retry = setTimeout(connect, 2000);
-      };
-      connection.onerror = () => connection.close();
+      connection.onclose = (event) => recover("socket-close", event.code);
+      connection.onerror = () => recover("socket-error");
     };
     const input = term.onData((data) => {
       // A user's edit/submit supersedes the pending attachment batch. Programmatic
@@ -1052,11 +1257,40 @@ export default function TerminalPane({
         composerInputGeneration++;
       // Replaying an old capability/cursor query must not inject its answer
       // into the shell's current input line when a view reconnects.
-      if (notificationsReady)
+      if (
+        notificationsReady &&
+        !readOnlyRef.current &&
+        !terminalEnded &&
+        !infoRef.current.exited &&
+        !["disconnected", "reconnecting", "connecting"].includes(
+          infoRef.current.connectionState || "",
+        )
+      )
         send({ type: "terminal-input", id: info.id, data });
     });
     const composerKeys = term.onKey(() => {
       composerInputGeneration++;
+    });
+    const unregisterDraft = registerTerminalDraft(info.id, (draft) => {
+      const current = infoRef.current;
+      if (
+        draft.sessionId !== (current.agentSessionId || current.resumeThreadId)
+      )
+        throw new Error(
+          "주 대화가 변경되어 입력하지 않았습니다. 원래 대화를 다시 연결하세요.",
+        );
+      if (
+        !terminalReady() ||
+        !current.agentConnected ||
+        !term.modes.bracketedPasteMode ||
+        current.agentState === "working"
+      )
+        throw new Error(
+          "AI 입력칸이 준비되지 않아 입력하지 않았습니다. 답변·승인을 확인하거나 요청문을 복사해 직접 붙여넣으세요.",
+        );
+      composerInputGeneration++;
+      term.paste(" " + draft.text);
+      term.focus();
     });
     const observer = new ResizeObserver(resize);
     observer.observe(element.current!);
@@ -1068,6 +1302,7 @@ export default function TerminalPane({
       annotationRef.current = null;
       connectionGeneration++;
       resizeRef.current = null;
+      controlClaimedRef.current = null;
       clearTimeout(repaintTimer);
       if (repaintTarget) sendSize(repaintTarget.cols, repaintTarget.rows);
       sendColorsRef.current = null;
@@ -1103,10 +1338,15 @@ export default function TerminalPane({
       window.removeEventListener("dragend", dragEnd);
       unprotectNavigation();
       clearTimeout(retry);
+      watchdog?.dispose();
+      restoreAbort?.abort();
+      reconnectViewRef.current = null;
       socket?.close();
       observer.disconnect();
       input.dispose();
       composerKeys.dispose();
+      unregisterDraft();
+      unregisterIdeAnnotation();
       osc9.dispose();
       osc777.dispose();
       bell.dispose();
@@ -1115,7 +1355,37 @@ export default function TerminalPane({
       disposeLinks();
       term.dispose();
     };
-  }, [info.id]);
+  }, [info.id, viewEpoch]);
+  useEffect(() => {
+    let stale = false;
+    void api<{ blocks: RichTerminalBlock[] }>(
+      `/terminals/${info.id}/rich`,
+      undefined,
+      "GET",
+    )
+      .then((value) => {
+        if (!stale)
+          setRichBlocks((previous) => mergeRichBlocks(previous, value.blocks));
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [info.id, info.agentSessionId]);
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontFamily = terminalFontFamily(typography.terminalFont);
+    term.options.fontSize = typography.terminalSize;
+    term.options.lineHeight = typography.terminalLineHeight;
+    term.refresh(0, term.rows - 1);
+    resizeRef.current?.();
+  }, [
+    typography.terminalFont,
+    typography.terminalSize,
+    typography.terminalLineHeight,
+    fontsReady,
+  ]);
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = terminalTheme(theme);
     sendColorsRef.current?.();
@@ -1134,6 +1404,33 @@ export default function TerminalPane({
       ref={container}
       className={`terminal-instance terminal-with-footer ${active ? "active" : ""} ${dragging ? "file-drop-active" : ""}`}
     >
+      <TerminalControlStatus
+        id={info.id}
+        active={active}
+        refresh={controlRefresh}
+        blockedReason={controlReason}
+        onReadOnlyChange={(value) => {
+          const previous = readOnlyRef.current;
+          readOnlyRef.current = value;
+          if (previous && !value) {
+            setControlReason("");
+            controlClaimedRef.current?.();
+          }
+        }}
+        onClaim={() => {
+          setInputError("");
+          setControlReason("");
+          termRef.current?.focus();
+        }}
+      />
+      {inputError && (
+        <div className="terminal-attention" role="alert">
+          <span>{inputError}</span>
+          <button type="button" onClick={() => setInputError("")}>
+            닫기
+          </button>
+        </div>
+      )}
       {annotation && (
         <TerminalAnnotationDialog
           annotations={annotation}
@@ -1179,13 +1476,52 @@ export default function TerminalPane({
         />
       )}
       <div className="terminal-footer">
+        {info.cliApprovalMode === "full-access" && (
+          <span title="이 터미널은 Codex·Claude 승인 생략·전체 권한으로 시작하도록 설정됐습니다. 이후 CLI에서 직접 바꾼 모드는 CLI에서 확인하세요.">
+            시작 설정: 승인 생략 · 전체 권한
+          </span>
+        )}
         <span
           className="terminal-footer-status"
           role={imageStatus || copyStatus ? "status" : undefined}
-          title={copyStatus || imageStatus || linkHint || undefined}
+          title={
+            copyStatus ||
+            imageStatus ||
+            linkHint ||
+            info.persistenceDetail ||
+            info.disconnectReason ||
+            undefined
+          }
         >
-          {copyStatus || imageStatus || linkHint || ""}
+          {copyStatus ||
+            imageStatus ||
+            linkHint ||
+            (info.exited
+              ? info.disconnectReason || "터미널이 종료됐습니다."
+              : info.connectionState === "disconnected"
+                ? info.connectionIssue === "remote-missing"
+                  ? "서버 세션 없음"
+                  : "서버 세션 상태 확인 필요"
+                : info.connectionState === "reconnecting"
+                  ? "원래 서버 세션에 다시 연결 중…"
+                  : info.persistent
+                    ? "서버에서 세션 유지"
+                    : info.persistent === false
+                      ? "일반 SSH 연결"
+                      : "")}
         </span>
+        {(info.agentSessionId || info.resumeThreadId) && (
+          <button
+            type="button"
+            className="terminal-footer-button"
+            aria-label="현재 대화 기록 보기"
+            aria-expanded={conversationOpen}
+            onClick={() => setConversationOpen((value) => !value)}
+            title="현재 대화의 저장된 메시지를 읽습니다. 실행 중인 CLI와 입력은 유지합니다."
+          >
+            <History size={13} /> 대화 기록
+          </button>
+        )}
         {hasSelection && (
           <button
             type="button"
@@ -1237,7 +1573,63 @@ export default function TerminalPane({
           }}
         />
       </div>
-      {!connected && <div className="terminal-connecting">터미널 연결 중…</div>}
+      {!connected &&
+        !info.exited &&
+        !["disconnected", "reconnecting"].includes(
+          info.connectionState || "",
+        ) && (
+          <div className="terminal-connecting" role="status">
+            <span>{connectionStatus}</span>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => reconnectViewRef.current?.()}
+            >
+              화면 다시 연결
+            </button>
+          </div>
+        )}
+      {info.exited && info.persistent === false && info.disconnectReason && (
+        <div className="terminal-lifetime-notice" role="status">
+          {info.disconnectReason}
+        </div>
+      )}
+      {["disconnected", "reconnecting"].includes(
+        info.connectionState || "",
+      ) && (
+        <div className="terminal-lifetime-notice" role="status">
+          <span>
+            {info.connectionState === "reconnecting"
+              ? "원래 서버 세션에 다시 연결 중…"
+              : info.disconnectReason ||
+                "세션에 연결할 수 없습니다. 서버 작업 상태를 확인해야 합니다."}
+          </span>
+          <button
+            className="button secondary small"
+            disabled={info.connectionState === "reconnecting"}
+            onClick={() => {
+              void api(`/terminals/${info.id}/reconnect`, {}).catch((error) => {
+                if (
+                  error instanceof ApiError &&
+                  error.code === "authentication"
+                )
+                  setReconnectDialog(true);
+                else setCopyStatus((error as Error).message);
+              });
+            }}
+          >
+            {info.connectionIssue === "remote-missing"
+              ? "다시 확인"
+              : "다시 연결"}
+          </button>
+        </div>
+      )}
+      {reconnectDialog && (
+        <ReconnectTerminalDialog
+          terminal={info}
+          onClose={() => setReconnectDialog(false)}
+        />
+      )}
       {dragging && (
         <div className="terminal-file-drop" role="status">
           <Upload size={30} />
@@ -1370,6 +1762,20 @@ export default function TerminalPane({
         ref={element}
         data-testid={`terminal-${info.id}`}
       />
+      {nativeTerminal && (
+        <TerminalRich term={nativeTerminal} info={info} blocks={richBlocks} />
+      )}
+      {nativeTerminal && conversationOpen && (
+        <TerminalConversation
+          key={`${info.id}:${info.agentSessionId || info.resumeThreadId}`}
+          term={nativeTerminal}
+          info={info}
+          onClose={() => {
+            setConversationOpen(false);
+            nativeTerminal.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

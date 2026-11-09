@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppState, ServerEvent, SessionView } from "../shared/types";
-import { setToken } from "./api";
+import { setToken, setConnectionMonitoring, reportViewConnection } from "./api";
+import { SocketWatchdog } from "./socket-watchdog";
 
 const empty: AppState = {
   hosts: [],
@@ -35,13 +36,41 @@ export function useHarbor(
     let stopped = false;
     let retry: ReturnType<typeof setTimeout>;
     let failures = 0;
+    let generation = 0;
+    let watchdog: SocketWatchdog | undefined;
+    let bootstrap: AbortController | undefined;
     const connect = async () => {
+      const attempt = ++generation;
+      const current = () => !stopped && generation === attempt;
+      const recover = (reason: string, code?: number) => {
+        if (!current()) return;
+        generation++;
+        watchdog?.dispose();
+        bootstrap?.abort();
+        const old = socketRef.current;
+        socketRef.current = null;
+        setConnected(false);
+        reportViewConnection(undefined, reason, code);
+        old?.close();
+        retry = setTimeout(
+          connect,
+          Math.min(1000 * 2 ** Math.min(failures++, 4), 10000),
+        );
+      };
+      bootstrap = new AbortController();
+      const deadline = setTimeout(() => bootstrap?.abort(), 12000);
       try {
-        const response = await fetch("/api/bootstrap");
+        const response = await fetch("/api/bootstrap", {
+          signal: bootstrap.signal,
+        });
         if (!response.ok) throw new Error("Harbor 서버에 연결할 수 없습니다.");
         const data = await response.json();
-        if (stopped) return;
+        clearTimeout(deadline);
+        if (!current()) return;
         setToken(data.token);
+        setConnectionMonitoring(
+          data.capabilities?.connectionMonitoring === true,
+        );
         setState(data.state);
         setAliases(data.sshAliases);
         setLocalCwd(data.localCwd);
@@ -57,7 +86,14 @@ export function useHarbor(
           `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${data.token}`,
         );
         socketRef.current = socket;
+        watchdog = new SocketWatchdog({
+          heartbeat: data.capabilities?.connectionMonitoring === true,
+          onStall: recover,
+        });
         socket.onopen = () => {
+          if (!current()) return;
+          watchdog?.opened();
+          watchdog?.ready();
           failures = 0;
           setConnected(true);
           socket.send(
@@ -69,6 +105,8 @@ export function useHarbor(
           );
         };
         socket.onmessage = (event) => {
+          if (!current()) return;
+          watchdog?.message();
           const message: ServerEvent = JSON.parse(event.data);
           if (message.type === "state") setState(message.state);
           else if (message.type === "session")
@@ -78,25 +116,23 @@ export function useHarbor(
             }));
           else if (message.type === "error") errorRef.current(message.message);
         };
-        socket.onclose = () => {
-          setConnected(false);
-          if (!stopped)
-            retry = setTimeout(
-              connect,
-              Math.min(1000 * 2 ** failures++, 10000),
-            );
-        };
-        socket.onerror = () => socket.close();
+        socket.onclose = (event) => recover("socket-close", event.code);
+        socket.onerror = () => recover("socket-error");
       } catch (error) {
-        if (!stopped) {
+        if (current()) {
           if (failures === 0) errorRef.current((error as Error).message);
-          retry = setTimeout(connect, Math.min(1000 * 2 ** failures++, 10000));
+          recover("bootstrap-failed");
         }
+      } finally {
+        clearTimeout(deadline);
       }
     };
     void connect();
     return () => {
       stopped = true;
+      generation++;
+      bootstrap?.abort();
+      watchdog?.dispose();
       clearTimeout(retry);
       socketRef.current?.close();
     };

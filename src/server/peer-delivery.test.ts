@@ -10,6 +10,34 @@ import { AgentBridge } from "./agent-bridge.js";
 import { PeerDelivery } from "./peer-delivery.js";
 import type { TerminalInfo } from "../shared/types.js";
 
+test("Claude preparation requests wait for native Stop without claiming model receipt", async (t) => {
+  const f = await fixture(t);
+  f.peers.setRuntime("b", {
+    kind: "claude",
+    sessionId: "native-b",
+    state: "working",
+    delivery: "automatic",
+  });
+  const request = f.mailbox.sendResearch(
+    "b",
+    "native-b",
+    "Prepare the plan from this conversation",
+    {
+      labId: "fixture-lab",
+      assignmentId: "preparation:fixture-lab",
+      revision: 1,
+    },
+  );
+  assert.equal(f.peers.events("b", "native-b").messages.length, 0);
+  assert.equal(f.mailbox.find(request.id)?.offeredAt, undefined);
+  assert.equal(f.mailbox.find(request.id)?.consumedAt, undefined);
+  f.bind("b", "native-b");
+  assert.equal(f.peers.events("b", "native-b").messages[0].id, request.id);
+  f.peers.ack("b", request.id, "native-b");
+  assert.ok(f.mailbox.find(request.id)?.offeredAt);
+  assert.equal(f.mailbox.find(request.id)?.consumedAt, undefined);
+});
+
 async function fixture(t: any) {
   const parent = resolve(".cache/peer-delivery-tests");
   await mkdir(parent, { recursive: true });
@@ -65,6 +93,29 @@ async function fixture(t: any) {
   });
   return { mailbox, peers, terminals, resolver, bind, directory };
 }
+
+test("IDE user metadata is internal, native-bound, durable and idempotent; old runtimes do not imply input support", async (t) => {
+  const f = await fixture(t);
+  f.terminals.find(terminal => terminal.id === "b")!.agentSessionId = "native-b";
+  assert.equal(f.peers.runtime("b")!.userInputVersion, undefined);
+  f.peers.setRuntime("b", { kind: "claude", sessionId: "native-b", state: "idle", delivery: "automatic", userInputVersion: 1 });
+  assert.equal(f.peers.runtime("b")!.userInputVersion, 1);
+  f.bind("b", "native-b");
+  assert.equal(f.peers.runtime("b")!.userInputVersion, undefined, "a legacy adapter report must clear new capability");
+  const input = { toTerminalId: "b", sessionId: "native-b", text: 'Question "quoted"\nC:\\fixture\\path', requestId: "fixture-ide-input" };
+  const message = f.mailbox.sendIdeUser(input);
+  assert.equal(message.sender.kind, "user");
+  assert.deepEqual(message.ideInput, { version: 1, requestId: input.requestId });
+  assert.equal(message.text, input.text);
+  assert.equal(f.mailbox.sendIdeUser(input).id, message.id);
+  assert.throws(() => f.mailbox.sendIdeUser({ ...input, text: "changed" }), /같은 요청 ID/);
+  assert.throws(() => f.mailbox.sendIdeUser({ ...input, sessionId: "another-native" }), /현재 Claude/);
+  const forged = f.mailbox.send({ toTerminalId: "b", text: "ordinary note", ideInput: message.ideInput } as any);
+  assert.equal(forged.ideInput, undefined);
+  const restored = new Mailbox(f.directory, f.resolver);
+  assert.deepEqual(restored.find(message.id)?.ideInput, message.ideInput);
+  assert.equal(restored.sendIdeUser(input).id, message.id);
+});
 
 test("a transport offer is distinct from model receipt and bound to the original native conversation", async (t) => {
   const { mailbox, peers, bind, directory, resolver } = await fixture(t);

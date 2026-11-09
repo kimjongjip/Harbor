@@ -7,7 +7,7 @@
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   padding: 3px 7px;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   max-width: calc(100% - 30px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -25,7 +25,7 @@
   gap: 10px;
   padding-bottom: 10px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .image-viewer {
   overflow: auto;
@@ -53,7 +53,7 @@
   gap: 17px;
   min-height: 180px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .preview-placeholder p {
   line-height: 1.8;
@@ -67,7 +67,7 @@
   border-radius: 7px;
   padding: 12px 0;
   margin: 0;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.8;
   white-space: pre;
 }
@@ -95,7 +95,7 @@
   color: var(--text);
 }
 .text-file-preview > p {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   margin-top: 10px;
 }
@@ -118,11 +118,11 @@
 .markdown-image-link b {
   display: block;
   font-weight: 500;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .markdown-image-link small {
   display: block;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   margin-top: 4px;
 }
@@ -156,7 +156,7 @@
 .markdown .katex-error {
   white-space: pre-wrap;
   color: var(--red) !important;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .markdown .katex .vlist-t {
   border: 0;
@@ -177,11 +177,11 @@
     padding: 14px;
   }
   .terminal-link-hint {
-    font-size: 8px;
+    font-size: calc(var(--ui-font-size, 14px) * 8 / 12);
     max-width: 90%;
   }
   .text-file-preview pre {
-    font-size: 10px;
+    font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   }
   .preview-line > span {
     width: 32px;

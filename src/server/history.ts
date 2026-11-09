@@ -3,6 +3,8 @@ import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { normalizeItem } from "./session.js";
 import type { HostConfig, MessageItem } from "../shared/types.js";
+import { researchEfforts } from "../shared/research.js";
+import type { ResearchEffort, ResearchModel } from "../shared/research.js";
 import type {
   HistoryThread,
   HistoryPage,
@@ -117,6 +119,68 @@ export class History {
         lease.timer.unref();
       }
     }
+  }
+  async models(host: HostConfig, password?: string): Promise<ResearchModel[]> {
+    return this.using(host, password, async (client) => {
+      const models = new Map<string, ResearchModel>();
+      const cursors = new Set<string>();
+      let cursor: string | null = null;
+      for (let page = 0; page < 10; page++) {
+        const result = await client.call(
+          "model/list",
+          {
+            limit: 100,
+            includeHidden: false,
+            cursor,
+          },
+          12000,
+        );
+        if (!Array.isArray(result?.data))
+          throw new Error("모델 목록 응답을 읽을 수 없습니다.");
+        for (const raw of result.data) {
+          const id = raw?.model || raw?.id;
+          if (
+            raw?.hidden ||
+            typeof id !== "string" ||
+            id.length > 150 ||
+            !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]*$/.test(id)
+          )
+            continue;
+          const supported = Array.isArray(raw.supportedReasoningEfforts)
+            ? [
+                ...new Set<ResearchEffort>(
+                  raw.supportedReasoningEfforts
+                    .map((e: any) => e?.reasoningEffort)
+                    .filter(
+                      (e: any) =>
+                        e !== "default" && researchEfforts.includes(e),
+                    ),
+                ),
+              ]
+            : undefined;
+          models.set(id, {
+            id,
+            name: bounded(raw.displayName, 180) || id,
+            isDefault: raw.isDefault === true,
+            ...(supported ? { efforts: supported } : {}),
+            ...(researchEfforts.includes(raw.defaultReasoningEffort) &&
+            raw.defaultReasoningEffort !== "default"
+              ? { defaultEffort: raw.defaultReasoningEffort }
+              : {}),
+          });
+        }
+        if (!result.nextCursor) return [...models.values()];
+        if (
+          typeof result.nextCursor !== "string" ||
+          result.nextCursor.length > 4096 ||
+          cursors.has(result.nextCursor)
+        )
+          throw new Error("모델 목록 페이지를 읽을 수 없습니다.");
+        cursor = result.nextCursor;
+        cursors.add(cursor!);
+      }
+      throw new Error("모델 목록이 너무 큽니다. CLI의 /model을 확인하세요.");
+    });
   }
   async list(
     host: HostConfig,

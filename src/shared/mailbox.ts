@@ -22,6 +22,8 @@ export interface MailboxMessage {
   recipient: MailboxParticipant;
   /** Agent authorship is used only for a scoped, authenticated tool call. */
   author: "user" | "agent";
+  /** Created only by the authenticated IDE input route, never by peer tools. */
+  ideInput?: { version: 1; requestId: string };
   text: string;
   createdAt: number;
   status: MailboxStatus;
@@ -32,7 +34,14 @@ export interface MailboxMessage {
   /** An authenticated/UI reply was recorded; this does not imply task completion. */
   repliedAt?: number;
   replyMessageId?: string;
-  purpose?: "question";
+  purpose?: "question" | "research";
+  /** Only the user-authorized research scheduler creates assignment envelopes. */
+  research?: { labId: string; assignmentId: string; revision: number };
+  /** Ordinary peer exchanges are scoped to the active user-started lab. */
+  labId?: string;
+  /** Durable outbox key for a question the AI submitted in a lab report. */
+  questionSource?: { assignmentId: string; index: number; revision: number };
+  labRevision?: number;
   /** A native transport accepted the event; this does not establish model receipt. */
   offeredAt?: number;
   offeredSessionId?: string;

@@ -3,48 +3,76 @@ import assert from "node:assert/strict";
 import headless from "@xterm/headless";
 import serialize from "@xterm/addon-serialize";
 import { TerminalScreen } from "./terminal-screen.js";
+import {
+  alternateBufferPrefix,
+  terminalStateSuffix,
+} from "./terminal-screen-state.js";
+import {
+  serializeTerminalLinks,
+  terminalLinkSuffix,
+} from "./terminal-screen-links.js";
 const { Terminal } = headless;
 const linkCells = (terminal: InstanceType<typeof Terminal>) => {
   const core = (terminal as any)._core;
   const buffer = terminal.buffer.active;
-  return Array.from({length: buffer.length}, (_, y) =>
-    Array.from({length: terminal.cols}, (_, x) => {
+  return Array.from({ length: buffer.length }, (_, y) =>
+    Array.from({ length: terminal.cols }, (_, x) => {
       const cell = buffer.getLine(y)!.getCell(x)! as any;
-      return cell.getChars() ? core._oscLinkService.getLinkData(cell.extended.urlId)?.uri ?? null : null;
-    }));
+      return cell.getChars()
+        ? (core._oscLinkService.getLinkData(cell.extended.urlId)?.uri ?? null)
+        : null;
+    }),
+  );
 };
 
 test("canonical replay retains absolute OSC8 destinations, wrapped labels and active link continuation", async () => {
   const screen = new TerminalScreen(128);
-  const live = new Terminal({cols: 24, rows: 8, allowProposedApi: true});
-  const restored = new Terminal({cols: 24, rows: 8, allowProposedApi: true});
+  const live = new Terminal({ cols: 24, rows: 8, allowProposedApi: true });
+  const restored = new Terminal({ cols: 24, rows: 8, allowProposedApi: true });
   screen.resize(24, 8);
   const open = "\x1b]8;;file:///home/user/project/docs/actual.md\x1b\\";
   const close = "\x1b]8;;\x1b\\";
   try {
-    const data = `${open}\x1b[1;32mdocs/문서_long_wrapped_name.md${close}\x1b[0m\r\n` +
-      "padding\r\n".repeat(30) + `${open}${"a".repeat(24)}`;
+    const data =
+      `${open}\x1b[1;32mdocs/문서_long_wrapped_name.md${close}\x1b[0m\r\n` +
+      "padding\r\n".repeat(30) +
+      `${open}${"a".repeat(24)}`;
     screen.append(data);
     await write(live, data);
     const baseline = new serialize.SerializeAddon();
     live.loadAddon(baseline);
-    assert.equal(baseline.serialize().includes("file:///home/user/project/docs/actual.md"), false,
-      "upstream serializer loses the actual destination");
+    assert.equal(
+      baseline.serialize().includes("file:///home/user/project/docs/actual.md"),
+      false,
+      "upstream serializer loses the actual destination",
+    );
     const snapshot = await screen.snapshot();
     assert.equal(snapshot.replay.snapshot, true);
     assert.equal(screen.history.snapshot().replay.truncated, true);
     await write(restored, snapshot.data);
     assert.deepEqual(read(restored), read(live));
     assert.deepEqual(linkCells(restored), linkCells(live));
-    const restoredLine = restored.buffer.active.getLine(restored.buffer.active.baseY + restored.buffer.active.cursorY)!;
-    assert.equal((restoredLine.getCell(0) as any).extended.urlId,
-      (restoredLine.getCell(23) as any).extended.urlId, "one native link range includes pending-wrap final character");
-    await Promise.all([write(live, `_next.md${close} plain`), write(restored, `_next.md${close} plain`)]);
+    const restoredLine = restored.buffer.active.getLine(
+      restored.buffer.active.baseY + restored.buffer.active.cursorY,
+    )!;
+    assert.equal(
+      (restoredLine.getCell(0) as any).extended.urlId,
+      (restoredLine.getCell(23) as any).extended.urlId,
+      "one native link range includes pending-wrap final character",
+    );
+    await Promise.all([
+      write(live, `_next.md${close} plain`),
+      write(restored, `_next.md${close} plain`),
+    ]);
     assert.deepEqual(linkCells(restored), linkCells(live));
     assert.deepEqual(read(restored), read(live));
     screen.append(`${close}\r\nnext`);
     assert.equal((await screen.snapshot()).replay.snapshot, true);
-  } finally { screen.dispose(); live.dispose(); restored.dispose(); }
+  } finally {
+    screen.dispose();
+    live.dispose();
+    restored.dispose();
+  }
 });
 const write = (terminal: InstanceType<typeof Terminal>, value: string) =>
   new Promise<void>((resolve) => terminal.write(value, resolve));
@@ -73,6 +101,93 @@ const read = (terminal: InstanceType<typeof Terminal>) => {
   };
 };
 
+test("a fullscreen redraw after scrolling preserves exact rows, not obsolete paragraph wrapping", async () => {
+  const cols = 80,
+    rows = 12;
+  const live = new Terminal({ cols, rows, allowProposedApi: true });
+  const restored = new Terminal({ cols, rows, allowProposedApi: true });
+  const legacy = new Terminal({ cols, rows, allowProposedApi: true });
+  const screen = new TerminalScreen();
+  screen.resize(cols, rows);
+  try {
+    // CUP + erase-to-left/right replaces cells without clearing old wrap flags.
+    const marker = (offset: number) => `~HBR:0123456789abcdef0123:${offset}~`;
+    const content = [
+      "Completed answer",
+      "short",
+      marker(0),
+      marker(1),
+      marker(2),
+      marker(3),
+      "menu closed",
+      marker(4),
+      marker(5),
+      "",
+      "PROMPT > unsent draft",
+      "status",
+    ];
+    const value =
+      "DIRECTORY ".repeat(150) +
+      "\x1b[?1049h\x1b[H" +
+      "Old page 한글 ".repeat(100) +
+      content
+        .map((text, row) => `\x1b[${row + 1};3H\x1b[1K${text}\x1b[K`)
+        .join("") +
+      "\x1b[11;22H\x1b[?1003h\x1b[?1006h\x1b[?2004h";
+    screen.append(value);
+    await write(live, value);
+    const addon = new serialize.SerializeAddon();
+    live.loadAddon(addon);
+    await write(
+      legacy,
+      serializeTerminalLinks(live, () => addon.serialize()).replace(
+        "\x1b[?1049h\x1b[H",
+        alternateBufferPrefix(live),
+      ) +
+        terminalStateSuffix(live) +
+        terminalLinkSuffix(live),
+    );
+    assert.notDeepEqual(
+      read(legacy).lines,
+      read(live).lines,
+      "the previous serializer must reproduce the reported row corruption",
+    );
+    await write(restored, (await screen.snapshot()).data);
+    assert.deepEqual(read(restored), read(live));
+    const wraps = (t: InstanceType<typeof Terminal>) =>
+      Array.from(
+        { length: rows },
+        (_, row) => t.buffer.active.getLine(row)!.isWrapped,
+      );
+    assert.deepEqual(
+      wraps(restored),
+      wraps(live),
+      "copy retains native wrap boundaries",
+    );
+    const next = "\x1b[3;3HUPDATED\x1b[K\x1b[11;22H_next";
+    await Promise.all([write(live, next), write(restored, next)]);
+    assert.deepEqual(
+      read(restored),
+      read(live),
+      "later output continues at the same coordinates",
+    );
+    await Promise.all([
+      write(live, "\x1b[?1049l"),
+      write(restored, "\x1b[?1049l"),
+    ]);
+    assert.deepEqual(
+      read(restored),
+      read(live),
+      "shell history remains intact",
+    );
+  } finally {
+    screen.dispose();
+    live.dispose();
+    restored.dispose();
+    legacy.dispose();
+  }
+});
+
 test("canonical screen survives raw-tail eviction, geometry changes, colors and persistent input modes", async () => {
   const screen = new TerminalScreen(256);
   const live = new Terminal({ cols: 100, rows: 30, allowProposedApi: true });
@@ -91,7 +206,7 @@ test("canonical screen survives raw-tail eviction, geometry changes, colors and 
         live.resize(cols, rows);
       }
       await append(
-        `\x1b[48;2;${index};15;25mRow ${index} ?��? ${"wrapped text ".repeat(10)}\r\n`,
+        `\x1b[48;2;${index};15;25mRow ${index} wide ${"wrapped text ".repeat(10)}\r\n`,
       );
     }
     await append("\x1b[5;7H\x1b[1;4mUNSENT_DRAFT");
@@ -110,6 +225,76 @@ test("canonical screen survives raw-tail eviction, geometry changes, colors and 
     screen.dispose();
     live.dispose();
     restored.dispose();
+  }
+});
+
+test("edited fullscreen rows round-trip through cursor moves, insertion, erasure and scrolling", async () => {
+  let seed = 7919;
+  const random = (limit: number) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed % limit;
+  };
+  for (let sample = 0; sample < 32; sample++) {
+    const screen = new TerminalScreen();
+    screen.resize(50, 12);
+    const live = new Terminal({ cols: 50, rows: 12, allowProposedApi: true });
+    const restored = new Terminal({
+      cols: 50,
+      rows: 12,
+      allowProposedApi: true,
+    });
+    try {
+      let stream = "DIRECTORY ".repeat(100) + "\x1b[?1049h\x1b[H";
+      for (let edit = 0; edit < 80; edit++) {
+        const operations = [
+          `\x1b[${random(12) + 1};${random(50) + 1}H`,
+          `\x1b[${random(5) + 1}P`,
+          `\x1b[${random(5) + 1}@`,
+          `\x1b[${random(3) + 1}L`,
+          `\x1b[${random(3) + 1}M`,
+          `\x1b[${random(5) + 1}X`,
+          "\r\n",
+          "\x1b[2K",
+          "\x1b[?7l",
+          "\x1b[?7h",
+          "\x1b[32m",
+          "\x1b[0m",
+          `\x1b[${random(4) + 1};${random(4) + 9}r`,
+          "\x1b[r",
+        ];
+        stream +=
+          random(3) === 0
+            ? operations[random(operations.length)]
+            : `ROW_${random(100)} 한글 `.repeat(random(6) + 1);
+      }
+      screen.append(stream);
+      await write(live, stream);
+      const snapshot = await screen.snapshot();
+      await write(restored, snapshot.data);
+      // A null cell has no foreground glyph. ECH restores its background but
+      // cannot encode an invisible historical foreground rendition.
+      const visible = (terminal: InstanceType<typeof Terminal>) => {
+        const state = read(terminal);
+        for (const row of state.lines)
+          for (const cell of row)
+            if (!cell[0]) {
+              cell[2] = 0;
+              cell[3] = -1;
+              cell[6] = 0;
+              cell[7] = 0;
+            }
+        return state;
+      };
+      assert.deepEqual(
+        visible(restored),
+        visible(live),
+        `edited screen ${sample}`,
+      );
+    } finally {
+      screen.dispose();
+      live.dispose();
+      restored.dispose();
+    }
   }
 });
 
@@ -151,7 +336,9 @@ test("cwd metadata keeps canonical replay enabled", async () => {
   try {
     screen.append("before\x1b]1337;CurrentDir=/home/user\x07after");
     assert.equal((await screen.snapshot()).replay.snapshot, true);
-  } finally { screen.dispose(); }
+  } finally {
+    screen.dispose();
+  }
 });
 
 test("inline-image protocols retain atomic raw replay rather than disappearing from a headless snapshot", async () => {
@@ -264,4 +451,3 @@ test("leaving the alternate buffer restores the normal cursor's saved rendition"
     restored.dispose();
   }
 });
-

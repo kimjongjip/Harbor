@@ -8,17 +8,21 @@ import "./workspace.css";
 import "./themes.css";
 import { ThemeProvider } from "./Theme";
 import { NotificationsProvider } from "./Notifications";
+import { TypographyProvider } from "./Typography";
+import "./typography.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
-      <NotificationsProvider>
-        {new URLSearchParams(location.search).get("preview") === "1" ? (
-          <PreviewWindow />
-        ) : (
-          <App />
-        )}
-      </NotificationsProvider>
+      <TypographyProvider>
+        <NotificationsProvider>
+          {new URLSearchParams(location.search).get("preview") === "1" ? (
+            <PreviewWindow />
+          ) : (
+            <App />
+          )}
+        </NotificationsProvider>
+      </TypographyProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

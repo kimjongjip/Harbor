@@ -17,6 +17,87 @@ const host: HostConfig = {
   createdAt: 0,
 };
 const threadId = "0199aaaa-1111-7111-8111-111111111111";
+test("model catalog is account/host scoped, paginated and read-only; labels never replace native model IDs", async () => {
+  const calls: { method: string; params: any }[] = [];
+  const selected = { ...host, id: "fixture-ssh", kind: "ssh" as const };
+  const reader = new History(async (actual, password) => {
+    assert.equal(actual.id, selected.id);
+    assert.equal(password, "synthetic-password");
+    return {
+      alive: true,
+      stop() {},
+      async call(method, params: any) {
+        calls.push({ method, params });
+        assert.equal(method, "model/list");
+        return params.cursor
+          ? {
+              data: [{ id: "second", displayName: "Second", isDefault: false }],
+              nextCursor: null,
+            }
+          : {
+              data: [
+                {
+                  id: "internal-id",
+                  model: "gpt-6-astra",
+                  displayName: "GPT-6 Astra",
+                  isDefault: true,
+                  defaultReasoningEffort: "low",
+                  supportedReasoningEfforts: [
+                    { reasoningEffort: "low" },
+                    { reasoningEffort: "max" },
+                    { reasoningEffort: "made-up" },
+                  ],
+                },
+                { model: "hidden-model", hidden: true },
+                { model: "invalid;id" },
+              ],
+              nextCursor: "second-page",
+            };
+      },
+    };
+  });
+  try {
+    assert.deepEqual(await reader.models(selected, "synthetic-password"), [
+      {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        isDefault: true,
+        efforts: ["low", "max"],
+        defaultEffort: "low",
+      },
+      { id: "second", name: "Second", isDefault: false },
+    ]);
+    assert.deepEqual(
+      calls.map((c) => c.params),
+      [
+        { limit: 100, includeHidden: false, cursor: null },
+        { limit: 100, includeHidden: false, cursor: "second-page" },
+      ],
+    );
+  } finally {
+    reader.shutdown();
+  }
+});
+
+test("malformed or cycling native model catalogs fail rather than trusting a partial availability list", async () => {
+  for (const result of [
+    { data: {}, nextCursor: null },
+    { data: [], nextCursor: "repeated" },
+  ]) {
+    const reader = new History(async () => ({
+      alive: true,
+      stop() {},
+      async call() {
+        return result;
+      },
+    }));
+    try {
+      await assert.rejects(reader.models(host), /모델 목록/);
+    } finally {
+      reader.shutdown();
+    }
+  }
+});
 test("history spans all projects, keeps cursor/source filters and never resumes during preview", async () => {
   const calls: { method: string; params: any }[] = [];
   let stops = 0;

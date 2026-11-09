@@ -2,6 +2,19 @@ interface Window {
   harborDesktop?: {
     readonly platform: string;
     readonly version: string;
+    backendState?: () => Promise<{
+      phase: "ready" | "recovering" | "failed";
+      attempt: number;
+      revision: number;
+    }>;
+    onBackendState?: (
+      callback: (state: {
+        phase: "ready" | "recovering" | "failed";
+        attempt: number;
+        revision: number;
+      }) => void,
+    ) => () => void;
+    retryBackend?: () => Promise<unknown>;
     writeClipboardText?: (text: string) => Promise<boolean>;
     detachedTerminals: () => Promise<string[]>;
     onDetachedTerminals: (callback: (ids: string[]) => void) => () => void;

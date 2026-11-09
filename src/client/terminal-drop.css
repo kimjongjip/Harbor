@@ -21,11 +21,11 @@
 .terminal-file-drop span {
   max-width: 100%;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-file-drop small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .terminal-upload-panel {
   position: absolute;
@@ -40,7 +40,7 @@
   border: 1px solid var(--border);
   border-radius: 9px;
   box-shadow: 0 6px 24px var(--shadow-color);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-upload-panel header {
   display: flex;
@@ -51,7 +51,7 @@
 .terminal-upload-panel header > span {
   flex: 1;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .terminal-upload-destination {
   padding: 0 10px 7px;
@@ -59,13 +59,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .terminal-upload-advice {
   margin: 0;
   padding: 0 10px 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.5;
 }
 .terminal-upload-panel ul {
@@ -92,7 +92,7 @@
 .terminal-upload-panel li small {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .terminal-upload-panel li.transfer-done small {
   color: var(--success);
@@ -102,7 +102,7 @@
   color: var(--red);
 }
 .terminal-upload-panel li p {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   margin: 4px 0 0;
   overflow-wrap: anywhere;
 }
@@ -124,5 +124,5 @@
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }

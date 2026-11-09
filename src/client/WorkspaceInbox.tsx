@@ -148,6 +148,7 @@ function RequestCard({
       ) : (
         <div className="inbox-request-result">
           <b>
+            {request.answeredBy === "automatic" && "Harbor 자동 수락 · "}
             {request.status === "consumed"
               ? "세션에서 답변을 확인했습니다"
               : request.status === "answered"

@@ -1,0 +1,60 @@
+.terminal-conversation {
+  position: absolute;
+  z-index: 7;
+  left: 10px;
+  right: 10px;
+  top: 8px;
+  max-height: min(70%, 640px);
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px #0002;
+}
+.terminal-conversation > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.terminal-conversation > header > div {
+  flex: 1;
+  min-width: 0;
+}
+.terminal-conversation header b {
+  display: block;
+  font-size: var(--ui-font-size, 14px);
+}
+.terminal-conversation header small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.terminal-conversation-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 16px;
+  user-select: text;
+}
+.terminal-conversation-body .history-message {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.terminal-conversation-body .history-message > b {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.terminal-conversation-body .history-message.user > b {
+  color: var(--accent);
+}
+.terminal-conversation ::selection {
+  color: var(--selection-text, #fff);
+  background: var(--selection-bg, #2457b8);
+}

@@ -12,6 +12,7 @@ lock.packages[''].version = version;
 const replacements = [
   ['src/server/index.ts', /name: "codex-harbor", version: "\d+\.\d+\.\d+"/, `name: "codex-harbor", version: "${version}"`],
   ['desktop/preload.cjs', /version: "\d+\.\d+\.\d+"/, `version: "${version}"`],
+  ['public/mobile/sw.js', /APP_VERSION = "\d+\.\d+\.\d+"/, `APP_VERSION = "${version}"`],
 ].map(([file, pattern, replacement]) => {
   const source = read(file);
   if (!pattern.test(source)) throw new Error(`Version marker missing in ${file}`);

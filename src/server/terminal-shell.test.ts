@@ -121,6 +121,37 @@ test(
       });
     await run(compile);
     await copyFile(executable, join(directory, "claude.exe"));
+    for (const kind of ["codex", "claude"] as const) {
+      const model = kind === "claude" ? "opus[1m]" : "fixture/codex-model";
+      const effort = kind === "claude" ? "high" : "xhigh";
+      const launch = powershellInitialization(
+        { codexPath: executable } as HostConfig,
+        kind === "claude" ? "claude-resume" : "resume",
+        undefined,
+        "fixture-native-history",
+        false,
+        undefined,
+        { cwd: directory, model, effort },
+      );
+      await run(launch, {
+        HARBOR_TEST_CAPTURE: output,
+        PATH: `${directory};${process.env.PATH}`,
+      });
+      const args: string[] = JSON.parse(await readFile(output, "utf8")).args;
+      const flag = args.indexOf("--model");
+      assert.ok(flag >= 0);
+      assert.equal(args[flag + 1], model);
+      if (kind === "claude") {
+        assert.equal(args[args.indexOf("--effort") + 1], effort);
+        assert.deepEqual(args.slice(-2), [
+          "--resume",
+          "fixture-native-history",
+        ]);
+      } else {
+        assert.ok(args.includes('model_reasoning_effort="xhigh"'));
+        assert.ok(args.includes("fixture-native-history"));
+      }
+    }
     const claudeInit = powershellInitialization(
       {} as HostConfig,
       "shell",
@@ -273,6 +304,10 @@ test(
       PATH: `${directory};${process.env.PATH}`,
     });
     const defaultCaptured = JSON.parse(await readFile(output, "utf8"));
+    assert.ok(!defaultCaptured.args.includes('approval_policy="never"'));
+    assert.ok(
+      !defaultCaptured.args.includes('sandbox_mode="danger-full-access"'),
+    );
     assert.equal(
       defaultCaptured.args.at(-1),
       "--version",
@@ -318,6 +353,40 @@ test(
       );
       const resumed = JSON.parse(await readFile(output, "utf8"));
       assert.deepEqual(resumed.args.slice(-2), ["resume", threadId || "--all"]);
+    }
+    for (const program of [
+      "codex",
+      "resume",
+      "claude",
+      "claude-resume",
+    ] as const) {
+      await run(
+        powershellInitialization(
+          {
+            codexPath: executable,
+            cliApprovalMode: "full-access",
+          } as HostConfig,
+          program,
+          undefined,
+          "fixture-resume",
+        ),
+        {
+          HARBOR_TEST_CAPTURE: output,
+          PATH: `${directory};${process.env.PATH}`,
+        },
+      );
+      const { args } = JSON.parse(await readFile(output, "utf8"));
+      if (program.startsWith("claude")) {
+        assert.equal(
+          args[args.indexOf("--permission-mode") + 1],
+          "bypassPermissions",
+        );
+      } else {
+        assert.ok(args.includes('approval_policy="never"'));
+        assert.ok(args.includes('sandbox_mode="danger-full-access"'));
+      }
+      if (program.includes("resume"))
+        assert.ok(args.includes("fixture-resume"));
     }
   },
 );

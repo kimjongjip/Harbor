@@ -56,6 +56,7 @@ const recordSchema = questionSchema.extend({
   permission: z
     .object({
       toolName: z.string().min(1).max(200),
+      sessionId: id.optional(),
       command: z.string().max(16000).optional(),
       cwd: z.string().max(4096).optional(),
       detail: z.string().max(8000).optional(),
@@ -74,6 +75,7 @@ const recordSchema = questionSchema.extend({
   createdAt: z.number().finite().nonnegative(),
   answer: answerSchema.optional(),
   answeredAt: z.number().finite().nonnegative().optional(),
+  answeredBy: z.enum(["user", "automatic"]).optional(),
   consumedAt: z.number().finite().nonnegative().optional(),
   cancelledAt: z.number().finite().nonnegative().optional(),
   cancellationReason: z.string().max(300).optional(),
@@ -157,6 +159,7 @@ export class Requests extends EventEmitter {
       },
       {
         toolName: parsed.tool_name,
+        sessionId: parsed.session_id,
         ...(command ? { command } : {}),
         ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
         ...(detail ? { detail } : {}),
@@ -205,6 +208,19 @@ export class Requests extends EventEmitter {
     return structuredClone(request);
   }
   respond(requestId: string, input: HarborAnswer): HarborRequest {
+    return this.answer(requestId, input, "user");
+  }
+  /** Internal only: a UI-selected terminal policy must validate the native session first. */
+  acceptAutomatically(requestId: string): HarborRequest {
+    if (this.find(requestId).kind !== "permission")
+      throw new Error("실행 승인 요청만 자동 수락할 수 있습니다.");
+    return this.answer(requestId, { text: "", optionId: "allow" }, "automatic");
+  }
+  private answer(
+    requestId: string,
+    input: HarborAnswer,
+    answeredBy: "user" | "automatic",
+  ): HarborRequest {
     const request = this.find(requestId);
     if (request.status !== "pending")
       throw new Error("이미 답변했거나 종료된 질문입니다.");
@@ -229,6 +245,7 @@ export class Requests extends EventEmitter {
       answer,
       status: "answered",
       answeredAt: Date.now(),
+      answeredBy,
     });
   }
   result(terminalId: string, requestId: string, consume = true): HarborRequest {

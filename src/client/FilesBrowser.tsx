@@ -23,10 +23,13 @@ import {
   X,
 } from "lucide-react";
 import type { DirectoryView, FileEntry, HostView } from "../shared/types";
-import { api, getToken } from "./api";
+import { api, ApiError, getToken } from "./api";
 import { Modal } from "./Dialogs";
 import { usePreview } from "./ResourcePreview";
 import { useFileDrop } from "./useFileDrop";
+import { selectionFromFiles, type UploadSelection } from "./upload-selection";
+import { prepareUploadSelection } from "./upload-plan";
+import { needsFileAuthentication } from "./file-errors";
 
 interface UploadItem {
   id: string;
@@ -88,6 +91,11 @@ export default function FilesBrowser({
   const [directory, setDirectory] = useState<DirectoryView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [authRequired, setAuthRequired] = useState(false);
+  function reportError(value: unknown) {
+    setError(typeof value === "string" ? value : (value as Error).message);
+    setAuthRequired(needsFileAuthentication(value));
+  }
   const [query, setQuery] = useState("");
   const [hidden, setHidden] = useState(false);
   const [selected, setSelected] = useState("");
@@ -97,15 +105,22 @@ export default function FilesBrowser({
     y: number;
   } | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const prepareAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    folderInput.current?.setAttribute("webkitdirectory", "");
+  }, []);
   const generation = useRef(0);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [uploadTarget, setUploadTarget] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [uploadNote, setUploadNote] = useState("");
   const drop = useFileDrop({
+    scopeKey: hostId,
     rootPath: directory?.path,
     busy: uploading || busy,
-    onFiles: (files, path) => void upload(files, path),
-    onError: setError,
+    onFiles: (selection, path) => upload(selection, path),
+    onError: reportError,
   });
   const xhr = useRef<XMLHttpRequest | null>(null);
   const cancelled = useRef(false);
@@ -117,10 +132,14 @@ export default function FilesBrowser({
   const [folderBusy, setFolderBusy] = useState(false);
   const [folderError, setFolderError] = useState("");
   const [copied, setCopied] = useState(false);
-  async function load(path: string, targetHost = hostId) {
+  async function load(
+    path: string,
+    targetHost = hostId,
+    preserveError = false,
+  ) {
     const gen = ++generation.current;
     setBusy(true);
-    setError("");
+    if (!preserveError) setError("");
     setMenu(null);
     setSelected("");
     try {
@@ -134,8 +153,7 @@ export default function FilesBrowser({
       setAddress(result.path);
       localStorage.setItem(`harbor.files.${targetHost}`, result.path);
     } catch (e) {
-      if (generation.current === gen && mounted.current)
-        setError((e as Error).message);
+      if (generation.current === gen && mounted.current) reportError(e);
     } finally {
       if (generation.current === gen && mounted.current) setBusy(false);
     }
@@ -155,6 +173,7 @@ export default function FilesBrowser({
       mounted.current = false;
       cancelled.current = true;
       xhr.current?.abort();
+      prepareAbort.current?.abort();
     },
     [],
   );
@@ -203,83 +222,150 @@ export default function FilesBrowser({
         prev.map((item) => (item.id === id ? { ...item, ...value } : item)),
       );
   }
-  async function upload(files: File[], targetPath = directory?.path) {
-    if (inFlight.current || !directory || !files.length) return;
-    if (!targetPath) return;
-    const target = { hostId, path: targetPath, name: host.name };
-    const queue = files.map((file) => ({ id: crypto.randomUUID(), file }));
-    if (files.some((f) => f.size > 512 * 1024 * 1024)) {
-      setError("파일은 개당 512MB까지 업로드할 수 있습니다.");
+  async function upload(
+    selection: UploadSelection,
+    targetPath = directory?.path,
+  ) {
+    if (
+      inFlight.current ||
+      !directory ||
+      !targetPath ||
+      (!selection.files.length && !selection.directories.length)
+    )
       return;
-    }
+    const target = {
+      hostId,
+      path: targetPath,
+      name: host.name,
+      rootPath: directory.path,
+    };
+    const queue = selection.files.map((item) => ({
+      id: crypto.randomUUID(),
+      ...item,
+    }));
+    const controller = new AbortController();
+    prepareAbort.current = controller;
     inFlight.current = true;
     cancelled.current = false;
     setUploading(true);
     setError("");
+    setUploadNote("폴더와 파일 업로드를 준비하고 있습니다.");
     setUploadTarget(`${target.name} · ${target.path}`);
     setUploads(
-      queue.map(({ id, file }) => ({
+      queue.map(({ id, file, relativePath }) => ({
         id,
-        name: file.name,
+        name: relativePath,
         size: file.size,
         percent: 0,
         status: "queued",
       })),
     );
-    for (const { id, file } of queue) {
-      if (cancelled.current) {
-        updateUpload(id, { status: "cancelled" });
-        continue;
+    let completed = 0,
+      failures = 0;
+    let changed = false;
+    try {
+      const plan = await prepareUploadSelection(
+        target.hostId,
+        target.path,
+        selection,
+        controller.signal,
+      );
+      const destinations = new Map(
+        plan.files.map((item) => [item.relativePath, item]),
+      );
+      changed = plan.directoryCount > 0;
+      setUploadNote(`${plan.directoryCount}개 폴더 준비 · 파일 업로드 중`);
+      for (const { id, file, relativePath } of queue) {
+        if (cancelled.current) {
+          updateUpload(id, { status: "cancelled" });
+          continue;
+        }
+        updateUpload(id, { status: "uploading" });
+        try {
+          const destination = destinations.get(relativePath);
+          if (!destination)
+            throw new Error("업로드할 파일 목록을 확인하지 못했습니다.");
+          await new Promise<void>((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            xhr.current = request;
+            request.open(
+              "PUT",
+              `/api/hosts/${target.hostId}/files/upload?${new URLSearchParams({ path: destination.directory, name: destination.name })}`,
+            );
+            request.setRequestHeader("X-Harbor-Token", getToken());
+            request.setRequestHeader(
+              "Content-Type",
+              "application/octet-stream",
+            );
+            request.upload.onprogress = (e) => {
+              if (e.lengthComputable)
+                updateUpload(id, {
+                  percent: Math.round((e.loaded / e.total) * 100),
+                });
+            };
+            request.onload = () => {
+              if (request.status >= 200 && request.status < 300) resolve();
+              else {
+                let message = "업로드에 실패했습니다.";
+                let code: string | undefined;
+                try {
+                  const result = JSON.parse(request.responseText);
+                  message = result.error || message;
+                  code = result.code;
+                } catch {}
+                reject(new ApiError(message, request.status, code));
+              }
+            };
+            request.onerror = () =>
+              reject(new Error("연결이 끊겼습니다. 서버 연결을 확인하세요."));
+            request.onabort = () => reject(new Error("업로드를 취소했습니다."));
+            request.send(file);
+          });
+          completed++;
+          changed = true;
+          updateUpload(id, { status: "done", percent: 100 });
+        } catch (e) {
+          failures++;
+          if (!cancelled.current && needsFileAuthentication(e)) reportError(e);
+          updateUpload(id, {
+            status: cancelled.current ? "cancelled" : "error",
+            error: (e as Error).message,
+          });
+        }
       }
-      updateUpload(id, { status: "uploading" });
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const request = new XMLHttpRequest();
-          xhr.current = request;
-          request.open(
-            "PUT",
-            `/api/hosts/${target.hostId}/files/upload?${new URLSearchParams({ path: target.path, name: file.name })}`,
-          );
-          request.setRequestHeader("X-Harbor-Token", getToken());
-          request.setRequestHeader("Content-Type", "application/octet-stream");
-          request.upload.onprogress = (e) => {
-            if (e.lengthComputable)
-              updateUpload(id, {
-                percent: Math.round((e.loaded / e.total) * 100),
-              });
-          };
-          request.onload = () => {
-            if (request.status >= 200 && request.status < 300) resolve();
-            else {
-              let message = "업로드에 실패했습니다.";
-              try {
-                message = JSON.parse(request.responseText).error || message;
-              } catch {}
-              reject(new Error(message));
-            }
-          };
-          request.onerror = () =>
-            reject(new Error("연결이 끊겼습니다. 서버 연결을 확인하세요."));
-          request.onabort = () => reject(new Error("업로드를 취소했습니다."));
-          request.send(file);
-        });
-        updateUpload(id, { status: "done", percent: 100 });
-      } catch (e) {
-        updateUpload(id, {
-          status: cancelled.current ? "cancelled" : "error",
-          error: (e as Error).message,
-        });
+      if (mounted.current)
+        setUploadNote(
+          `${cancelled.current ? "업로드 취소" : failures ? "일부 파일 업로드 실패" : "업로드 완료"} · ${completed}/${queue.length}개 파일 · ${plan.directoryCount}개 폴더 · 완료된 항목은 유지됩니다.`,
+        );
+    } catch (e) {
+      if (mounted.current) {
+        if (!controller.signal.aborted) reportError(e);
+        setUploadNote(
+          controller.signal.aborted
+            ? "업로드를 취소했습니다."
+            : "업로드 준비에 실패했습니다.",
+        );
+        setUploads((prev) =>
+          prev.map((item) => ({
+            ...item,
+            status: controller.signal.aborted ? "cancelled" : "error",
+            error: (e as Error).message,
+          })),
+        );
       }
-    }
-    xhr.current = null;
-    inFlight.current = false;
-    if (mounted.current) {
-      setUploading(false);
-      if (
-        location.current.hostId === target.hostId &&
-        location.current.path === target.path
-      )
-        void load(target.path, target.hostId);
+    } finally {
+      xhr.current = null;
+      prepareAbort.current = null;
+      inFlight.current = false;
+      if (mounted.current) {
+        setUploading(false);
+        if (
+          changed &&
+          location.current.hostId === target.hostId &&
+          location.current.path === target.rootPath
+        )
+          void load(target.rootPath, target.hostId, true);
+      }
     }
   }
   const entries = (directory?.entries || [])
@@ -321,6 +407,29 @@ export default function FilesBrowser({
             <Upload size={15} />
             파일 업로드
           </button>
+          <button
+            className="button secondary small"
+            disabled={!directory || uploading || busy || drop.collecting}
+            onClick={() => folderInput.current?.click()}
+          >
+            <Folder size={15} />
+            폴더 업로드
+          </button>
+          <input
+            ref={folderInput}
+            data-testid="folder-upload-input"
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              try {
+                void upload(selectionFromFiles(event.target.files || []));
+              } catch (err) {
+                reportError(err);
+              }
+              event.target.value = "";
+            }}
+          />
           <input
             ref={input}
             data-testid="file-upload-input"
@@ -328,7 +437,11 @@ export default function FilesBrowser({
             multiple
             hidden
             onChange={(e) => {
-              void upload([...(e.target.files || [])]);
+              try {
+                void upload(selectionFromFiles(e.target.files || []));
+              } catch (err) {
+                reportError(err);
+              }
               e.target.value = "";
             }}
           />
@@ -441,7 +554,7 @@ export default function FilesBrowser({
           <div className="inline-error" role="alert">
             {error}
           </div>
-          {host?.kind === "ssh" && host.status !== "connected" && (
+          {host?.kind === "ssh" && authRequired && (
             <button
               className="button secondary small"
               onClick={() => onConnect(host)}
@@ -604,21 +717,29 @@ export default function FilesBrowser({
           {directory?.truncated && <span>처음 5,000개 항목 표시</span>}
         </div>
       </div>
-      {uploads.length > 0 && (
+      {drop.collecting && (
+        <p className="upload-destination" role="status">
+          폴더와 파일 목록을 읽는 중…
+        </p>
+      )}
+      {(uploads.length > 0 || uploadNote) && (
         <div className="upload-panel">
           <header>
             <span>
               <Upload size={14} />
-              <b>{uploading ? "파일을 올리고 있습니다" : "파일 전송 결과"}</b>
-              <small>
-                {uploads.filter((u) => u.status === "done").length}/
-                {uploads.length}
-              </small>
+              <b>{uploading ? "파일·폴더를 올리고 있습니다" : "전송 결과"}</b>
+              {uploads.length > 0 && (
+                <small>
+                  {uploads.filter((u) => u.status === "done").length}/
+                  {uploads.length}
+                </small>
+              )}
             </span>
             {uploading ? (
               <button
                 onClick={() => {
                   cancelled.current = true;
+                  prepareAbort.current?.abort();
                   xhr.current?.abort();
                 }}
               >
@@ -628,13 +749,21 @@ export default function FilesBrowser({
               <button
                 className="icon-button compact"
                 aria-label="업로드 결과 닫기"
-                onClick={() => setUploads([])}
+                onClick={() => {
+                  setUploads([]);
+                  setUploadNote("");
+                }}
               >
                 <X size={14} />
               </button>
             )}
           </header>
           <div className="upload-destination">{uploadTarget}</div>
+          {uploadNote && (
+            <p className="upload-destination" role="status">
+              {uploadNote}
+            </p>
+          )}
           <div className="upload-items">
             {uploads.map((item) => (
               <div key={item.id} className={`upload-item ${item.status}`}>
@@ -724,7 +853,7 @@ export default function FilesBrowser({
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 })
-                .catch((e) => setError(e.message));
+                .catch((e) => reportError(e));
               setMenu(null);
             }}
           >

@@ -8,7 +8,9 @@ export const peerRuntimeSchema = z
     kind: z.enum(["codex", "claude"]),
     sessionId: z.string().trim().min(1).max(256).optional(),
     state: z.enum(["idle", "working", "offline"]),
-    delivery: z.enum(["automatic", "poll", "unavailable"]),
+    delivery: z.enum(["automatic", "hook", "poll", "unavailable"]),
+    /** Explicit adapter support; legacy automatic channels do not imply it. */
+    userInputVersion: z.literal(1).optional(),
     detail: z.string().max(500).optional(),
     endpoint: z
       .object({
@@ -71,6 +73,8 @@ export class PeerDelivery extends EventEmitter {
     to: string,
     text: string,
     purpose?: "question",
+    labId?: string,
+    labRevision?: number,
   ): MailboxMessage {
     const senderSessionId = this.runtime(from)?.sessionId;
     if (
@@ -90,12 +94,16 @@ export class PeerDelivery extends EventEmitter {
       senderSessionId: this.runtime(from)?.sessionId,
       recipientSessionId: this.runtime(to)?.sessionId,
       purpose,
+      labId,
+      labRevision,
     });
   }
 
   events(
     terminalId: string,
     sessionId?: string,
+    transport: "automatic" | "hook" = "automatic",
+    accept?: (message: MailboxMessage) => boolean,
   ): {
     sessionId?: string;
     runtime?: PeerRuntimeStatus;
@@ -106,7 +114,8 @@ export class PeerDelivery extends EventEmitter {
     if (
       !runtime?.sessionId ||
       runtime.state === "offline" ||
-      runtime.delivery !== "automatic"
+      runtime.delivery !== transport ||
+      (transport === "hook" && runtime.kind !== "claude")
     )
       return {
         sessionId: runtime?.sessionId,
@@ -131,6 +140,13 @@ export class PeerDelivery extends EventEmitter {
           item.recipient.sessionId === runtime.sessionId &&
           !item.consumedAt &&
           !item.offeredAt &&
+          (!accept || accept(item)) &&
+          !(
+            runtime.kind === "claude" &&
+            transport !== "hook" &&
+            runtime.state === "working" &&
+            item.research?.assignmentId.startsWith("preparation:")
+          ) &&
           // A waiting MCP call will deliver its own actual reply, once, as its result.
           !(
             item.replyToId && this.waiting.get(terminalId)?.has(item.replyToId)
@@ -205,12 +221,17 @@ export class PeerDelivery extends EventEmitter {
               reason:
                 "Recipient runtime is offline. No answer has been received.",
             }
-          : recipient?.delivery !== "automatic"
+          : recipient?.delivery === "hook"
             ? {
                 reason:
-                  "No actual peer reply has arrived. Automatic delivery is unavailable; the recipient must call harbor_inbox in its own native conversation.",
+                  "No actual peer reply has arrived. Delivery is queued for Claude's next input, tool completion or response completion; an idle conversation needs a user-submitted inbox check.",
               }
-            : { reason: "No actual peer reply has arrived." }),
+            : recipient?.delivery !== "automatic"
+              ? {
+                  reason:
+                    "No actual peer reply has arrived. Automatic delivery is unavailable; the recipient must call harbor_inbox in its own native conversation.",
+                }
+              : { reason: "No actual peer reply has arrived." }),
     };
   }
 

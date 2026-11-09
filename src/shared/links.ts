@@ -73,4 +73,4 @@ export function normalizeMath(text: string) {
     .join("");
 }
 export const plainFilePattern =
-  /(?:file:\/\/[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|\/|\.\.?[\\/]|~\/)[^\s<>"'`]+|(?:[\p{L}\p{N}_.-]+[\\/])+[\p{L}\p{N}_.-]+\.[\w]+(?::\d+(?::\d+)?|#L?\d+(?:C\d+)?(?:-L?\d+)?)?|[\p{L}\p{N}_.-]+\.(?:png|jpe?g|webp|gif|bmp|avif|svg|pdf|txt|md|markdown|csv|tsv|json|tsx?|jsx?|py|rs|go|sh|ya?ml|toml)(?::\d+(?::\d+)?|#L?\d+(?:C\d+)?(?:-L?\d+)?)?)/giu;
+  /(?:file:\/\/[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|\/|\.\.?[\\/]|~\/)[^\s<>"'`]+|(?:[\p{L}\p{N}_.-]+[\\/])+[\p{L}\p{N}_.-]+\.[\w]+(?::\d+(?::\d+)?|#L?\d+(?:C\d+)?(?:-L?\d+)?)?|[\p{L}\p{N}_.-]+\.(?:png|jpe?g|webp|gif|bmp|avif|svg|pdf|html?|txt|md|markdown|csv|tsv|json|tsx?|jsx?|py|rs|go|sh|ya?ml|toml)(?::\d+(?::\d+)?|#L?\d+(?:C\d+)?(?:-L?\d+)?)?)/giu;

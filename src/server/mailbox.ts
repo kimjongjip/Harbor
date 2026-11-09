@@ -39,6 +39,7 @@ const messageSchema = z.object({
   sender: participantSchema,
   recipient: participantSchema,
   author: z.enum(["user", "agent"]),
+  ideInput: z.object({ version: z.literal(1), requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) }).strict().optional(),
   text: z.string().min(1).max(MAILBOX_TEXT_LIMIT),
   createdAt: z.number().finite().nonnegative(),
   status: z.enum(["queued", "read", "drafted", "consumed"]),
@@ -47,7 +48,23 @@ const messageSchema = z.object({
   consumedAt: z.number().finite().nonnegative().optional(),
   repliedAt: z.number().finite().nonnegative().optional(),
   replyMessageId: idSchema.optional(),
-  purpose: z.literal("question").optional(),
+  purpose: z.enum(["question", "research"]).optional(),
+  research: z
+    .object({
+      labId: idSchema,
+      assignmentId: idSchema,
+      revision: z.number().int().nonnegative(),
+    })
+    .optional(),
+  labId: idSchema.optional(),
+  labRevision: z.number().int().nonnegative().optional(),
+  questionSource: z
+    .object({
+      assignmentId: idSchema,
+      index: z.number().int().min(0).max(4),
+      revision: z.number().int().nonnegative(),
+    })
+    .optional(),
   offeredAt: z.number().finite().nonnegative().optional(),
   offeredSessionId: idSchema.optional(),
 });
@@ -127,6 +144,29 @@ export class Mailbox extends EventEmitter {
     );
   }
 
+  /** Internal IDE route only: a user prompt, not an ordinary peer inbox note. */
+  sendIdeUser(input: { toTerminalId: string; sessionId: string; text: string; requestId: string }): MailboxMessage {
+    const parsed = z.object({
+      toTerminalId: idSchema, sessionId: idSchema,
+      requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      text: z.string().min(1).max(MAILBOX_TEXT_LIMIT).refine(text => Boolean(text.trim()) && !text.includes("\0")),
+    }).strict().parse(input);
+    const recipient = this.participant(parsed.toTerminalId);
+    if (recipient.agentKind !== "claude" || recipient.sessionId !== parsed.sessionId)
+      throw new Error("현재 Claude 대화의 입력 연결을 확인하세요.");
+    const previous = this.messages.find(message => message.ideInput?.requestId === parsed.requestId &&
+      message.recipient.terminalId === parsed.toTerminalId && message.recipient.sessionId === parsed.sessionId);
+    if (previous) {
+      if (previous.text !== parsed.text) throw new Error("같은 요청 ID에 다른 메시지를 보낼 수 없습니다.");
+      return structuredClone(previous);
+    }
+    return this.create(
+      { kind: "user", title: "Harbor IDE" }, recipient, parsed.text, undefined, "user",
+      undefined, undefined, undefined, undefined, undefined,
+      { version: 1, requestId: parsed.requestId },
+    );
+  }
+
   sendAgent(
     fromTerminalId: string,
     toTerminalId: string,
@@ -135,6 +175,9 @@ export class Mailbox extends EventEmitter {
       senderSessionId?: string;
       recipientSessionId?: string;
       purpose?: "question";
+      labId?: string;
+      labRevision?: number;
+      questionSource?: MailboxMessage["questionSource"];
     } = {},
   ): MailboxMessage {
     const parsed = sendSchema.parse({ fromTerminalId, toTerminalId, text });
@@ -145,6 +188,28 @@ export class Mailbox extends EventEmitter {
       undefined,
       "agent",
       scope.purpose,
+      undefined,
+      scope.labId,
+      scope.questionSource,
+      scope.labRevision,
+    );
+  }
+
+  sendResearch(
+    toTerminalId: string,
+    sessionId: string,
+    text: string,
+    research: NonNullable<MailboxMessage["research"]>,
+  ): MailboxMessage {
+    const parsed = sendSchema.parse({ toTerminalId, text });
+    return this.create(
+      { kind: "user", title: "Harbor 연구실" },
+      this.scopedParticipant(toTerminalId, sessionId),
+      parsed.text,
+      undefined,
+      "user",
+      "research",
+      research,
     );
   }
 
@@ -220,7 +285,12 @@ export class Mailbox extends EventEmitter {
     text: string,
     replyToId: string | undefined,
     author: "user" | "agent",
-    purpose?: "question",
+    purpose?: "question" | "research",
+    research?: MailboxMessage["research"],
+    labId?: string,
+    questionSource?: MailboxMessage["questionSource"],
+    labRevision?: number,
+    ideInput?: MailboxMessage["ideInput"],
   ): MailboxMessage {
     if (sender.terminalId === recipient.terminalId)
       throw new Error("다른 세션을 선택하세요.");
@@ -245,10 +315,15 @@ export class Mailbox extends EventEmitter {
       sender,
       recipient,
       author,
+      ...(ideInput ? { ideInput } : {}),
       text,
       createdAt: Date.now(),
       status: "queued",
       ...(purpose ? { purpose } : {}),
+      ...(research ? { research } : {}),
+      ...(previous?.labId || labId ? { labId: previous?.labId || labId } : {}),
+      ...(questionSource ? { questionSource } : {}),
+      ...(labRevision !== undefined ? { labRevision } : {}),
     };
     const next = [
       ...this.messages.map((item) =>
@@ -316,6 +391,28 @@ export class Mailbox extends EventEmitter {
   remove(id: string): void {
     const next = this.messages.filter((message) => message.id !== id);
     if (next.length !== this.messages.length) this.commit(next);
+  }
+
+  removeForLabs(labIds: string[]): number {
+    const ids = new Set(labIds);
+    const threads = new Set(
+      this.messages
+        .filter(
+          (message) =>
+            ids.has(message.research?.labId || "") ||
+            ids.has(message.labId || ""),
+        )
+        .map((message) => message.threadId),
+    );
+    const next = this.messages.filter(
+      (message) =>
+        !ids.has(message.research?.labId || "") &&
+        !ids.has(message.labId || "") &&
+        !threads.has(message.threadId),
+    );
+    const removed = this.messages.length - next.length;
+    if (removed) this.commit(next);
+    return removed;
   }
 
   private participant(id: string): MailboxParticipant {

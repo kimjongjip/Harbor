@@ -14,7 +14,7 @@
   color: var(--text);
   background: var(--bg);
   overflow: hidden;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-annotation-header {
   display: flex;
@@ -27,7 +27,7 @@
 }
 .terminal-annotation-header > strong {
   flex: 1;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-annotation-header > svg {
   color: var(--accent);
@@ -71,7 +71,7 @@
 }
 .terminal-annotation-chip-label {
   padding: 4px 5px 4px 8px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   font-family: var(--font-mono, monospace);
 }
 .terminal-annotation-chip-remove {
@@ -107,7 +107,7 @@
   padding: 6px 8px;
   color: var(--muted);
   background: var(--panel);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   overflow-wrap: anywhere;
 }
 .terminal-annotation-quote {
@@ -118,7 +118,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.6;
   color: var(--text);
 }
@@ -129,7 +129,7 @@
   margin: 0;
 }
 .terminal-annotation-label {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--muted);
 }
 .terminal-annotation-question textarea {
@@ -138,7 +138,7 @@
   max-height: 160px;
   padding: 7px 9px;
   resize: vertical;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   line-height: 1.55;
   color: var(--text);
   background: var(--bg);
@@ -146,13 +146,13 @@
 .terminal-annotation-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   line-height: 1.5;
 }
 .terminal-annotation-error {
   margin: 0;
   color: var(--red);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -169,7 +169,7 @@
 .terminal-annotation-footer .button {
   min-height: 29px;
   padding: 5px 9px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 @media (max-width: 520px) {
   .terminal-annotation-form {

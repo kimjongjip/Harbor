@@ -1,12 +1,16 @@
 import type { HostConfig, TerminalColors } from "../shared/types.js";
+import type { ResearchAgentSettings } from "../shared/research.js";
+import { researchArguments } from "./research-settings.js";
 import { remoteCodexCommand, shellQuote, shellDirectory } from "./ssh.js";
 import { permissionHookConfig } from "./permission-hook.js";
+import { cliApprovalArgs } from "./cli-approval.js";
 import {
   annotationHookConfig,
   annotationHookTrustConfig,
 } from "./annotation-hook.js";
 import { claudeArguments, claudeHookSettings } from "./claude-hooks.js";
 import { claudePeerMcpConfig } from "./claude-peer-channel.js";
+import { claudeRichBootstrap, claudeRichCleanup } from "./claude-rich-mod.js";
 import {
   codexPeerPowerShellLauncher,
   codexPeerPosixLauncher,
@@ -15,6 +19,10 @@ import {
 export type TerminalProgram =
   "shell" | "codex" | "resume" | "claude" | "claude-resume";
 export interface TerminalOptions {
+  /** Persistence is opt-in for each new SSH terminal; defaults remain direct. */
+  sshSessionMode?: "direct" | "tmux";
+  startupPlaceholder?: boolean;
+  researchLaunch?: ResearchAgentSettings & { cwd: string };
   program?: TerminalProgram;
   title?: string;
   resumeThreadId?: string;
@@ -89,18 +97,28 @@ export function remoteTerminalCommand(
   resumeThreadId?: string,
 ) {
   const directory = cwd ? `cd ${shellDirectory(cwd)} && ` : "";
-  if (program === "shell") return `${directory}exec "\${SHELL:-/bin/sh}" -l`;
+  if (program === "shell") {
+    if (host.cliApprovalMode === "full-access")
+      return "printf '%s\\n' 'Harbor: approval settings require a managed Bash connection. Use CLI settings or configure SSH forwarding.' >&2; exit 78";
+    return `${directory}exec "\${SHELL:-/bin/sh}" -l`;
+  }
   if (program.startsWith("claude"))
-    return `${directory}exec claude ${claudeArguments(
-      undefined,
-      resumeThreadId,
-      program === "claude-resume",
-    )
+    return `${directory}exec claude ${[
+      ...cliApprovalArgs(host, "claude"),
+      ...claudeArguments(
+        undefined,
+        resumeThreadId,
+        program === "claude-resume",
+      ),
+    ]
       .map(shellQuote)
       .join(" ")}`;
   return remoteCodexCommand(
     host,
-    codexArguments(program, undefined, resumeThreadId),
+    [
+      ...cliApprovalArgs(host, "codex"),
+      ...codexArguments(program, undefined, resumeThreadId),
+    ],
     cwd,
   );
 }
@@ -112,10 +130,12 @@ export function powershellInitialization(
   resumeThreadId?: string,
   enablePermissionHook = false,
   resumeCwd?: string,
+  researchLaunch?: TerminalOptions["researchLaunch"],
 ) {
   const quote = (s: string) => `'${s.replaceAll("'", "''")}'`;
   // Windows PowerShell's legacy native argument parser needs escaped inner quotes.
   const quotedArgs = [
+    ...cliApprovalArgs(host, "codex"),
     ...codexArguments("codex", url),
     ...(enablePermissionHook
       ? [
@@ -159,13 +179,20 @@ export function powershellInitialization(
   const claudePeerSetup = claudeMcp
     ? `$harborPeerConfig=ConvertFrom-Json ${quote(claudeMcp)}; $harborPeerConfig.mcpServers.harbor.env.HARBOR_CLAUDE_CHANNEL_ENABLED= $(if($harborPeers){'1'}else{'0'}); $harborMcp=[IO.Path]::GetTempFileName(); [IO.File]::WriteAllText($harborMcp,($harborPeerConfig | ConvertTo-Json -Depth 12 -Compress),[Text.UTF8Encoding]::new($false)); $harborPeerArgs=@('--mcp-config',$harborMcp); if($harborPeers){$harborPeerArgs+=@('--dangerously-load-development-channels','server:harbor')};`
     : "if($harborPeers){Write-Host 'Harbor 자동 수신 연결을 사용할 수 없습니다.'};";
-  const claudeArgs = claudeSettings ? "--settings $harborSettings" : "";
-  const claudeWrapper = `function global:claude { __HarborCwd; $harborSettings=$null; $harborMcp=$null; $harborPeers=$false; $harborLiteral=$false; $harborClaudeArgs=@(); foreach($harborValue in $args){if(!$harborLiteral -and $harborValue -ceq '--harbor-peers'){$harborPeers=$true}else{$harborClaudeArgs+=$harborValue;if($harborValue -ceq '--'){$harborLiteral=$true}}}; if($harborClaudeArgs -contains '-p' -or $harborClaudeArgs -contains '--print' -or @($harborClaudeArgs | Where-Object { $_.StartsWith('--print=') }).Count -gt 0){$harborPeers=$false}; $harborPeerArgs=@(); try { ${claudeSetup} ${claudePeerSetup} $harborClaude=(Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); & $harborClaude @harborPeerArgs ${claudeArgs} @harborClaudeArgs } finally { $harborExit=$LASTEXITCODE; if($harborSettings) { Remove-Item -LiteralPath $harborSettings -ErrorAction SilentlyContinue }; if($harborMcp) { Remove-Item -LiteralPath $harborMcp -ErrorAction SilentlyContinue }; ${notify}; $global:LASTEXITCODE=$harborExit } };`;
+  const claudeArgs = [
+    ...cliApprovalArgs(host, "claude").map(quote),
+    ...(claudeSettings ? ["--settings $harborSettings"] : []),
+  ].join(" ");
+  const claudeRichSetup = claudeUrl
+    ? `if($harborInteractive){try {$harborVersionText=(& $harborClaude --version 2>$null | Out-String); if($LASTEXITCODE -eq 0 -and $harborVersionText -match '(?:^|\\s)(\\d+)\\.(\\d+)\\.(\\d+)(?:\\s|$)' -and ([version]($Matches[1]+'.'+$Matches[2]+'.'+$Matches[3])) -ge [version]'2.1.287'){${claudeRichBootstrap("windows")} if($harborRichPath){$harborPeerArgs+=@('--plugin-dir',$harborRichPath)}}}catch{}};`
+    : "";
+  const claudeRichFinally = claudeUrl ? claudeRichCleanup("windows") : "";
+  const claudeWrapper = `function global:claude { __HarborCwd; $harborSettings=$null; $harborMcp=$null; $harborRichPath=$null; $harborPeers=$false; $harborLiteral=$false; $harborInteractive=$true; $harborClaudeArgs=@(); foreach($harborValue in $args){if(!$harborLiteral -and $harborValue -ceq '--harbor-peers'){$harborPeers=$true}else{$harborClaudeArgs+=$harborValue;if(!$harborLiteral){if($harborValue -ceq '--'){$harborLiteral=$true}elseif($harborValue -ceq '-p' -or $harborValue -ceq '--print' -or $harborValue.StartsWith('--print=') -or $harborValue -cmatch '^-p.+' -or $harborValue -in @('--version','-v','--help','-h','plugin','plugins','mcp','auth','update','doctor','install','setup-token','agents')){$harborInteractive=$false}}}}; if(!$harborInteractive){$harborPeers=$false}; $harborPeerArgs=@(); try { ${claudeSetup} ${claudePeerSetup} $harborClaude=(Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); ${claudeRichSetup} $harborNativeClaudeArgs=@($harborClaudeArgs | ForEach-Object { ([string]$_).Replace('"','\\"') }); & $harborClaude @harborPeerArgs ${claudeArgs} @harborNativeClaudeArgs } finally { $harborExit=$LASTEXITCODE; if($harborSettings) { Remove-Item -LiteralPath $harborSettings -ErrorAction SilentlyContinue }; if($harborMcp) { Remove-Item -LiteralPath $harborMcp -ErrorAction SilentlyContinue }; ${claudeRichFinally} ${notify}; $global:LASTEXITCODE=$harborExit } };`;
   const launch = program.startsWith("claude")
-    ? `${resumeCwd ? `Set-Location -LiteralPath ${quote(resumeCwd)} -ErrorAction Stop; ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? quote(resumeThreadId) : ""}` : ""}`
+    ? `${researchLaunch?.cwd || resumeCwd ? `Set-Location -LiteralPath ${quote(researchLaunch?.cwd || resumeCwd!)} -ErrorAction Stop; ` : ""}claude${researchLaunch ? ` --harbor-peers ${researchArguments("claude", researchLaunch).map(quote).join(" ")}` : ""}${program === "claude-resume" ? ` --resume ${resumeThreadId ? quote(resumeThreadId) : ""}` : ""}`
     : program === "shell"
       ? ""
-      : `codex${program === "resume" ? ` resume ${resumeThreadId ? quote(resumeThreadId) : "--all"}` : ""}`;
+      : `codex${program === "resume" ? ` resume ${resumeThreadId ? quote(resumeThreadId) : "--all"}` : ""}${researchLaunch ? ` -C ${quote(researchLaunch.cwd)} ${researchArguments("codex", researchLaunch).map(quote).join(" ")}` : ""}`;
   return `${report} ${codexLauncher} function global:codex { try { ${normalize} ${reportCodex} $harborExecutable=(Get-Command ${quote(host.codexPath || "codex")} -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source); ${codexInvoke} } finally { $harborExit=$LASTEXITCODE; ${notify}; $global:LASTEXITCODE=$harborExit } }; ${claudeWrapper} ${launch}`;
 }
 
@@ -177,8 +204,10 @@ export function bashInitialization(
   bridge: ShellBridge,
   resumeThreadId?: string,
   resumeCwd?: string,
+  researchLaunch?: TerminalOptions["researchLaunch"],
 ) {
   const configArgs = [
+    ...cliApprovalArgs(host, "codex"),
     ...codexArguments("codex", bridge.url),
     ...(bridge.hook
       ? [
@@ -210,7 +239,10 @@ export function bashInitialization(
   const claudeUrl = bridge.hook
     ? new URL("/bridge/claude", bridge.hook.url).href
     : undefined;
-  const claudeArgs = claudeArguments(claudeUrl, undefined, false, "posix")
+  const claudeArgs = [
+    ...cliApprovalArgs(host, "claude"),
+    ...claudeArguments(claudeUrl, undefined, false, "posix"),
+  ]
     .map(shellQuote)
     .join(" ");
   const claudeMcp = claudeUrl
@@ -222,14 +254,15 @@ export function bashInitialization(
       })()
     : undefined;
   const claudePeerSetup = claudeMcp
-    ? `local harbor_mcp harbor_peers=0 harbor_literal=0 harbor_v; local -a harbor_claude_args=() harbor_peer_args=(); for harbor_v in "$@"; do if [[ $harbor_literal == 0 && $harbor_v == --harbor-peers ]]; then harbor_peers=1; else harbor_claude_args+=("$harbor_v"); [[ $harbor_v != -- ]] || harbor_literal=1; fi; done; for harbor_v in "\${harbor_claude_args[@]}"; do case "$harbor_v" in -p|--print|--print=*) harbor_peers=0;; esac; done; if command -v python3 >/dev/null 2>&1; then harbor_mcp=$(mktemp); printf '%s' ${shellQuote(claudeMcp)} > "$harbor_mcp"; harbor_peer_args=(--mcp-config "$harbor_mcp"); if [[ $harbor_peers == 1 ]]; then harbor_peer_args+=(--dangerously-load-development-channels server:harbor); fi; HARBOR_CODEX_MANAGED_PARENT=1 HARBOR_CLAUDE_CHANNEL_ENABLED=$harbor_peers command claude "\${harbor_peer_args[@]}" ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; rm -f -- "$harbor_mcp"; else printf '%s\\n' 'Harbor 메시지 연결에는 python3가 필요합니다.' >&2; HARBOR_CODEX_MANAGED_PARENT=1 command claude ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; fi;`
+    ? `local harbor_mcp harbor_rich= harbor_peers=0 harbor_literal=0 harbor_interactive=1 harbor_v harbor_version; local -a harbor_claude_args=() harbor_peer_args=(); for harbor_v in "$@"; do if [[ $harbor_literal == 0 && $harbor_v == --harbor-peers ]]; then harbor_peers=1; else harbor_claude_args+=("$harbor_v"); if [[ $harbor_literal == 0 ]]; then case "$harbor_v" in --) harbor_literal=1;; -p|-p?*|--print|--print=*|--version|-v|--help|-h|plugin|plugins|mcp|auth|update|doctor|install|setup-token|agents) harbor_interactive=0;; esac; fi; fi; done; [[ $harbor_interactive == 1 ]] || harbor_peers=0; if command -v python3 >/dev/null 2>&1; then harbor_mcp=$(mktemp); printf '%s' ${shellQuote(claudeMcp)} > "$harbor_mcp"; harbor_peer_args=(--mcp-config "$harbor_mcp"); if [[ $harbor_peers == 1 ]]; then harbor_peer_args+=(--dangerously-load-development-channels server:harbor); fi; if [[ $harbor_interactive == 1 ]] && harbor_version=$(command claude --version 2>/dev/null) && [[ $harbor_version =~ (^|[[:space:]])([0-9]+)\\.([0-9]+)\\.([0-9]+)([[:space:]]|$) ]] && (( 10#\${BASH_REMATCH[2]} > 2 || (10#\${BASH_REMATCH[2]} == 2 && (10#\${BASH_REMATCH[3]} > 1 || (10#\${BASH_REMATCH[3]} == 1 && 10#\${BASH_REMATCH[4]} >= 287))) )); then ${claudeRichBootstrap("posix")} if [[ -n "$harbor_rich" ]]; then harbor_peer_args+=(--plugin-dir "$harbor_rich"); fi; fi; HARBOR_CODEX_MANAGED_PARENT=1 HARBOR_CLAUDE_CHANNEL_ENABLED=$harbor_peers command claude "\${harbor_peer_args[@]}" ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; rm -f -- "$harbor_mcp"; ${claudeRichCleanup("posix")} else printf '%s\\n' 'Harbor 메시지 연결에는 python3가 필요합니다.' >&2; HARBOR_CODEX_MANAGED_PARENT=1 command claude ${claudeArgs} "\${harbor_claude_args[@]}"; local harbor_exit=$?; fi;`
     : `command claude ${claudeArgs} "$@"; local harbor_exit=$?;`;
-  const claudeLaunch = `${resumeCwd ? `cd ${shellDirectory(resumeCwd)} && ` : ""}claude${program === "claude-resume" ? ` --resume ${resumeThreadId ? shellQuote(resumeThreadId) : ""}` : ""}`;
+  const claudeCwd = researchLaunch?.cwd || resumeCwd;
+  const claudeLaunch = `${claudeCwd ? `cd ${shellDirectory(claudeCwd)} && ` : ""}claude${researchLaunch ? ` --harbor-peers ${researchArguments("claude", researchLaunch).map(shellQuote).join(" ")}` : ""}${program === "claude-resume" ? ` --resume ${resumeThreadId ? shellQuote(resumeThreadId) : ""}` : ""}`;
   const launch = program.startsWith("claude")
     ? `${interactive} -c ${shellQuote(`${claudeLaunch}; ${interactive}`)}`
     : program === "shell"
       ? interactive
-      : `${interactive} -c ${shellQuote(`codex${program === "resume" ? ` resume ${resumeThreadId ? shellQuote(resumeThreadId) : "--all"}` : ""}; ${interactive}`)}`;
+      : `${interactive} -c ${shellQuote(`codex${program === "resume" ? ` resume ${resumeThreadId ? shellQuote(resumeThreadId) : "--all"}` : ""}${researchLaunch ? ` -C ${shellQuote(researchLaunch.cwd)} ${researchArguments("codex", researchLaunch).map(shellQuote).join(" ")}` : ""}; ${interactive}`)}`;
   // curl reads its Authorization header from stdin, keeping the token out of ps output.
   const notify = `if command -v curl >/dev/null 2>&1; then printf 'header = "Authorization: Bearer %s"\\n' "$HARBOR_SESSION_TOKEN" | command curl --silent --max-time 2 --config - -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","method":"notifications/harbor/terminal-state","params":{"state":"shell"}}' ${shellQuote(bridge.url)} >/dev/null 2>&1; fi`;
   const normalize =

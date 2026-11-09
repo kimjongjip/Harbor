@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   Folder,
@@ -13,11 +20,22 @@ import {
   X,
   Bell,
   Inbox,
+  FlaskConical,
+  Type,
+  Smartphone,
+  Code2,
+  ChevronDown,
+  ChevronUp,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { useHarbor } from "./useHarbor";
+import { BackendStatus } from "./BackendStatus";
+import { version } from "../../package.json";
 import { api } from "./api";
 import type { HostView, TerminalInfo } from "../shared/types";
 import TerminalWorkspace, { NewTerminalDialog } from "./TerminalWorkspace";
+import CloseTerminalDialog from "./CloseTerminalDialog";
 import DirectoryTree from "./DirectoryTree";
 import FilesBrowser from "./FilesBrowser";
 import HostManager from "./HostManager";
@@ -26,6 +44,7 @@ import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
 import CodexHistory from "./CodexHistory";
 import ServerTreeHost from "./ServerTreeHost";
 import ResizableSidebar from "./ResizableSidebar";
+import { ResearchSidebar, ResearchDetails } from "./ResearchLab";
 import { useServerOrder } from "./server-order";
 import {
   focusTerminalWindow,
@@ -33,22 +52,37 @@ import {
   useTerminalSelection,
 } from "./terminalWindows";
 import RuntimeUpdateNotice from "./RuntimeUpdateNotice";
+import type { DropEdge, DropScope, TerminalPlacement } from "./terminal-tree";
 import { PreviewProvider } from "./ResourcePreview";
 import { useNotifications } from "./Notifications";
 import { useTheme, terminalColors, type ThemeName } from "./Theme";
+import TypographySettingsDialog from "./TypographySettings";
+import MobileSettings from "./MobileSettings";
+import IdeBoundary from "./ide/IdeBoundary";
 import "./harbor.css";
 import "./workspace-inbox.css";
 import "./workspace-layout.css";
+import "./ide/layout.css";
+
+const DesktopIdeView = lazy(() => import("./ide/DesktopIdeView"));
+const RemoteConnectButton = lazy(() =>
+  import("./RemoteConnectButton").then((module) => ({
+    default: module.RemoteConnectButton,
+  })),
+);
 
 const noSessions: string[] = [];
 const popoutId = new URLSearchParams(location.search).get("terminal");
 const initialFocusId = new URLSearchParams(location.search).get("focus");
 type HistoryDrop = {
   provider?: "codex" | "claude";
+  sshSessionMode?: "direct" | "tmux";
   hostId: string;
   threadId: string;
   targetTerminalId?: string;
-  slot?: unknown;
+  slot?: number;
+  edge?: DropEdge;
+  scope?: DropScope;
 };
 export default function App() {
   const [error, setError] = useState("");
@@ -65,24 +99,55 @@ export default function App() {
   } = useHarbor(noSessions, onError);
   const { hosts: orderedHosts, moveHost, moveBy } = useServerOrder(state.hosts);
   const { theme, setTheme } = useTheme();
+  const [typographyOpen, setTypographyOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<"terminal" | "ide">(
+    "terminal",
+  );
+  const [ideLoaded, setIdeLoaded] = useState(false);
+  const [ideHeight, setIdeHeight] = useState(72);
+  const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
+  const [ideChatOpen, setIdeChatOpen] = useState(true);
+  const workbenchRef = useRef<HTMLDivElement>(null);
   const { notices, push, read, sync } = useNotifications();
   const [page, setPage] = useState<"hosts" | "terminals" | "files">(
     "terminals",
   );
   const [activeId, setActiveId] = useState(() => {
     if (popoutId || initialFocusId) return popoutId || initialFocusId || "";
-    try { return sessionStorage.getItem("harbor.activeTerminal") || ""; }
-    catch { return ""; }
+    try {
+      return sessionStorage.getItem("harbor.activeTerminal") || "";
+    } catch {
+      return "";
+    }
   });
   const startupDone = useRef(false);
+  const startupTerminalId = useRef("");
+  const latestTerminals = useRef(state.terminals);
+  latestTerminals.current = state.terminals;
   const focusRequest = useRef(0);
   const hostTerminals = useRef(new Map<string, string>());
   const pendingSelection = useRef<string | null>(null);
   const [hostId, setHostId] = useState("");
-  const [sidebar, setSidebar] = useState<"servers" | "files" | "activity">(
-    "servers",
-  );
+  const [sidebar, setSidebar] = useState<
+    "servers" | "files" | "activity" | "research"
+  >("servers");
   const [inboxTab, setInboxTab] = useState<InboxTab>("requests");
+  const [researchId, setResearchId] = useState(() => {
+    try {
+      return localStorage.getItem("harbor.researchSelected") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [researchDetails, setResearchDetails] = useState(false);
+  const selectedResearch = state.researchLabs?.find((l) => l.id === researchId);
+  function selectResearch(id: string) {
+    setResearchId(id);
+    try {
+      localStorage.setItem("harbor.researchSelected", id);
+    } catch {}
+  }
   const [sidebarVisible, setSidebarVisible] = useState(!popoutId);
   const [query, setQuery] = useState("");
   const [editorId, setEditorId] = useState<string | null>(null);
@@ -93,9 +158,12 @@ export default function App() {
   const [filePath, setFilePath] = useState("");
   const [messageId, setMessageId] = useState<string | null>(null);
   const [opening, setOpening] = useState("");
+  const [endingTerminal, setEndingTerminal] = useState<TerminalInfo | null>(
+    null,
+  );
   const historyOpening = useRef(new Set<string>());
   const [historyPlacements, setHistoryPlacements] = useState<
-    Array<{ terminalId: string; targetTerminalId?: string; slot?: unknown }>
+    TerminalPlacement[]
   >([]);
   const active = state.terminals.find((item) => item.id === activeId);
   const detached = useDetachedTerminals();
@@ -103,19 +171,23 @@ export default function App() {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
     if (popoutId) return;
-    const available = state.terminals.filter(t => !t.exited && !detached.includes(t.id));
-    const selected = available.find(t => t.id === activeId) || available[0];
+    const available = state.terminals.filter(
+      (t) => !t.exited && !detached.includes(t.id),
+    );
+    const selected = available.find((t) => t.id === activeId) || available[0];
     if (selected) void focus(selected.id);
-    else if (!state.terminals.some(t => !t.exited)) {
-      const local = state.hosts.find(h => h.kind === "local");
-      if (local) void connect(local);
+    else if (!state.terminals.some((t) => !t.exited)) {
+      const local = state.hosts.find((h) => h.kind === "local");
+      if (local) void connect(local, true);
     }
   }, [ready, state.terminals, state.hosts, detached]);
   useEffect(() => {
     if (active) {
       hostTerminals.current.set(active.hostId, active.id);
       if (!popoutId) {
-        try { sessionStorage.setItem("harbor.activeTerminal", active.id); } catch {}
+        try {
+          sessionStorage.setItem("harbor.activeTerminal", active.id);
+        } catch {}
       }
     }
   }, [active?.id, active?.hostId]);
@@ -144,6 +216,10 @@ export default function App() {
   const seenMessages = useRef(new Set<string>());
   const initializedMessages = useRef(false);
   const seenRequests = useRef(new Set<string>());
+  const seenResearch = useRef(new Map<string, string>());
+  const researchAttention = (state.researchLabs || []).filter(
+    (l) => l.status === "needs-input" || (l.status === "paused" && l.attention),
+  ).length;
   const requestCount = (state.requests || []).filter(
     (request) => request.status === "pending",
   ).length;
@@ -166,7 +242,43 @@ export default function App() {
       seenRequests.current.add(request.id);
     }
   }, [ready, state.requests]);
+  useEffect(() => {
+    if (!ready) return;
+    for (const lab of state.researchLabs || []) {
+      const before = seenResearch.current.get(lab.id);
+      if (
+        before &&
+        before !== lab.status &&
+        ["completed", "needs-input", "paused"].includes(lab.status)
+      )
+        push({
+          id: `research-${lab.id}-${lab.updatedAt}`,
+          target: "terminal",
+          targetId: lab.participants[0].terminalId,
+          title: `${lab.title} · ${lab.status === "completed" ? "검토 완료" : "확인 필요"}`,
+          body:
+            lab.attention ||
+            "최종 결과가 상대 AI의 검토를 통과했습니다. 연구실에서 확인하세요.",
+        });
+      seenResearch.current.set(lab.id, lab.status);
+    }
+  }, [ready, state.researchLabs, push]);
+  async function showResearchPair(
+    lab: import("../shared/research").ResearchLab,
+  ) {
+    await dismissUnusedStartup(lab.participants[0].terminalId);
+    setPage("terminals");
+    setHistoryPlacements([
+      {
+        terminalId: lab.participants[0].terminalId,
+        ...(lab.participants.length === 2
+          ? { pairTerminalIds: lab.participants.map((p) => p.terminalId) }
+          : { layout: 1 as const }),
+      },
+    ]);
+  }
   function openInbox(tab: InboxTab, id?: string) {
+    setWorkspaceView("terminal");
     setSidebar("activity");
     setInboxTab(tab);
     if (id) setMessageId(id);
@@ -204,15 +316,21 @@ export default function App() {
         return;
       const key = `${detail.provider || "codex"}:${detail.hostId}:${detail.threadId}`;
       if (historyOpening.current.has(key)) return;
+      ++focusRequest.current;
       historyOpening.current.add(key);
       setError("");
       void (async () => {
         try {
           const terminal = await api<TerminalInfo>(
             `/hosts/${encodeURIComponent(detail.hostId)}/history/${encodeURIComponent(detail.threadId)}/resume`,
-            { provider: detail.provider || "codex", colors: terminalColors(theme) },
+            {
+              provider: detail.provider || "codex",
+              sshSessionMode: detail.sshSessionMode,
+              colors: terminalColors(theme),
+            },
           );
           if (!popoutId && !detached.includes(terminal.id)) {
+            await dismissUnusedStartup(terminal.id);
             // Placement owns focus: changing activeId first would replace the
             // currently focused pane before the requested drop target is known.
             setPage("terminals");
@@ -222,6 +340,8 @@ export default function App() {
                 terminalId: terminal.id,
                 targetTerminalId: detail.targetTerminalId,
                 slot: detail.slot,
+                edge: detail.edge,
+                scope: detail.scope,
               },
             ]);
           } else await created(terminal);
@@ -257,7 +377,8 @@ export default function App() {
     for (const message of messages) {
       if (
         !seenMessages.current.has(message.id) &&
-        initializedMessages.current
+        initializedMessages.current &&
+        !message.research
       ) {
         const targetId =
           message.recipient.terminalId || message.sender.terminalId;
@@ -322,9 +443,29 @@ export default function App() {
       if (input?.getClientRects().length) input.focus({ preventScroll: true });
     });
   }
+  async function dismissUnusedStartup(keepId: string) {
+    if (popoutId) return;
+    const ids = new Set(
+      latestTerminals.current
+        .filter((t) => t.startupPlaceholder && !t.exited)
+        .map((t) => t.id),
+    );
+    if (startupTerminalId.current) ids.add(startupTerminalId.current);
+    for (const id of ids) {
+      if (id !== keepId)
+        await api(
+          `/terminals/${encodeURIComponent(id)}/dismiss-startup`,
+          {},
+        ).catch((e) => onError((e as Error).message));
+    }
+  }
   async function created(terminal: TerminalInfo) {
     pendingSelection.current = null;
     const request = ++focusRequest.current;
+    if (!terminal.startupPlaceholder) {
+      await dismissUnusedStartup(terminal.id);
+      if (request !== focusRequest.current) return;
+    }
     hostTerminals.current.set(terminal.hostId, terminal.id);
     if (popoutId && terminal.id !== popoutId) {
       const moved = await focusTerminalWindow(terminal.id).catch(() => false);
@@ -345,6 +486,7 @@ export default function App() {
     setPage("terminals");
     setSidebar("servers");
     setEditorId(null);
+    if (workspaceView === "ide") setIdeTerminalOpen(true);
     activateTerminalInput(terminal.id, request);
   }
   function selectHost(id: string) {
@@ -370,21 +512,31 @@ export default function App() {
     setFilePath("");
     if (page !== "terminals") return;
     if (selected) void focus(selected.id);
-    else if (!popoutId) setNewTerminal({ hostId: id });
   }
-  async function connect(target: HostView) {
+  async function connect(target: HostView, startupPlaceholder = false) {
     if (opening) return;
     setOpening(target.id);
     setError("");
+    const selectionAtStart = focusRequest.current;
     try {
-      created(
-        await api<TerminalInfo>("/terminals", {
-          hostId: target.id,
-          cwd: target.defaultCwd,
-          program: "shell",
-          colors: terminalColors(theme),
-        }),
-      );
+      const terminal = await api<TerminalInfo>("/terminals", {
+        hostId: target.id,
+        cwd: target.defaultCwd,
+        program: "shell",
+        startupPlaceholder,
+        colors: terminalColors(theme),
+      });
+      if (startupPlaceholder) {
+        startupTerminalId.current = terminal.id;
+        if (selectionAtStart !== focusRequest.current) {
+          await api(
+            `/terminals/${encodeURIComponent(terminal.id)}/dismiss-startup`,
+            {},
+          );
+          return;
+        }
+      }
+      await created(terminal);
     } catch (err) {
       setError((err as Error).message);
       if (target.kind === "ssh") {
@@ -412,22 +564,27 @@ export default function App() {
   }
   const pending = (id: string) =>
     notices.filter((n) => n.targetId === id && !n.read).length;
+  const ideMode = page === "terminals" && workspaceView === "ide";
+  const ideTerminal = active?.hostId === host?.id ? active : undefined;
   return (
     <PreviewProvider
       hosts={orderedHosts}
       onFolder={(id, cwd) => files(id, cwd, true)}
     >
       <div
-        className={`harbor-app ${popoutId ? "is-popout" : ""} ${page === "terminals" ? "terminal-view" : ""}`}
+        className={`harbor-app ${popoutId ? "is-popout" : ""} ${page === "terminals" ? "terminal-view" : ""} ${ideMode ? "ide-view" : ""}`}
       >
-        {sidebarVisible && (
+        {sidebarVisible && !ideMode && (
           <ResizableSidebar
             className={`harbor-sidebar ${sidebar === "activity" ? "with-inbox" : ""}`}
           >
-            <button className="harbor-brand" onClick={() => navigate("terminals")}>
+            <button
+              className="harbor-brand"
+              onClick={() => navigate("terminals")}
+            >
               <img src="/harbor.svg" alt="" />
               <b>Harbor</b>
-              <span>workspace</span>
+              <span>v{version}</span>
             </button>
             <div className="harbor-side-switch">
               <button
@@ -455,8 +612,21 @@ export default function App() {
                   <b className="harbor-count">{requestCount}</b>
                 )}
               </button>
+              <button
+                className={sidebar === "research" ? "active" : ""}
+                onClick={() => {
+                  setSidebar("research");
+                  setPage("terminals");
+                }}
+              >
+                <FlaskConical size={15} />
+                연구실
+                {researchAttention > 0 && (
+                  <b className="harbor-count">{researchAttention}</b>
+                )}
+              </button>
             </div>
-            {sidebar !== "activity" && (
+            {sidebar !== "activity" && sidebar !== "research" && (
               <ConnectionOverview
                 state={state}
                 terminal={active}
@@ -505,26 +675,39 @@ export default function App() {
                       {state.terminals
                         .filter((t) => t.hostId === item.id)
                         .map((terminal) => (
-                          <button
+                          <div
                             key={terminal.id}
-                            className={`harbor-session-row ${activeId === terminal.id && page === "terminals" ? "active" : ""}`}
-                            onClick={() => focus(terminal.id)}
+                            className={`harbor-session-item ${activeId === terminal.id && page === "terminals" ? "active" : ""}`}
                           >
-                            <Terminal size={13} />
-                            <span>{terminal.title}</span>
-                            {pending(terminal.id) > 0 ? (
-                              <b className="harbor-count">
-                                {pending(terminal.id)}
-                              </b>
-                            ) : detached.includes(terminal.id) ? (
-                              <ExternalLink
-                                size={12}
-                                aria-label="별도 창에서 열림"
-                              />
-                            ) : (
-                              <small>{connectionLabel(terminal)}</small>
-                            )}
-                          </button>
+                            <button
+                              className="harbor-session-row"
+                              onClick={() => focus(terminal.id)}
+                            >
+                              <Terminal size={13} />
+                              <span>{terminal.title}</span>
+                              {pending(terminal.id) > 0 ? (
+                                <b className="harbor-count">
+                                  {pending(terminal.id)}
+                                </b>
+                              ) : detached.includes(terminal.id) ? (
+                                <ExternalLink
+                                  size={12}
+                                  aria-label="별도 창에서 열림"
+                                />
+                              ) : (
+                                <small>{connectionLabel(terminal)}</small>
+                              )}
+                            </button>
+                            <button
+                              className="icon-button compact harbor-session-close"
+                              aria-label={`서버 목록에서 터미널 종료: ${terminal.title}`}
+                              title="터미널 종료"
+                              disabled={!ready}
+                              onClick={() => setEndingTerminal(terminal)}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
                         ))}
                     </div>
                   ))}
@@ -539,18 +722,24 @@ export default function App() {
                     setPage("hosts");
                   }}
                 />
-                {claudeIntegration ? <CodexHistory
-                  provider="claude"
-                  hosts={orderedHosts}
-                  initialHostId={host?.id}
-                  onResume={created}
-                  onConnect={(h) => {
-                    setHostId(h.id);
-                    setEditorId(h.id);
-                    setPage("hosts");
-                  }}
-                />
-                : <p className="history-error">Claude 연동은 작업을 마친 뒤 Harbor를 완전히 재실행하면 사용할 수 있습니다.</p>}
+                {claudeIntegration ? (
+                  <CodexHistory
+                    provider="claude"
+                    hosts={orderedHosts}
+                    initialHostId={host?.id}
+                    onResume={created}
+                    onConnect={(h) => {
+                      setHostId(h.id);
+                      setEditorId(h.id);
+                      setPage("hosts");
+                    }}
+                  />
+                ) : (
+                  <p className="history-error">
+                    Claude 연동은 작업을 마친 뒤 Harbor를 완전히 재실행하면
+                    사용할 수 있습니다.
+                  </p>
+                )}
                 <div className="harbor-side-bottom">
                   <button
                     onClick={() => {
@@ -594,6 +783,28 @@ export default function App() {
                   }}
                 />
               </>
+            ) : sidebar === "research" ? (
+              <ResearchSidebar
+                state={state}
+                selectedId={researchId}
+                onSelect={selectResearch}
+                onOpen={focus}
+                onPair={showResearchPair}
+                onDetails={() => setResearchDetails(true)}
+                initialHostId={host?.id || ""}
+                initialTerminalId={active?.id}
+                initialCwd={
+                  (active?.hostId === host?.id ? active?.cwd : "") ||
+                  host?.defaultCwd ||
+                  "~"
+                }
+                onError={onError}
+                onCreated={(lab) => {
+                  selectResearch(lab.id);
+                  showResearchPair(lab);
+                  setResearchDetails(false);
+                }}
+              />
             ) : (
               <WorkspaceInbox
                 state={state}
@@ -618,50 +829,176 @@ export default function App() {
         )}
         <div className="harbor-main">
           <header className="harbor-topbar">
-            <button
-              className="icon-button sidebar-toggle"
-              aria-label={sidebarVisible ? "사이드바 접기" : "사이드바 펼치기"}
-              title={
-                sidebarVisible
-                  ? "사이드바 접기 · 터미널 넓게 보기"
-                  : "서버 · 파일 · 받은함 열기"
-              }
-              aria-expanded={sidebarVisible}
-              onClick={() => setSidebarVisible((value) => !value)}
-            >
-              {sidebarVisible ? (
-                <PanelLeftClose size={17} />
-              ) : (
-                <PanelLeftOpen size={17} />
-              )}
-            </button>
-            {popoutId ? (
-              <a href="/" target="_blank" className="harbor-back">
-                <ArrowLeft size={16} />
-                Harbor
-              </a>
-            ) : (
-              <div className="harbor-breadcrumb">
-                <span>
-                  {page === "hosts"
-                    ? "내 서버"
-                    : (page === "terminals"
-                        ? state.hosts.find((h) => h.id === active?.hostId)?.name
-                        : host?.name) ||
-                      host?.name ||
-                      "워크스페이스"}
+            {ideMode ? (
+              <div className="harbor-ide-context">
+                <span className="harbor-ide-brand" title="Harbor IDE">
+                  <img src="/harbor.svg" alt="" />
+                  <b>Harbor</b>
                 </span>
-                {page !== "hosts" && (
-                  <>
-                    <span>/</span>
-                    <b>
-                      {page === "files" ? "파일" : active?.title || "터미널"}
-                    </b>
-                  </>
+                <label className="harbor-ide-server">
+                  <Server size={14} />
+                  <select
+                    aria-label="IDE 서버"
+                    value={host?.id || ""}
+                    onChange={(event) => selectHost(event.target.value)}
+                  >
+                    {orderedHosts.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span className="harbor-ide-context-separator">/</span>
+                <select
+                  className="harbor-ide-session"
+                  aria-label="IDE 세션"
+                  value={ideTerminal?.id || ""}
+                  onChange={(event) => void focus(event.target.value)}
+                >
+                  {!ideTerminal && <option value="">열린 세션 선택</option>}
+                  {state.terminals
+                    .filter(
+                      (item) =>
+                        item.hostId === host?.id &&
+                        (item.id === popoutId || !detached.includes(item.id)),
+                    )
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title}
+                        {item.exited ? " · 종료됨" : ""}
+                      </option>
+                    ))}
+                </select>
+                {!popoutId && (
+                  <button
+                    className="icon-button compact"
+                    title="서버 관리"
+                    aria-label="IDE 서버 관리"
+                    onClick={() => {
+                      setEditorId(host?.id || null);
+                      setPage("hosts");
+                    }}
+                  >
+                    <Settings2 size={15} />
+                  </button>
                 )}
               </div>
+            ) : (
+              <>
+                <button
+                  className="icon-button sidebar-toggle"
+                  aria-label={
+                    sidebarVisible ? "사이드바 접기" : "사이드바 펼치기"
+                  }
+                  title={
+                    sidebarVisible
+                      ? "사이드바 접기 · 터미널 넓게 보기"
+                      : "서버 · 파일 · 받은함 열기"
+                  }
+                  aria-expanded={sidebarVisible}
+                  onClick={() => setSidebarVisible((value) => !value)}
+                >
+                  {sidebarVisible ? (
+                    <PanelLeftClose size={17} />
+                  ) : (
+                    <PanelLeftOpen size={17} />
+                  )}
+                </button>
+                {popoutId ? (
+                  <a href="/" target="_blank" className="harbor-back">
+                    <ArrowLeft size={16} />
+                    Harbor
+                  </a>
+                ) : (
+                  <div className="harbor-breadcrumb">
+                    <span>
+                      {page === "hosts"
+                        ? "내 서버"
+                        : (page === "terminals"
+                            ? state.hosts.find((h) => h.id === active?.hostId)
+                                ?.name
+                            : host?.name) ||
+                          host?.name ||
+                          "워크스페이스"}
+                    </span>
+                    {page !== "hosts" && (
+                      <>
+                        <span>/</span>
+                        <b>
+                          {page === "files"
+                            ? "파일"
+                            : active?.title || "터미널"}
+                        </b>
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
             )}
             <div className="harbor-top-actions">
+              {page === "terminals" && (
+                <div
+                  className="harbor-view-switch"
+                  role="group"
+                  aria-label="작업 보기"
+                >
+                  <button
+                    aria-pressed={workspaceView === "terminal"}
+                    onClick={() => setWorkspaceView("terminal")}
+                  >
+                    <Terminal size={14} />
+                    터미널
+                  </button>
+                  <button
+                    aria-pressed={workspaceView === "ide"}
+                    onClick={() => {
+                      setIdeLoaded(true);
+                      setWorkspaceView("ide");
+                    }}
+                  >
+                    <Code2 size={14} />
+                    IDE
+                  </button>
+                </div>
+              )}
+              {ideMode && (
+                <div
+                  className="harbor-ide-panel-actions"
+                  role="group"
+                  aria-label="IDE 패널"
+                >
+                  <button
+                    className="icon-button"
+                    aria-label={
+                      ideTerminalOpen ? "터미널 패널 접기" : "터미널 패널 열기"
+                    }
+                    title="터미널 패널"
+                    aria-pressed={ideTerminalOpen}
+                    onClick={() => setIdeTerminalOpen((value) => !value)}
+                  >
+                    <Terminal size={16} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    aria-label={
+                      ideChatOpen ? "AI 채팅 패널 접기" : "AI 채팅 패널 열기"
+                    }
+                    title="AI 채팅 패널"
+                    aria-pressed={ideChatOpen}
+                    onClick={() => setIdeChatOpen((value) => !value)}
+                  >
+                    {ideChatOpen ? (
+                      <PanelRightClose size={16} />
+                    ) : (
+                      <PanelRightOpen size={16} />
+                    )}
+                  </button>
+                </div>
+              )}
+              <Suspense fallback={null}>
+                <RemoteConnectButton />
+              </Suspense>
               <RuntimeUpdateNotice
                 ready={ready}
                 optimized={terminalInputOptimized && terminalReplayState}
@@ -683,12 +1020,30 @@ export default function App() {
               </select>
               <button
                 className="icon-button"
-                aria-label="메시지 기록"
-                title="세션 메시지 기록"
-                onClick={() => openInbox("messages", active?.id || "__all__")}
+                aria-label="글꼴·읽기 설정"
+                title="글꼴·읽기 설정"
+                onClick={() => setTypographyOpen(true)}
               >
-                <MessageSquare size={17} />
+                <Type size={17} />
               </button>
+              <button
+                className="icon-button"
+                aria-label="휴대폰 · 다른 PC 연결"
+                title="Tailscale 설치·로그인 · 기기 연결"
+                onClick={() => setMobileOpen(true)}
+              >
+                <Smartphone size={17} />
+              </button>
+              {!ideMode && (
+                <button
+                  className="icon-button"
+                  aria-label="메시지 기록"
+                  title="세션 메시지 기록"
+                  onClick={() => openInbox("messages", active?.id || "__all__")}
+                >
+                  <MessageSquare size={17} />
+                </button>
+              )}
               <button
                 className={`icon-button sidebar-alert-button ${unreadCount || requestCount ? "has-unread" : ""}`}
                 aria-label={`알림 ${unreadCount}개`}
@@ -713,6 +1068,7 @@ export default function App() {
               )}
             </div>
           </header>
+          <BackendStatus />
           {error && (
             <div className="harbor-error" role="alert">
               <span>{error}</span>
@@ -741,20 +1097,166 @@ export default function App() {
                   setQuery={setQuery}
                 />
               )}
-              <TerminalWorkspace
-                terminals={state.terminals}
-                hosts={orderedHosts}
-                activeId={activeId}
-                visible={page === "terminals"}
-                popoutId={popoutId}
-                ready={ready}
-                onFocus={focus}
-                terminalColorsSupported={terminalColorsSupported}
-                onNew={(id, cwd) => setNewTerminal({ hostId: id, cwd })}
-                onFiles={(id, cwd) => files(id, cwd)}
-                onError={onError}
-                onMessages={(id) => openInbox("messages", id)}
-              />
+              <div
+                className={`harbor-workbench ${ideMode ? "has-ide" : ""}`}
+                ref={workbenchRef}
+                hidden={page !== "terminals"}
+              >
+                <div
+                  className="harbor-ide-region"
+                  hidden={workspaceView !== "ide"}
+                  style={
+                    ideMode && ideTerminalOpen
+                      ? { flex: `0 0 ${ideHeight}%` }
+                      : undefined
+                  }
+                >
+                  {ideLoaded && (
+                    <IdeBoundary>
+                      <Suspense
+                        fallback={
+                          <div className="harbor-ide-loading">
+                            편집기를 불러오는 중…
+                          </div>
+                        }
+                      >
+                        <DesktopIdeView
+                          terminalId={ideTerminal?.id || ""}
+                          terminal={ideTerminal}
+                          hostId={host?.id || ""}
+                          hostLabel={host?.name}
+                          workspaceCwd={ideTerminal?.cwd}
+                          theme={theme}
+                          chatOpen={ideChatOpen}
+                          onShowTerminal={() => setIdeTerminalOpen(true)}
+                          onShowChat={() => setIdeChatOpen(true)}
+                          visible={
+                            page === "terminals" && workspaceView === "ide"
+                          }
+                          onFocusTerminal={(id) => {
+                            void focus(id);
+                          }}
+                        />
+                      </Suspense>
+                    </IdeBoundary>
+                  )}
+                </div>
+                {ideMode && ideTerminalOpen && (
+                  <div
+                    className="harbor-ide-divider"
+                    role="separator"
+                    aria-label="편집기와 터미널 크기 조절"
+                    aria-orientation="horizontal"
+                    aria-valuemin={35}
+                    aria-valuemax={85}
+                    aria-valuenow={Math.round(ideHeight)}
+                    tabIndex={0}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerMove={(event) => {
+                      if (
+                        !event.currentTarget.hasPointerCapture(event.pointerId)
+                      )
+                        return;
+                      const bounds =
+                        workbenchRef.current?.getBoundingClientRect();
+                      if (bounds?.height)
+                        setIdeHeight(
+                          Math.max(
+                            35,
+                            Math.min(
+                              85,
+                              ((event.clientY - bounds.top) / bounds.height) *
+                                100,
+                            ),
+                          ),
+                        );
+                    }}
+                    onPointerUp={(event) => {
+                      if (
+                        event.currentTarget.hasPointerCapture(event.pointerId)
+                      )
+                        event.currentTarget.releasePointerCapture(
+                          event.pointerId,
+                        );
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "ArrowUp" ||
+                        event.key === "ArrowDown"
+                      ) {
+                        event.preventDefault();
+                        setIdeHeight((height) =>
+                          Math.max(
+                            35,
+                            Math.min(
+                              85,
+                              height + (event.key === "ArrowUp" ? -5 : 5),
+                            ),
+                          ),
+                        );
+                      }
+                    }}
+                  />
+                )}
+                {ideMode && (
+                  <div className="harbor-ide-dock-heading">
+                    <button
+                      aria-expanded={ideTerminalOpen}
+                      aria-controls="harbor-terminal-dock"
+                      onClick={() => setIdeTerminalOpen((value) => !value)}
+                    >
+                      <Terminal size={14} />
+                      <span>터미널</span>
+                      {ideTerminalOpen ? (
+                        <ChevronDown size={14} />
+                      ) : (
+                        <ChevronUp size={14} />
+                      )}
+                    </button>
+                    <span title={active?.cwd}>
+                      {active?.title || "열린 터미널 없음"}
+                    </span>
+                    {!popoutId && (
+                      <button
+                        className="icon-button compact"
+                        aria-label="IDE 새 터미널"
+                        title="새 터미널"
+                        disabled={!ready}
+                        onClick={() => setNewTerminal({ hostId: host?.id })}
+                      >
+                        <Plus size={14} />
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div
+                  id="harbor-terminal-dock"
+                  className="harbor-terminal-dock"
+                  hidden={ideMode && !ideTerminalOpen}
+                >
+                  <TerminalWorkspace
+                    key="mounted-terminal-workspace"
+                    terminals={state.terminals}
+                    hosts={orderedHosts}
+                    activeId={activeId}
+                    visible={
+                      page === "terminals" && (!ideMode || ideTerminalOpen)
+                    }
+                    popoutId={popoutId}
+                    ready={ready}
+                    onFocus={focus}
+                    onCloseTerminal={setEndingTerminal}
+                    terminalColorsSupported={terminalColorsSupported}
+                    onNew={(id, cwd) => setNewTerminal({ hostId: id, cwd })}
+                    onFiles={(id, cwd) => files(id, cwd)}
+                    onError={onError}
+                    onMessages={(id) => openInbox("messages", id)}
+                  />
+                </div>
+              </div>
               {page === "files" && (
                 <FilesBrowser
                   key={`${host?.id}-${filePath}`}
@@ -770,6 +1272,16 @@ export default function App() {
                 />
               )}
             </div>
+            {!ideMode && researchDetails && selectedResearch && (
+              <ResearchDetails
+                key={selectedResearch.id}
+                lab={selectedResearch}
+                state={state}
+                onClose={() => setResearchDetails(false)}
+                onOpen={focus}
+                onError={onError}
+              />
+            )}
           </div>
           <footer className="harbor-statusbar">
             <span>
@@ -780,9 +1292,24 @@ export default function App() {
               }
               개 AI 연결
             </span>
-            <span>Ctrl+클릭 링크 열기 · 이미지 붙여넣기</span>
+            <span>
+              {ideMode
+                ? "IDE · Ctrl+S 저장 · 선택한 코드 인용"
+                : "Ctrl+클릭 링크 열기 · 이미지 붙여넣기"}
+            </span>
           </footer>
         </div>
+        {endingTerminal && (
+          <CloseTerminalDialog
+            terminal={endingTerminal}
+            onClose={() => setEndingTerminal(null)}
+            onError={onError}
+          />
+        )}
+        {mobileOpen && <MobileSettings onClose={() => setMobileOpen(false)} />}
+        {typographyOpen && (
+          <TypographySettingsDialog onClose={() => setTypographyOpen(false)} />
+        )}
         {newTerminal && (
           <NewTerminalDialog
             claudeIntegration={claudeIntegration}

@@ -18,7 +18,15 @@ import { api } from "./api";
 import { resolvePreviewBase } from "./previewPath";
 import { svgImageUrl } from "./svg-image";
 
-function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source?: ResourceLocation }) {
+function MarkdownImage({
+  src,
+  alt,
+  source,
+}: {
+  src: string;
+  alt?: string;
+  source?: ResourceLocation;
+}) {
   const open = usePreview();
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
@@ -26,42 +34,100 @@ function MarkdownImage({ src, alt, source }: { src: string; alt?: string; source
     let cancelled = false;
     const controller = new AbortController();
     let objectUrl = "";
-    setUrl(""); setError("");
+    setUrl("");
+    setError("");
     const link = classifyLink(src);
-    if (link.kind === "web") { setUrl(link.url); return; }
-    if (link.kind !== "file" || !source) { setError("이미지의 서버와 기준 폴더를 확인할 수 없습니다."); return; }
+    if (link.kind === "web") {
+      setUrl(link.url);
+      return;
+    }
+    if (link.kind !== "file" || !source) {
+      setError("이미지의 서버와 기준 폴더를 확인할 수 없습니다.");
+      return;
+    }
     void (async () => {
       const cwd = await resolvePreviewBase(source.hostId, source.cwd);
-      const result = await api<{ kind: string; path: string }>(`/hosts/${encodeURIComponent(source.hostId)}/files/preview?${new URLSearchParams({ path: link.path, cwd })}`, undefined, "GET");
+      const result = await api<{ kind: string; path: string }>(
+        `/hosts/${encodeURIComponent(source.hostId)}/files/preview?${new URLSearchParams({ path: link.path, cwd })}`,
+        undefined,
+        "GET",
+      );
       if (/\.svg$/i.test(result.path) && result.kind !== "directory") {
-        objectUrl = await svgImageUrl(source.hostId, result.path, controller.signal);
+        objectUrl = await svgImageUrl(
+          source.hostId,
+          result.path,
+          controller.signal,
+        );
         if (cancelled) URL.revokeObjectURL(objectUrl);
         else setUrl(objectUrl);
         return;
       }
-      if (result.kind !== "image") throw new Error("이미지로 미리볼 수 없는 파일입니다.");
+      if (result.kind !== "image")
+        throw new Error("이미지로 미리볼 수 없는 파일입니다.");
       if (!cancelled) setUrl(fileUrl(source.hostId, result.path, "image"));
-    })().catch(e => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    })().catch((e) => {
+      if (!cancelled) setError(e.message);
+    });
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [src, source?.hostId, source?.cwd]);
-  return <span className="markdown-inline-image">
-    {url && !error ? <img src={url} alt={alt || "이미지"} loading="lazy" referrerPolicy="no-referrer"
-      tabIndex={0} role="button" title="클릭하면 새 창으로 이미지 보기"
-      onClick={e => { e.stopPropagation(); open(src, source, true); }}
-      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); open(src, source, true); } }}
-      onError={() => setError("이미지를 불러오지 못했습니다.")} />
-      : <button className="markdown-image-link" onClick={() => open(src, source, true)}>
-          <Image size={20} /><span><b>{alt || "이미지"}</b><small>{error || "이미지 불러오는 중…"}</small></span><ExternalLink size={13} />
-        </button>}
-  </span>;
+  return (
+    <span
+      className="markdown-inline-image"
+      data-image-loading={!url && !error ? "true" : "false"}
+    >
+      {url && !error ? (
+        <img
+          src={url}
+          alt={alt || "이미지"}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          tabIndex={0}
+          role="button"
+          title="클릭하면 새 창으로 이미지 보기"
+          onClick={(e) => {
+            e.stopPropagation();
+            open(src, source, true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              open(src, source, true);
+            }
+          }}
+          onError={() => setError("이미지를 불러오지 못했습니다.")}
+        />
+      ) : (
+        <button
+          className="markdown-image-link"
+          onClick={() => open(src, source, true)}
+        >
+          <Image size={20} />
+          <span>
+            <b>{alt || "이미지"}</b>
+            <small>{error || "이미지 불러오는 중…"}</small>
+          </span>
+          <ExternalLink size={13} />
+        </button>
+      )}
+    </span>
+  );
 }
 
 export function Markdown({
   text,
   location,
+  onFileLink,
+  onAnchor,
 }: {
   text: string;
   location?: ResourceLocation;
+  onFileLink?: (href: string) => boolean;
+  onAnchor?: (anchor: string) => void;
 }) {
   const inherited = useContext(ResourceContext);
   const source = location || inherited;
@@ -83,7 +149,11 @@ export function Markdown({
           ],
         ]}
         urlTransform={(value) =>
-          classifyLink(value).kind === "blocked" ? "" : value
+          value.startsWith("#") && onAnchor
+            ? value
+            : classifyLink(value).kind === "blocked"
+              ? ""
+              : value
         }
         components={{
           pre: ({ node, children, ...props }) => {
@@ -110,6 +180,19 @@ export function Markdown({
             return <pre {...props}>{children}</pre>;
           },
           a: ({ href = "", children, ...props }) => {
+            if (href.startsWith("#") && onAnchor)
+              return (
+                <a
+                  {...props}
+                  href={href}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onAnchor(href.slice(1));
+                  }}
+                >
+                  {children}
+                </a>
+              );
             const link = classifyLink(href);
             if (link.kind === "blocked" || (link.kind === "file" && !source))
               return <span>{children}</span>;
@@ -122,6 +205,7 @@ export function Markdown({
                 }
                 onClick={(e) => {
                   e.preventDefault();
+                  if (link.kind === "file" && onFileLink?.(href)) return;
                   open(href, source);
                 }}
                 rel="noreferrer noopener"

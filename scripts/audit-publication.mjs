@@ -5,12 +5,22 @@ const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).spli
 if (!files.length) throw new Error('Stage the intended files before running the publication audit.');
 const roots = new Set(['.gitignore', '.gitattributes', 'README.md', 'AGENTS.md', 'CHANGELOG.md', 'docs/user-guide.md', 'docs/maintainer-guide.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'Setup-Harbor.cmd', 'Setup-Harbor.ps1', 'Update-Harbor.cmd', 'Update-Harbor.ps1', 'Start-Harbor.cmd', 'Start-Harbor-Desktop.ps1']);
 const scripts = new Set(['package-desktop.mjs', 'desktop-release.mjs', 'make-desktop-icons.mjs', 'harbor-image.py', 'audit-publication.mjs', 'set-version.mjs', 'create-desktop-shortcut.ps1', 'verify-claude-api.mjs', 'verify-inline-images.mjs', 'verify-installed-replay.mjs']);
+roots.add('docs/readability-and-session-plan.md');
+scripts.add('verify-selection-scroll.mjs');
+scripts.add('verify-native-selection.mjs');
+scripts.add('verify-view-recovery.mjs');
+roots.add('docs/shared-sessions-plan.md');
+roots.add('docs/mobile-and-orca-plan.md');
+roots.add('docs/mobile-guide.md');
+roots.add('mobile/index.html');
+roots.add('remote-desktop/index.html');
+roots.add('docs/desktop-ide-guide.md');
 const findings = [];
 for (const file of files) {
   const allowed = roots.has(file) || /^(src|desktop|public)\//.test(file) || (file.startsWith('scripts/') && scripts.has(file.slice(8)));
   if (!allowed || /(?:^|\/)(?:\.data|\.cache|\.runtime|artifacts|release|node_modules)(?:\/|$)/.test(file) || /\.(?:pem|key|jsonl|sqlite|db|log)$/i.test(file)) findings.push({file, reason:'File outside public source manifest'});
   const buffer = execFileSync('git', ['show', `:${file}`], { maxBuffer: 10 * 1024 * 1024 });
-  if (/\.(png|ico)$/.test(file)) continue;
+  if (/\.(png|ico|ttf|woff2)$/.test(file)) continue;
   const lines = buffer.toString('utf8').split(/\r?\n/);
   lines.forEach((line, index) => {
     const rules = [

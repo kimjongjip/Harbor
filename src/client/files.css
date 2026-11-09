@@ -33,14 +33,14 @@
   color: var(--muted);
 }
 .file-connection select {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   background: var(--panel);
   border-color: var(--border);
   padding: 7px 12px;
   max-width: 300px;
 }
 .file-transport {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   font-weight: 600;
   letter-spacing: 1px;
   color: var(--muted);
@@ -51,7 +51,7 @@
 .file-host-address {
   margin-left: auto;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .file-address {
   display: flex;
@@ -75,8 +75,8 @@
   border: 0;
   background: none;
   box-shadow: none !important;
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   flex: 1;
   min-width: 0;
   padding: 10px 0;
@@ -87,7 +87,7 @@
   align-items: center;
   gap: 16px;
   margin: 0 0 12px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--muted);
 }
 .file-tools > span {
@@ -102,7 +102,7 @@
   border: 0;
   background: none;
   box-shadow: none !important;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   padding: 6px 0;
   width: 180px;
 }
@@ -110,7 +110,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -151,7 +151,7 @@
   padding: 12px 20px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
 }
 .file-table-body {
@@ -162,7 +162,7 @@
 .file-row {
   padding: 11px 20px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   min-height: 46px;
   color: var(--text);
   cursor: default;
@@ -204,7 +204,7 @@
 }
 .file-size,
 .file-date {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -225,14 +225,14 @@
   gap: 20px;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   background: var(--panel);
 }
 .file-bottom button {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--text);
 }
 .file-drop-overlay {
@@ -259,12 +259,12 @@
   outline-offset: -2px;
 }
 .file-drop-overlay b {
-  font-size: 18px;
+  font-size: calc(var(--ui-font-size, 14px) * 18 / 12);
   font-weight: 500;
 }
 .file-drop-overlay > span {
-  font-family: "Cascadia Code", monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   color: var(--muted);
 }
 .file-list-empty {
@@ -279,12 +279,12 @@
   padding: 30px;
 }
 .file-list-empty h3 {
-  font-size: 16px;
+  font-size: calc(var(--ui-font-size, 14px) * 16 / 12);
   font-weight: 500;
   color: var(--text);
 }
 .file-list-empty p {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.8;
   text-align: center;
   color: var(--muted);
@@ -307,7 +307,7 @@
   justify-content: space-between;
   gap: 20px;
   padding: 14px 0;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   line-height: 1.7;
 }
@@ -328,7 +328,7 @@
 }
 .context-filename {
   padding: 6px 8px 10px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   text-overflow: ellipsis;
   overflow: hidden;
@@ -343,7 +343,7 @@
   padding: 9px;
   width: 100%;
   text-align: left;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--text);
   border-radius: 4px;
 }
@@ -362,7 +362,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 0 6px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--text);
 }
 .upload-panel header > span {
@@ -371,21 +371,21 @@
   gap: 7px;
 }
 .upload-panel header b {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   font-weight: 500;
 }
 .upload-panel header small {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   margin-left: 5px;
 }
 .upload-panel header > button {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--muted);
 }
 .upload-destination {
-  font-size: 10px;
-  font-family: "Cascadia Code", monospace;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
+  font-family: var(--font-mono);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -420,7 +420,7 @@
 }
 .upload-item b {
   display: block;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
@@ -428,12 +428,12 @@
   color: var(--text);
 }
 .upload-item > span:last-child {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   white-space: nowrap;
   color: var(--muted);
 }
 .upload-item p {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--text);
   margin-top: 5px;
   line-height: 1.7;
@@ -464,7 +464,7 @@
   border-radius: 7px;
   padding: 10px 16px;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   z-index: 9;
 }
 .attach-image-button {
@@ -507,7 +507,7 @@
   background: var(--bg);
 }
 .image-attachment > span {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -537,7 +537,7 @@
   align-items: center;
   justify-content: center;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   padding: 10px;
   pointer-events: none;
 }
@@ -551,7 +551,7 @@
   border-radius: 5px;
   padding: 8px 10px;
   margin-bottom: 8px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .permission-label {
   min-width: 0;
@@ -571,11 +571,11 @@
     padding-right: 16px;
   }
   .file-help {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
     gap: 12px;
   }
   .file-host-address {
-    font-size: 10px;
+    font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   }
 }
 @media (max-width: 760px) {
@@ -598,7 +598,7 @@
   }
   .file-connection select {
     max-width: 210px;
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   }
   .file-host-address {
     display: none;
@@ -607,7 +607,7 @@
     gap: 3px;
   }
   .file-address input {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   }
   .file-address > form {
     padding-left: 8px;
@@ -624,14 +624,14 @@
   }
   .file-search input {
     width: 135px;
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   }
   .hidden-files {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
     gap: 4px;
   }
   .file-tools > span {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   }
   .file-table-header,
   .file-row {
@@ -650,28 +650,28 @@
     gap: 8px;
   }
   .file-name > span {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   }
   .file-name svg {
     width: 16px;
   }
   .file-size {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   }
   .file-bottom {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
     padding: 9px 12px;
     flex-wrap: wrap;
     gap: 5px;
   }
   .file-bottom button {
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   }
   .file-help {
     align-items: flex-start;
     flex-direction: column;
     gap: 5px;
-    font-size: 9px;
+    font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   }
   .file-drop-area {
     min-height: 300px;
@@ -683,7 +683,7 @@
     max-height: 145px;
   }
   .upload-panel header b {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   }
   .image-attachment {
     width: 80px;

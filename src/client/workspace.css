@@ -17,7 +17,7 @@
   padding: 20px 2px 17px;
 }
 .terminal-workspace-heading .eyebrow {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   letter-spacing: 1.3px;
   margin-bottom: 6px;
   color: var(--muted);
@@ -26,21 +26,21 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 21px;
+  font-size: calc(var(--ui-font-size, 14px) * 21 / 12);
   font-weight: 650;
   letter-spacing: -0.7px;
 }
 .terminal-workspace-heading p {
   margin-top: 7px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-live-count {
   display: flex;
   gap: 7px;
   align-items: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   white-space: nowrap;
 }
 .terminal-workspace-toolbar {
@@ -66,7 +66,7 @@
 .terminal-workspace .terminal-tab button {
   color: var(--muted);
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-workspace .terminal-tab.active button {
   color: var(--text);
@@ -125,7 +125,7 @@
   gap: 10px;
 }
 .terminal-card-title b {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--text);
   white-space: nowrap;
   font-weight: 600;
@@ -134,10 +134,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .terminal-ended {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--red);
 }
 .terminal-card-body {
@@ -164,11 +164,11 @@
   background: var(--panel);
 }
 .terminal-add-pane b {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   font-weight: 500;
 }
 .terminal-add-pane span {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .terminal-workspace-caption {
   min-height: 34px;
@@ -177,7 +177,7 @@
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .terminal-workspace-caption code {
   color: var(--text);
@@ -203,11 +203,11 @@
   color: var(--text);
 }
 .terminal-welcome h2 {
-  font-size: 23px;
+  font-size: calc(var(--ui-font-size, 14px) * 23 / 12);
   font-weight: 600;
 }
 .terminal-welcome p {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   line-height: 1.9;
   color: var(--muted);
   max-width: 430px;
@@ -224,9 +224,9 @@
   gap: 11px;
 }
 .terminal-command-example {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   color: var(--text);
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   display: flex;
   gap: 18px;
   margin-top: 8px;
@@ -244,14 +244,14 @@
   margin: 15px 0;
 }
 .terminal-start-guide b {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   font-weight: 600;
 }
 .terminal-start-guide p {
   line-height: 1.8;
   margin-top: 7px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .directory-explorer {
   min-height: 160px;
@@ -269,7 +269,7 @@
   align-items: center;
   gap: 5px;
   padding: 10px 10px 5px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .explorer-header b {
   white-space: nowrap;
@@ -283,7 +283,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .explorer-path {
   display: flex;
@@ -294,7 +294,7 @@
 .explorer-path input {
   flex: 1;
   min-width: 0;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   padding: 6px;
   border-radius: 4px;
 }
@@ -311,7 +311,7 @@
   width: 100%;
   height: 28px;
   padding-right: 10px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--text);
 }
 .directory-row > span:last-child {
@@ -342,7 +342,7 @@
   padding: 7px 10px;
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .explorer-footer label,
 .explorer-footer button {
@@ -360,7 +360,7 @@
   margin: 0 8px;
   color: var(--red);
   background: var(--error-soft);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -380,7 +380,7 @@
   gap: 10px;
   padding: 24px 15px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   text-align: center;
 }
 .explorer-drop-overlay {
@@ -401,14 +401,14 @@
 .explorer-drop-overlay span {
   max-width: 90%;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .explorer-upload {
   display: flex;
   align-items: center;
   gap: 5px;
   padding: 6px 10px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--accent);
   overflow-wrap: anywhere;
 }
@@ -435,7 +435,7 @@
   width: 100%;
   padding: 10px;
   gap: 8px;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .directory-context-menu > *:hover {
   background: var(--panel);
@@ -459,7 +459,7 @@
   background: var(--warning-soft);
 }
 .notification-button b {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .notification-panel {
   position: absolute;
@@ -493,7 +493,7 @@
   color: var(--muted);
 }
 .notification-empty small {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.7;
 }
 .notification-list {
@@ -518,18 +518,18 @@
   align-items: center;
   gap: 12px;
   font-weight: 600;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .notification-item time {
   margin-left: auto;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   font-weight: 400;
   white-space: nowrap;
 }
 .notification-item p {
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   line-height: 1.7;
   padding: 6px 0;
   white-space: pre-wrap;
@@ -537,13 +537,13 @@
 }
 .notification-item small {
   color: var(--accent);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .terminal-notice-badge {
   background: var(--warning-soft);
   color: var(--warning);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   padding: 2px 5px;
 }
 .terminal-card.has-notice {
@@ -556,7 +556,7 @@
   display: flex;
   gap: 10px;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   flex-shrink: 0;
 }
 .terminal-attention > span {
@@ -590,10 +590,10 @@
     padding: 16px 2px;
   }
   .terminal-workspace-heading h1 {
-    font-size: 17px;
+    font-size: calc(var(--ui-font-size, 14px) * 17 / 12);
   }
   .terminal-workspace-heading p {
-    font-size: 10px;
+    font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   }
   .terminal-live-count {
     display: none;
@@ -613,6 +613,6 @@
     padding: 20px;
   }
   .terminal-welcome h2 {
-    font-size: 20px;
+    font-size: calc(var(--ui-font-size, 14px) * 20 / 12);
   }
 }

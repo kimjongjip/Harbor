@@ -1,4 +1,22 @@
 /* Keep the shell area tall without changing its font or the hosts gallery. */
+.new-terminal-dialog .modal,
+.new-terminal-dialog form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.new-terminal-dialog form {
+  flex: 1;
+}
+.new-terminal-dialog .modal-header,
+.new-terminal-dialog .modal-footer {
+  flex: none;
+}
+.new-terminal-dialog .modal-body {
+  min-height: 0;
+  overflow: auto;
+}
 .harbor-app .terminal-workspace.terminal-compact {
   padding: 0 5px;
 }
@@ -21,7 +39,7 @@
 .harbor-app .terminal-compact .terminal-tab > button {
   min-height: 25px;
   padding: 3px 9px;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-compact .layout-options {
   padding: 1px;
@@ -72,10 +90,10 @@
   padding: 6px 12px;
   background: var(--accent);
   color: white;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .terminal-layout-three {
-  font-size: 18px;
+  font-size: calc(var(--ui-font-size, 14px) * 18 / 12);
   line-height: 14px;
   font-weight: 700;
 }
@@ -215,6 +233,83 @@
 .terminal-compact .terminal-attention {
   padding: 4px 8px;
 }
+.harbor-app .terminal-compact .terminal-tree-grid {
+  display: block;
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+.terminal-tree-grid > .terminal-card {
+  position: absolute;
+  min-width: 0;
+  min-height: 0;
+}
+.terminal-tree-divider,
+.terminal-tree-junction {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+  user-select: none;
+}
+.terminal-tree-divider.column {
+  cursor: col-resize;
+}
+.terminal-tree-divider.row {
+  cursor: row-resize;
+}
+.terminal-tree-divider::after {
+  content: "";
+  position: absolute;
+  background: var(--border);
+  border-radius: 2px;
+}
+.terminal-tree-divider.column::after {
+  width: 2px;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+}
+.terminal-tree-divider.row::after {
+  height: 2px;
+  top: 2px;
+  left: 0;
+  right: 0;
+}
+.terminal-tree-divider:hover::after,
+.terminal-tree-divider:focus-visible::after {
+  background: var(--accent);
+}
+.terminal-tree-junction {
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: move;
+  z-index: 6;
+}
+.terminal-tree-grid[data-resizing] {
+  user-select: none;
+}
+.terminal-drop-preview {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  border: 3px solid var(--accent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.terminal-drop-preview span {
+  padding: 7px 12px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: white;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
+}
 /* A stable footer outside xterm never covers text or captures selection drags. */
 .terminal-instance.terminal-with-footer.active {
   display: flex;
@@ -238,7 +333,7 @@
   overflow: hidden;
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .terminal-footer-status {
   flex: 1 1 0;
@@ -260,7 +355,7 @@
   border-radius: 3px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   white-space: nowrap;
 }
 .terminal-footer-button:hover:not(:disabled) {

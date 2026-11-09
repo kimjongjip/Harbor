@@ -2,7 +2,7 @@
 
 작업 전에 [README](README.md), [사용자 안내](docs/user-guide.md), [개발·배포 절차](docs/maintainer-guide.md), [변경 이력](CHANGELOG.md)을 읽는다. 현재 배포 방식과 알려진 제약의 기준은 이 문서들이다.
 
-- 사용자 기본 화면은 터미널이다. 셸에서 Codex/Claude를 실행하며 별도 AI 채팅 화면으로 분리하지 않는다.
+- 기본 터미널 모드는 셸에서 Codex/Claude를 실행한다. 사용자가 선택하는 PC IDE 모드는 파일 탐색기·편집기·오른쪽 AI 대화·접을 수 있는 아래 터미널로 구성한다. 새 AI 대화는 Codex app-server 또는 Claude Agent SDK로 직접 전송하며 PTY 입력에 붙이지 않는다. 사용자가 보내기 전 새 AI 세션을 만들지 않는다. 이미 열린 CLI는 재실행하지 않고 같은 대화의 기록에 연결해 렌더링한다. 지원되는 Codex FIFO·Claude 채널로 같은 프로세스에 전송하고, 연결이 없으면 읽기와 기존 터미널 입력을 제공한다. 열린 CLI와 같은 네이티브 대화를 두 번째 엔진으로 실행하지 않는다. 모바일은 터미널 중심의 간단한 구성을 유지한다.
 - 기존 사용자 터미널에 테스트 입력을 보내거나 앱·백엔드를 강제 종료하지 않는다. 격리된 데이터 폴더·포트·합성 기록을 사용한다.
 - 공개 저장소는 `https://github.com/kimjongjip/Harbor.git`, 사용자 업데이트 기준은 `main`이다. main 반영은 사용자 배포와 연결되므로 검증 후 게시한다.
 - `.data`, `.cache`, `.runtime`, `artifacts`, 빌드·배포 폴더, 자격 증명, 실제 SSH 주소·로그·대화·첨부파일은 공개하지 않는다. `.gitignore`와 publication audit의 허용 목록을 함께 관리한다.

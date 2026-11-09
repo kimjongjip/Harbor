@@ -9,13 +9,17 @@ const {
   screen,
   globalShortcut,
   clipboard,
+  powerMonitor,
 } = require("electron");
 const { randomUUID } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { backendVersionError } = require("./backend-version.cjs");
+const { BackendSupervisor } = require("./backend-supervisor.cjs");
 
 app.setName("Harbor");
+if (process.platform === "win32") app.setAppUserModelId("org.harbor.workspace");
 if (process.env.HARBOR_DESKTOP_PROFILE)
   app.setPath("userData", path.resolve(process.env.HARBOR_DESKTOP_PROFILE));
 const port = Number(process.env.HARBOR_PORT || 4317);
@@ -40,6 +44,9 @@ let backend,
   quitting = false,
   shutdownStarted = false;
 const root = app.getAppPath();
+const expectedVersion = JSON.parse(
+  fs.readFileSync(path.join(root, "package.json"), "utf8"),
+).version;
 const project = app.isPackaged
   ? path.resolve(path.dirname(process.execPath), "../..")
   : root;
@@ -60,6 +67,24 @@ const dataDirectory = path.resolve(
       : path.join(app.getPath("userData"), "workspace")),
 );
 const iconPath = path.join(root, "desktop", "icon.png");
+// Lifecycle codes only; never include page URLs, commands or exception text.
+function recordLifecycle(event, details = {}) {
+  try {
+    fs.mkdirSync(dataDirectory, { recursive: true });
+    const file = path.join(dataDirectory, "desktop-events.jsonl");
+    try {
+      if (fs.statSync(file).size > 128 * 1024)
+        fs.writeFileSync(file, "", { mode: 0o600 });
+    } catch {}
+    fs.appendFileSync(
+      file,
+      JSON.stringify({ at: Date.now(), event, ...details }) + "\n",
+      { mode: 0o600 },
+    );
+  } catch {
+    /* Logging must not interrupt the app. */
+  }
+}
 const isAppPage = (value) => {
   try {
     const url = new URL(value);
@@ -73,6 +98,15 @@ const isAppPage = (value) => {
     return false;
   }
 };
+const backendSupervisor = new BackendSupervisor({
+  start: () => ensureBackend(),
+  onEvent: recordLifecycle,
+  onStatus: (status) => {
+    for (const win of windows)
+      if (!win.isDestroyed())
+        win.webContents.send("harbor:backend-state", status);
+  },
+});
 const isWebPage = (value) => {
   try {
     const url = new URL(value);
@@ -87,19 +121,34 @@ const isWebPage = (value) => {
     return false;
   }
 };
-async function healthy() {
+async function backendHealth() {
   try {
     const result = await fetch(`${origin}/api/health`, {
       signal: AbortSignal.timeout(1500),
     });
     const health = await result.json();
-    return result.ok && health.ok && health.name === "codex-harbor";
+    return result.ok && health.ok && health.name === "codex-harbor"
+      ? health
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
+async function healthy() {
+  const health = await backendHealth();
+  const error = backendVersionError(health, expectedVersion);
+  if (error) throw error;
+  return Boolean(health);
+}
 async function ensureBackend() {
-  if (await healthy()) return;
+  if (await healthy()) {
+    if (backend && (backend.exitCode !== null || backend.signalCode !== null))
+      backend = undefined;
+    return backend || null;
+  }
+  if (quitting) throw new Error("Harbor 종료 중입니다.");
+  if (backend && backend.exitCode === null && backend.signalCode === null)
+    throw new Error("실행 중인 연결 프로세스의 응답을 기다리고 있습니다.");
   fs.mkdirSync(dataDirectory, { recursive: true });
   const script = path.join(root, "dist", "server.mjs");
   if (!fs.existsSync(script))
@@ -148,14 +197,17 @@ async function ensureBackend() {
   backend.once("error", (error) => {
     spawnError = error;
   });
+  const child = backend;
+  backendSupervisor.watch(child);
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline) {
+    if (quitting) throw new Error("Harbor 종료 중입니다.");
     if (spawnError) throw spawnError;
-    if (backend.exitCode !== null)
+    if (child.exitCode !== null || child.signalCode !== null)
       throw new Error(
         `Harbor 연결 프로세스가 종료됐습니다. ${dataDirectory}의 로그를 확인하세요.`,
       );
-    if (await healthy()) return;
+    if (await healthy()) return child;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(
@@ -240,6 +292,24 @@ function createWindow(url = origin + "/", bounds) {
   // This only runs at creation, never when an existing window is focused.
   win.setBounds(initialBounds);
   const contentsId = win.webContents.id;
+  // A taskbar pin must follow this installation's launcher, rather than the
+  // version-specific EXE that happened to be running when it was pinned.
+  const launcher = path.join(project, "Start-Harbor-Desktop.ps1");
+  if (process.platform === "win32" && isProject && fs.existsSync(launcher)) {
+    const powershell = path.join(
+      process.env.SystemRoot || "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    win.setAppDetails({
+      appId: "org.harbor.workspace",
+      appIconPath: path.join(root, "desktop", "icon.ico"),
+      relaunchCommand: `"${powershell}" -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${launcher}"`,
+      relaunchDisplayName: "Harbor",
+    });
+  }
   windows.add(win);
   win.once("ready-to-show", () => {
     if (process.env.HARBOR_DESKTOP_HIDDEN !== "1") win.show();
@@ -285,7 +355,18 @@ function createWindow(url = origin + "/", bounds) {
     } else if (isWebPage(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
-  win.webContents.on("render-process-gone", () => {
+  win.on("unresponsive", () =>
+    recordLifecycle("window-unresponsive", { windowId: win.id }),
+  );
+  win.on("responsive", () =>
+    recordLifecycle("window-responsive", { windowId: win.id }),
+  );
+  win.webContents.on("render-process-gone", (_event, details) => {
+    recordLifecycle("renderer-exit", {
+      windowId: win.id,
+      reason: details.reason,
+      code: details.exitCode,
+    });
     cancelTabDrag(contentsId);
     if (!quitting)
       void dialog.showMessageBox(win, {
@@ -398,6 +479,14 @@ async function detachTerminalWindow(id, source, point) {
   }
 }
 function setupTerminalWindows() {
+  ipcMain.handle("harbor:backend-state", (event) => {
+    trustedWindow(event);
+    return backendSupervisor.status;
+  });
+  ipcMain.handle("harbor:backend-retry", (event) => {
+    trustedWindow(event);
+    return backendSupervisor.retry();
+  });
   ipcMain.handle("harbor:clipboard-write-text", (event, text) => {
     trustedWindow(event);
     if (typeof text !== "string" || text.length > 4 * 1024 * 1024)
@@ -527,6 +616,7 @@ function setupTerminalWindows() {
 function requestQuit() {
   if (quitting) return;
   quitting = true;
+  backendSupervisor.stop();
   setImmediate(() => app.quit());
 }
 function setupDesktop() {
@@ -655,6 +745,7 @@ function setupDesktop() {
 }
 app.on("before-quit", (event) => {
   quitting = true;
+  backendSupervisor.stop();
   for (const contentsId of [...tabDrags.keys()]) cancelTabDrag(contentsId);
   if (!backend) return;
   if (backend.exitCode !== null || backend.signalCode !== null) {
@@ -688,22 +779,35 @@ app.on("before-quit", (event) => {
   }, 3000);
 });
 app.on("window-all-closed", requestQuit);
-if (!app.requestSingleInstanceLock()) {
-  quitting = true;
-  app.quit();
-} else {
-  app.on("second-instance", showWorkspace);
-  app.on("activate", showWorkspace);
-  app
-    .whenReady()
-    .then(async () => {
-      await ensureBackend();
-      setupDesktop();
-      createWindow();
-    })
-    .catch((error) => {
-      dialog.showErrorBox("Harbor를 시작할 수 없습니다", error.message);
+app
+  .whenReady()
+  .then(async () => {
+    // Check before taking the single-instance lock: an older desktop would
+    // otherwise absorb this launch and silently focus its outdated window.
+    const error = backendVersionError(await backendHealth(), expectedVersion);
+    if (error) throw error;
+    if (!app.requestSingleInstanceLock()) {
       quitting = true;
       app.quit();
-    });
-}
+      return;
+    }
+    app.on("second-instance", showWorkspace);
+    app.on("activate", showWorkspace);
+    await ensureBackend();
+    setupDesktop();
+    backendSupervisor.activate();
+    for (const event of ["suspend", "resume"])
+      powerMonitor.on(event, () => {
+        if (backend?.connected)
+          backend.send(
+            { type: "harbor:power", event, at: Date.now() },
+            () => {},
+          );
+      });
+    createWindow();
+  })
+  .catch((error) => {
+    dialog.showErrorBox("Harbor를 시작할 수 없습니다", error.message);
+    quitting = true;
+    app.quit();
+  });

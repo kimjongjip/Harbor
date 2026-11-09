@@ -45,7 +45,17 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.2.1",
+    version: "1.15.4",
+    backendState: () => ipcRenderer.invoke("harbor:backend-state"),
+    onBackendState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on("harbor:backend-state", listener);
+      return () => ipcRenderer.removeListener("harbor:backend-state", listener);
+    },
+    retryBackend: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:backend-retry")
+        : Promise.resolve(null),
     writeClipboardText: (text) =>
       navigator.userActivation.isActive
         ? ipcRenderer.invoke("harbor:clipboard-write-text", text)

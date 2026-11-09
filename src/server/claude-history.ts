@@ -5,15 +5,17 @@ import type { SFTPWrapper, Client } from 'ssh2';
 import type { HostConfig, MessageItem } from '../shared/types.js';
 import type { HistoryThread, HistoryPage, HistoryDetail } from '../shared/history.js';
 import { passwordConnection } from './ssh-connect.js';
+import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCursor, readClaudeRecordsBackwards } from './claude-history-pages.js';
 
-const SAMPLE = 64 * 1024, MAX_DETAIL = 16 * 1024 * 1024;
+const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
 const call = <T>(fn: (cb: (e: Error | null | undefined, value: T) => void) => void) => new Promise<T>((resolve, reject) => fn((e, v) => e ? reject(e) : resolve(v)));
 export interface ClaudeHistoryReader {
   root: string;
   join(...parts: string[]): string;
   entries(directory: string): Promise<{ name: string; directory: boolean; size: number; modified: number }[]>;
-  read(file: string, start: number, length: number): Promise<string>;
+  stat?(file: string): Promise<{ directory: boolean; size: number; modified: number }>;
+  read(file: string, start: number, length: number): Promise<string | Buffer>;
   close(): void;
 }
 async function connect(host: HostConfig, password?: string): Promise<ClaudeHistoryReader> {
@@ -21,7 +23,8 @@ async function connect(host: HostConfig, password?: string): Promise<ClaudeHisto
     root: path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'), 'projects'),
     join: path.join,
     async entries(dir) { return Promise.all((await fs.readdir(dir, { withFileTypes: true })).map(async d => { const s = await fs.stat(path.join(dir, d.name)); return { name: d.name, directory: d.isDirectory(), size: s.size, modified: s.mtimeMs }; })); },
-    async read(file, start, length) { const handle = await fs.open(file, 'r'); try { const b = Buffer.alloc(length); const { bytesRead } = await handle.read(b, 0, length, start); return b.subarray(0, bytesRead).toString('utf8'); } finally { await handle.close(); } },
+    async stat(file) { const s = await fs.stat(file); return { directory: !s.isFile(), size: s.size, modified: s.mtimeMs }; },
+    async read(file, start, length) { const handle = await fs.open(file, 'r'); try { const b = Buffer.alloc(length); const { bytesRead } = await handle.read(b, 0, length, start); return b.subarray(0, bytesRead); } finally { await handle.close(); } },
     close() {},
   };
   const connection = await passwordConnection(host, password);
@@ -31,7 +34,8 @@ async function connect(host: HostConfig, password?: string): Promise<ClaudeHisto
     return {
       root: path.posix.join(root, 'projects'), join: path.posix.join,
       async entries(dir) { return (await call<any[]>(cb => sftp.readdir(dir, cb))).map(d => ({ name: d.filename, directory: d.attrs.isDirectory(), size: d.attrs.size, modified: d.attrs.mtime * 1000 })); },
-      async read(file, start, length) { const h = await call<Buffer>(cb => sftp.open(file, 'r', cb)); try { const b = Buffer.alloc(length); let count = 0; while (count < length) { const n = await call<number>(cb => sftp.read(h, b, count, Math.min(32768, length - count), start + count, (e, bytes) => cb(e, bytes))); if (!n) break; count += n; } return b.subarray(0, count).toString('utf8'); } finally { await call<void>(cb => sftp.close(h, cb)); } },
+      async stat(file) { const s = await call<import('ssh2').Stats>(cb => sftp.stat(file, cb)); return { directory: !s.isFile(), size: s.size, modified: s.mtime * 1000 }; },
+      async read(file, start, length) { const h = await call<Buffer>(cb => sftp.open(file, 'r', cb)); try { const b = Buffer.alloc(length); let count = 0; while (count < length) { const n = await call<number>(cb => sftp.read(h, b, count, Math.min(32768, length - count), start + count, (e, bytes) => cb(e, bytes))); if (!n) break; count += n; } return b.subarray(0, count); } finally { await call<void>(cb => sftp.close(h, cb)); } },
       close() { connection.end(); },
     };
   } catch (e) { connection.end(); throw e; }
@@ -53,8 +57,20 @@ function messageText(row: any): string {
   const content = row.message?.content;
   return typeof content === 'string' ? content : Array.isArray(content) ? content.filter(p => p?.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n') : '';
 }
-function titlePrompt(row: any): { text: string; command: boolean } {
+function ideUserInput(row: any): { requestId: string; text: string } | undefined {
+  if (row.type !== 'user') return;
   const text = messageText(row).trim();
+  const channel = text.match(/^<channel(?:\s[^>]*)?>([\s\S]*)<\/channel>$/);
+  try {
+    const value = JSON.parse(channel ? channel[1] : text);
+    if (value?.userInput?.version === 1 && value?.sender?.kind === 'user' &&
+      typeof value.userInput.requestId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value.userInput.requestId) &&
+      typeof value.text === 'string' && value.text.trim() && value.text.length <= 16000)
+      return { requestId: value.userInput.requestId, text: value.text };
+  } catch { /* Ordinary transcript content is not a channel envelope. */ }
+}
+function titlePrompt(row: any): { text: string; command: boolean } {
+  const text = (ideUserInput(row)?.text || messageText(row)).trim();
   if (row.isCompactSummary || /^<local-command-(?:caveat|stdout|stderr)>/.test(text)) return { text: '', command: false };
   const command = text.match(/<command-name>([\s\S]*?)<\/command-name>/)?.[1]?.trim();
   if (command) {
@@ -68,7 +84,7 @@ export function parseClaudeHistory(hostId: string, id: string, text: string, mod
   const deduplicated = new Map<string, any>();
   let anonymous = 0;
   for (const row of rows) deduplicated.set(typeof row.uuid === 'string' ? row.uuid : `anonymous-${anonymous++}`, row);
-  const visible = [...deduplicated.values()].filter(r => !r.isSidechain && !r.isMeta && ['user', 'assistant'].includes(r.type) && messageText(r));
+  const visible = [...deduplicated.values()].filter(r => !r.isSidechain && (!r.isMeta || ideUserInput(r)) && ['user', 'assistant'].includes(r.type) && messageText(r));
   const metadata = (type: string, field: string) => {
     const value = rows.filter(r => !r.isSidechain && r.type === type && typeof r[field] === 'string').at(-1)?.[field];
     return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
@@ -79,10 +95,24 @@ export function parseClaudeHistory(hostId: string, id: string, text: string, mod
   const title = metadata('agent-name', 'agentName') || metadata('custom-title', 'customTitle') || metadata('ai-title', 'aiTitle') || metadata('summary', 'summary') || preview || 'Claude 대화';
   return {
     thread: { id, hostId, provider: 'claude', title: title.slice(0, 180), cwd: rows.find(r => typeof r.cwd === 'string')?.cwd || '', preview, updatedAt: modified, source: 'claude', active: false },
-    items: visible.map((r, i) => ({ id: String(r.uuid || `${id}-${i}`), kind: r.type, text: messageText(r), imageCount: Array.isArray(r.message?.content) ? r.message.content.filter((p: any) => p?.type === 'image').length : 0 } as MessageItem)), nextCursor: null,
+    items: visible.map((r, i) => {
+      const input = ideUserInput(r);
+      return { id: input ? `harbor-ide-user:${input.requestId}` : String(r.uuid || `${id}-${i}`), kind: r.type, text: input?.text || messageText(r), imageCount: Array.isArray(r.message?.content) ? r.message.content.filter((p: any) => p?.type === 'image').length : 0 } as MessageItem;
+    }), nextCursor: null,
   };
 }
-type Entry = { file: string; size: number; thread: HistoryThread };
+const titleFields = { 'agent-name': 'agentName', 'custom-title': 'customTitle', 'ai-title': 'aiTitle', summary: 'summary' } as const;
+type Titles = Partial<Record<keyof typeof titleFields, string>>;
+function titleValues(text: string, id: string): Titles {
+  const titles: Titles = {};
+  for (const row of records(text)) {
+    if (row.isSidechain || (row.sessionId && row.sessionId !== id)) continue;
+    const field = titleFields[row.type as keyof Titles];
+    if (field && typeof row[field] === 'string') titles[row.type as keyof Titles] = row[field].replace(/\s+/g, ' ').trim().slice(0, 180);
+  }
+  return titles;
+}
+type Entry = { file: string; size: number; thread: HistoryThread; titles: Titles };
 export class ClaudeHistory {
   private active = new Map<ClaudeHistoryReader, string>();
   private stopped = false;
@@ -115,9 +145,10 @@ export class ClaudeHistory {
           if (!this.active.has(reader)) throw new Error('Claude history connection is closed.');
           const full = reader.join(base, file.name);
           const head = await reader.read(full, 0, Math.min(SAMPLE, file.size));
-          if (records(head).some(r => r.isSidechain)) return null;
+          if (records(head.toString()).some(r => r.isSidechain)) return null;
           const tail = file.size > SAMPLE ? await reader.read(full, Math.max(SAMPLE, file.size - SAMPLE), Math.min(SAMPLE, file.size - SAMPLE)) : '';
-          return { file: full, size: file.size, thread: parseClaudeHistory(hostId, file.name.slice(0, -6), head + '\n' + tail, file.modified).thread };
+          const sample = head + '\n' + tail, id = file.name.slice(0, -6);
+          return { file: full, size: file.size, thread: parseClaudeHistory(hostId, id, sample, file.modified).thread, titles: titleValues(sample, id) };
         }));
         for (const entry of batch) if (entry) result.push(entry);
       }
@@ -133,7 +164,60 @@ export class ClaudeHistory {
   private offset(cursor?: string) { if (cursor && !/^\d{1,8}$/.test(cursor)) throw new Error('잘못된 Claude 기록 페이지입니다.'); return Number(cursor || 0); }
   async read(host: HostConfig, password: string | undefined, id: string, cursor?: string): Promise<HistoryDetail> {
     if (!validId(id)) throw new Error('잘못된 Claude 세션 ID입니다.');
-    return this.using(host, password, async r => { const entry = (await this.catalog(r, host.id)).find(e => e.thread.id === id); if (!entry) throw new Error('Claude 대화 기록을 찾을 수 없습니다.'); if (entry.size > MAX_DETAIL) throw new Error('이 Claude 기록은 16 MB를 초과합니다. 터미널에서 이어서 확인하세요.'); const detail = parseClaudeHistory(host.id, id, await r.read(entry.file, 0, entry.size), entry.thread.updatedAt); const offset = this.offset(cursor), end = Math.max(0, detail.items.length - offset), start = Math.max(0, end - 50); return { ...detail, items: detail.items.slice(start, end), nextCursor: start > 0 ? String(offset + 50) : null }; });
+    const page = decodeClaudePageCursor(cursor);
+    return this.using(host, password, async r => {
+      const entry = (await this.catalog(r, host.id)).find(e => e.thread.id === id);
+      if (!entry) throw new Error('Claude 대화 기록을 찾을 수 없습니다.');
+      // The catalog may be cached, but an attached CLI appends to its transcript
+      // continuously. Stat only this file so refresh sees new messages without
+      // scanning every project again. Also honor truncation/replacement.
+      const current = r.stat ? await r.stat(entry.file) : { directory: false, size: entry.size, modified: entry.thread.updatedAt };
+      if (current.directory || !Number.isSafeInteger(current.size) || current.size < 0) throw new Error('Claude 대화 기록 파일을 읽을 수 없습니다.');
+      const alive = () => { if (!this.active.has(r)) throw new Error('Claude history connection is closed.'); };
+      const read = async (start: number, length: number) => { alive(); const bytes = await r.read(entry.file, start, length); alive(); return bytes; };
+      const snapshot = typeof page === 'number' ? { at: current.size, size: current.size, modified: current.modified, skip: false, remaining: page } : page;
+      const changed = () => new Error('Claude 기록 파일이 변경됐습니다. 새로고침해 주세요.');
+      if (current.size < snapshot.size || (current.size === snapshot.size && current.modified !== snapshot.modified)) throw changed();
+      const fingerprint = await claudeHistoryFingerprint(read, snapshot.size, `${host.id}\0${id}\0${entry.file}`);
+      if (typeof page !== 'number' && fingerprint !== page.fingerprint) throw changed();
+
+      // The catalog stays cached, but titles/cwd may have changed in an active
+      // transcript. Refresh just its bounded head/tail sample, never the file.
+      let thread = entry.thread, titles = entry.titles;
+      if (current.size !== entry.size || current.modified !== entry.thread.updatedAt) {
+        const head = await read(0, Math.min(SAMPLE, current.size));
+        const tail = current.size > SAMPLE ? await read(Math.max(SAMPLE, current.size - SAMPLE), Math.min(SAMPLE, current.size - SAMPLE)) : '';
+        const sample = head + '\n' + tail;
+        thread = parseClaudeHistory(host.id, id, sample, current.modified).thread;
+        titles = titleValues(sample, id);
+      }
+      const items: MessageItem[] = [], seen = new Set<string>(), latestTitles: Titles = {};
+      let remaining = snapshot.remaining, fallbackCwd = '';
+      const scanned = await readClaudeRecordsBackwards(read, snapshot.at, snapshot.skip, alive, (line, start) => {
+        let row: any; try { row = JSON.parse(line.toString('utf8')); } catch { return false; }
+        if (!row || typeof row !== 'object' || Array.isArray(row) || (row.sessionId && row.sessionId !== id)) return false;
+        if (!row.isSidechain) {
+          const field = titleFields[row.type as keyof Titles];
+          if (field && latestTitles[row.type as keyof Titles] === undefined && typeof row[field] === 'string') latestTitles[row.type as keyof Titles] = row[field].replace(/\s+/g, ' ').trim().slice(0, 180);
+          if (typeof row.cwd === 'string') fallbackCwd = row.cwd;
+        }
+        if (typeof row.uuid === 'string') { if (seen.has(row.uuid)) return false; seen.add(row.uuid); }
+        const input = ideUserInput(row);
+        if (row.isSidechain || (row.isMeta && !input) || !['user', 'assistant'].includes(row.type) || !messageText(row)) return false;
+        if (remaining > 0) { remaining--; return false; }
+        items.push({ id: input ? `harbor-ide-user:${input.requestId}` : typeof row.uuid === 'string' ? row.uuid : `${id}-byte-${start}`, kind: row.type, text: input?.text || messageText(row), imageCount: Array.isArray(row.message?.content) ? row.message.content.filter((part: any) => part?.type === 'image').length : 0 });
+        return items.length >= 50;
+      });
+      const after = r.stat ? await r.stat(entry.file) : current;
+      if (after.directory || after.size < snapshot.size || (after.size === snapshot.size && after.modified !== snapshot.modified) || await claudeHistoryFingerprint(read, snapshot.size, `${host.id}\0${id}\0${entry.file}`) !== fingerprint) throw changed();
+      const combined = snapshot.at === snapshot.size ? { ...titles, ...latestTitles } : { ...latestTitles, ...titles };
+      return {
+        thread: { ...thread, updatedAt: current.modified, cwd: thread.cwd || fallbackCwd, title: Object.keys(titleFields).map(type => combined[type as keyof Titles]).find(Boolean) || thread.title },
+        items: items.reverse(),
+        nextCursor: scanned.at > 0 ? encodeClaudePageCursor({ at: scanned.at, size: snapshot.size, modified: snapshot.modified, fingerprint, skip: scanned.skip, remaining }) : null,
+        ...(scanned.oversized ? { notice: '8 MB를 넘는 개별 기록 항목은 표시하지 않았습니다. 원본 파일은 유지되며 이전 대화를 계속 불러올 수 있습니다.' } : {}),
+      };
+    });
   }
   async summary(host: HostConfig, password: string | undefined, id: string): Promise<HistoryThread> { if (!validId(id)) throw new Error('Invalid Claude session ID.'); return this.using(host, password, async r => { const entry = (await this.catalog(r, host.id)).find(e => e.thread.id === id); if (!entry) throw new Error('Claude 대화 기록을 찾을 수 없습니다.'); return entry.thread; }); }
   close(hostId: string) {

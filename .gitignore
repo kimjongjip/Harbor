@@ -9,6 +9,17 @@
 /docs/*
 !/docs/user-guide.md
 !/docs/maintainer-guide.md
+!/docs/readability-and-session-plan.md
+!/docs/shared-sessions-plan.md
+!/docs/mobile-and-orca-plan.md
+!/docs/mobile-guide.md
+!/docs/desktop-ide-guide.md
+!/remote-desktop/
+/remote-desktop/*
+!/remote-desktop/index.html
+!/mobile/
+/mobile/*
+!/mobile/index.html
 !/package.json
 !/package-lock.json
 !/tsconfig.json
@@ -35,6 +46,9 @@
 !/scripts/verify-claude-api.mjs
 !/scripts/verify-inline-images.mjs
 !/scripts/verify-installed-replay.mjs
+!/scripts/verify-selection-scroll.mjs
+!/scripts/verify-native-selection.mjs
+!/scripts/verify-view-recovery.mjs
 **/node_modules/
 **/.env
 **/.env.*

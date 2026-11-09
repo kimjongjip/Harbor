@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronRight,
+  Columns2,
   Folder,
   History as HistoryIcon,
   LoaderCircle,
@@ -17,6 +18,7 @@ import type {
 } from "../shared/history";
 import { api } from "./api";
 import { Markdown } from "./RichMarkdown";
+import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import { Modal } from "./Dialogs";
 import { useTheme, terminalColors } from "./Theme";
 import "./history.css";
@@ -38,7 +40,9 @@ export default function CodexHistory({
   const { theme } = useTheme();
   const [expanded, setExpanded] = useState(() => {
     try {
-      return localStorage.getItem(`harbor-history-expanded-${provider}`) === "true";
+      return (
+        localStorage.getItem(`harbor-history-expanded-${provider}`) === "true"
+      );
     } catch {
       return false;
     }
@@ -47,12 +51,19 @@ export default function CodexHistory({
   const loadedKey = useRef<string | null>(null);
   useEffect(() => {
     try {
-      localStorage.setItem(`harbor-history-expanded-${provider}`, String(expanded));
+      localStorage.setItem(
+        `harbor-history-expanded-${provider}`,
+        String(expanded),
+      );
     } catch {
       // The toggle remains usable when browser storage is unavailable.
     }
   }, [expanded]);
   const [hostId, setHostId] = useState(initialHostId || "all");
+  const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
+    "direct",
+  );
+  useEffect(() => setSshSessionMode("direct"), [hostId, provider]);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [automation, setAutomation] = useState(false);
@@ -64,6 +75,7 @@ export default function CodexHistory({
   const [selected, setSelected] = useState<HistoryThread | null>(null);
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [detailError, setDetailError] = useState("");
+  const [historyPaused, setHistoryPaused] = useState(false);
   const [reading, setReading] = useState(false);
   const [resuming, setResuming] = useState(false);
   const generation = useRef(0),
@@ -154,6 +166,7 @@ export default function CodexHistory({
     setDetail(null);
     setDetailError("");
     setReading(false);
+    setHistoryPaused(false);
     return () => {
       generation.current++;
     };
@@ -172,7 +185,12 @@ export default function CodexHistory({
     setSelected(thread);
     setReading(true);
     setDetailError("");
-    if (!more) setDetail(null);
+    setHistoryPaused(false);
+    if (
+      !more &&
+      (selected?.id !== thread.id || selected?.hostId !== thread.hostId)
+    )
+      setDetail(null);
     try {
       const result = await api<HistoryDetail>(
         `/hosts/${thread.hostId}/history/${thread.id}?${new URLSearchParams({ provider, ...(more && detail?.nextCursor ? { cursor: detail.nextCursor } : {}) })}`,
@@ -184,6 +202,7 @@ export default function CodexHistory({
         more && prev
           ? {
               ...result,
+              notice: result.notice || prev.notice,
               items: [
                 ...new Map(
                   [...result.items, ...prev.items].map((item) => [
@@ -196,13 +215,46 @@ export default function CodexHistory({
           : result,
       );
     } catch (error) {
-      if (readingGeneration.current === current)
-        setDetailError((error as Error).message);
+      if (readingGeneration.current === current) {
+        if (isLegacyClaudeHistoryLimit(error)) setHistoryPaused(true);
+        else setDetailError((error as Error).message);
+      }
     } finally {
       if (readingGeneration.current === current) setReading(false);
     }
   }
   const selectedHost = hosts.find((h) => h.id === selected?.hostId);
+  function resumeMode(thread: HistoryThread) {
+    return hosts.find((host) => host.id === thread.hostId)?.kind === "ssh"
+      ? sshSessionMode
+      : undefined;
+  }
+  function modeSelector(preview = false) {
+    return (
+      <label
+        className={`history-resume-mode ${preview ? "in-preview" : ""}`}
+        title="옆에 열기·드래그에도 적용됩니다. 이미 열린 대화는 기존 연결을 유지합니다."
+      >
+        <span>{preview ? "이어갈 SSH 방식" : "SSH 방식"}</span>
+        <select
+          aria-label="이어갈 SSH 방식"
+          value={sshSessionMode}
+          disabled={resuming}
+          onChange={(event) =>
+            setSshSessionMode(event.target.value as "direct" | "tmux")
+          }
+        >
+          <option value="direct">일반 SSH (기본)</option>
+          <option value="tmux">서버에서 세션 유지 (tmux)</option>
+        </select>
+        {preview && (
+          <small>
+            이미 열린 대화는 기존 터미널로 이동하며 연결 방식도 유지합니다.
+          </small>
+        )}
+      </label>
+    );
+  }
   function closePreview() {
     readingGeneration.current++;
     setSelected(null);
@@ -261,27 +313,35 @@ export default function CodexHistory({
               </option>
             ))}
           </select>
-          {provider === "codex" && <details className="history-advanced">
-            <summary>필터{automation || archived ? " · 적용 중" : ""}</summary>
-            <div>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={automation}
-                  onChange={(e) => setAutomation(e.target.checked)}
-                />
-                자동화 기록 포함
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={archived}
-                  onChange={(e) => setArchived(e.target.checked)}
-                />
-                보관된 대화
-              </label>
-            </div>
-          </details>}
+          {hosts.some(
+            (host) =>
+              host.kind === "ssh" && (hostId === "all" || host.id === hostId),
+          ) && modeSelector()}
+          {provider === "codex" && (
+            <details className="history-advanced">
+              <summary>
+                필터{automation || archived ? " · 적용 중" : ""}
+              </summary>
+              <div>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={automation}
+                    onChange={(e) => setAutomation(e.target.checked)}
+                  />
+                  자동화 기록 포함
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={archived}
+                    onChange={(e) => setArchived(e.target.checked)}
+                  />
+                  보관된 대화
+                </label>
+              </div>
+            </details>
+          )}
         </div>
         <div className="history-list" aria-label="모든 프로젝트 대화 목록">
           {Object.entries(errors).map(([id, error]) => (
@@ -299,7 +359,7 @@ export default function CodexHistory({
             </div>
           ))}
           {threads.map((thread) => (
-            <button
+            <div
               className={`history-row ${selected?.id === thread.id && selected.hostId === thread.hostId ? "selected" : ""}`}
               key={`${thread.hostId}:${thread.id}`}
               draggable={!archived}
@@ -320,23 +380,51 @@ export default function CodexHistory({
                     hostId: thread.hostId,
                     threadId: thread.id,
                     provider,
+                    sshSessionMode: resumeMode(thread),
                   }),
                 );
               }}
-              onClick={() => void read(thread)}
             >
-              <b>{thread.title}</b>
-              <span className="history-row-folder" title={thread.cwd}>
-                <Folder size={12} />
-                <span>{thread.cwd || "폴더 정보 없음"}</span>
-              </span>
-              <span className="history-row-meta">
-                <span>{hosts.find((h) => h.id === thread.hostId)?.name}</span>
-                <time>
-                  {new Date(thread.updatedAt).toLocaleDateString("ko-KR")}
-                </time>
-              </span>
-            </button>
+              <button
+                className="history-row-main"
+                onClick={() => void read(thread)}
+              >
+                <b>{thread.title}</b>
+                <span className="history-row-folder" title={thread.cwd}>
+                  <Folder size={12} />
+                  <span>{thread.cwd || "폴더 정보 없음"}</span>
+                </span>
+                <span className="history-row-meta">
+                  <span>{hosts.find((h) => h.id === thread.hostId)?.name}</span>
+                  <time>
+                    {new Date(thread.updatedAt).toLocaleDateString("ko-KR")}
+                  </time>
+                </span>
+              </button>
+              {!archived && (
+                <button
+                  className="icon-button compact history-row-side"
+                  aria-label={`옆에 열기: ${thread.title}`}
+                  title="오른쪽에 나란히 열기"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("harbor-history-drop", {
+                        detail: {
+                          hostId: thread.hostId,
+                          threadId: thread.id,
+                          provider,
+                          sshSessionMode: resumeMode(thread),
+                          edge: "right",
+                          scope: "pane",
+                        },
+                      }),
+                    )
+                  }
+                >
+                  <Columns2 size={15} />
+                </button>
+              )}
+            </div>
           ))}
           {busy && (
             <div className="history-loading">
@@ -369,11 +457,34 @@ export default function CodexHistory({
               title={selected.title}
               subtitle={`${selectedHost?.name || "서버"} · ${selected.cwd}`}
               onClose={closePreview}
+              backdropClassName="history-modal-root"
               wide
             >
               <div className="history-preview">
+                {selectedHost?.kind === "ssh" && modeSelector(true)}
                 <div className="history-preview-actions">
                   <span>기록 미리보기</span>
+                  <button
+                    className="button secondary"
+                    disabled={reading || resuming || archived}
+                    onClick={() => {
+                      window.dispatchEvent(
+                        new CustomEvent("harbor-history-drop", {
+                          detail: {
+                            hostId: selected.hostId,
+                            threadId: selected.id,
+                            provider,
+                            sshSessionMode: resumeMode(selected),
+                            edge: "right",
+                            scope: "pane",
+                          },
+                        }),
+                      );
+                      closePreview();
+                    }}
+                  >
+                    <Columns2 size={15} /> 옆에 열기
+                  </button>
                   <button
                     className="button primary"
                     disabled={reading || resuming || archived}
@@ -388,7 +499,11 @@ export default function CodexHistory({
                       try {
                         const terminal = await api<TerminalInfo>(
                           `/hosts/${selected.hostId}/history/${selected.id}/resume`,
-                          { provider, colors: terminalColors(theme) },
+                          {
+                            provider,
+                            colors: terminalColors(theme),
+                            sshSessionMode: resumeMode(selected),
+                          },
                         );
                         closePreview();
                         onResume(terminal);
@@ -408,10 +523,24 @@ export default function CodexHistory({
                   </button>
                 </div>
                 <div className="history-transcript">
+                  {detail?.notice && (
+                    <p role="status" className="muted">
+                      {detail.notice}
+                    </p>
+                  )}
                   {detailError && (
                     <div className="history-error" role="alert">
                       {detailError}
                     </div>
+                  )}
+                  {historyPaused && (
+                    <button
+                      className="button secondary small"
+                      disabled={reading}
+                      onClick={() => void read(selected)}
+                    >
+                      기록 다시 불러오기
+                    </button>
                   )}
                   {detail?.nextCursor && (
                     <button

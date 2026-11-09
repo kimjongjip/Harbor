@@ -1,0 +1,213 @@
+.harbor-workbench {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.harbor-workbench[hidden] {
+  display: none;
+}
+.harbor-ide-region {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+}
+.harbor-ide-region[hidden] {
+  display: none;
+}
+.harbor-ide-divider {
+  flex-shrink: 0;
+  height: 5px;
+  cursor: row-resize;
+  background: var(--bg, #f5f7fa);
+  border-bottom: 1px solid var(--border, #dce1ea);
+  touch-action: none;
+}
+.harbor-ide-divider:hover,
+.harbor-ide-divider:focus-visible {
+  background: var(--accent, #4563d4);
+}
+.harbor-workbench .terminal-workspace {
+  flex: 1;
+  min-height: 120px;
+}
+.harbor-terminal-dock {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.harbor-terminal-dock[hidden] {
+  display: none;
+}
+.harbor-workbench.has-ide .harbor-terminal-dock {
+  min-height: 100px;
+}
+.harbor-workbench.has-ide .terminal-workspace {
+  min-height: 0;
+}
+.desktop-ide-workspace {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.desktop-ide-workspace > .harbor-ide {
+  flex: 1;
+  height: auto;
+  border-bottom: 0;
+}
+.harbor-ide-chat-region {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 260px;
+  max-width: 48%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel, #fff);
+}
+.harbor-ide-chat-region[hidden] {
+  display: none;
+}
+.harbor-ide-chat-divider {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--bg, #f5f7fa);
+  border-left: 1px solid var(--border, #dce1ea);
+}
+.harbor-ide-chat-divider:hover,
+.harbor-ide-chat-divider:focus-visible {
+  background: var(--accent, #4563d4);
+  outline: none;
+}
+.harbor-ide-dock-heading {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-height: 30px;
+  gap: 10px;
+  padding: 0 9px;
+  border-top: 1px solid var(--border, #dce1ea);
+  background: var(--panel, #fff);
+  font-size: 11px;
+}
+.harbor-ide-dock-heading > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: stretch;
+  color: var(--text);
+}
+.harbor-ide-dock-heading > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.harbor-ide-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.harbor-ide-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: 4px;
+  font-size: 13px;
+}
+.harbor-ide-brand img {
+  width: 21px;
+  height: 21px;
+}
+.harbor-ide-server {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.harbor-ide-context select {
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 5px;
+  font: inherit;
+  font-size: 11px;
+  min-width: 0;
+  max-width: 190px;
+}
+.harbor-ide-context .harbor-ide-session {
+  flex: 0 1 190px;
+}
+.harbor-ide-context-separator {
+  color: var(--muted);
+}
+.harbor-ide-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.harbor-ide-panel-actions button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.harbor-app.ide-view .harbor-top-actions {
+  gap: 5px;
+}
+.harbor-app.ide-view .harbor-topbar {
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .harbor-ide-brand b {
+    display: none;
+  }
+  .harbor-ide-context select {
+    max-width: 130px;
+  }
+  .harbor-ide-chat-region {
+    min-width: 240px;
+  }
+  .desktop-ide-workspace .ide-explorer {
+    min-width: 140px;
+    width: 180px;
+  }
+}
+.harbor-view-switch {
+  display: flex;
+  border: 1px solid var(--border, #dce1ea);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.harbor-view-switch button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  cursor: pointer;
+  font-size: 12px;
+}
+.harbor-view-switch button[aria-pressed="true"] {
+  color: var(--accent, #4563d4);
+  background: var(--accent-soft, #e8edff);
+  font-weight: 600;
+}
+.harbor-ide-loading {
+  padding: 24px;
+  color: var(--muted, #68748a);
+}

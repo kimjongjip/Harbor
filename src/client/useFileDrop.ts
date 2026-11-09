@@ -1,19 +1,25 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
+import { readDroppedSelection, type UploadSelection } from "./upload-selection";
 
 /** Explicit row targets avoid a drop bubbling into the explorer's root upload. */
 export function useFileDrop({
   rootPath,
+  scopeKey,
   busy,
   onFiles,
   onError,
 }: {
   rootPath?: string;
+  scopeKey?: string;
   busy: boolean;
-  onFiles: (files: File[], path: string) => void;
+  onFiles: (selection: UploadSelection, path: string) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [targetPath, setTargetPath] = useState<string>();
+  const [collecting, setCollecting] = useState(false);
+  const reading = useRef(false);
+  const generation = useRef(0);
   const hover = useRef<{
     path?: string;
     timer?: ReturnType<typeof setTimeout>;
@@ -28,9 +34,14 @@ export function useFileDrop({
     setTargetPath(undefined);
   }
   useEffect(() => {
+    generation.current++;
+    setCollecting(false);
     clear();
-    return cancelHover;
-  }, [rootPath]);
+    return () => {
+      generation.current++;
+      cancelHover();
+    };
+  }, [rootPath, scopeKey]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") clear();
@@ -51,7 +62,8 @@ export function useFileDrop({
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = !busy && path ? "copy" : "none";
+    event.dataTransfer.dropEffect =
+      !busy && !reading.current && path ? "copy" : "none";
     setDragging(true);
     setTargetPath(path);
     if (hover.current.path !== path) {
@@ -66,21 +78,32 @@ export function useFileDrop({
     event.preventDefault();
     event.stopPropagation();
     clear();
-    if (busy || !path) return;
-    if (
-      [...event.dataTransfer.items].some(
-        (item) => item.webkitGetAsEntry?.()?.isDirectory,
-      )
-    ) {
-      onError("폴더는 압축한 뒤 올려주세요.");
-      return;
-    }
-    const files = [...event.dataTransfer.files];
-    if (files.length) onFiles(files, path);
+    if (busy || reading.current || !path) return;
+    const current = generation.current;
+    reading.current = true;
+    setCollecting(true);
+    // Snapshot the native entries synchronously, before awaiting recursion.
+    void readDroppedSelection(event.dataTransfer)
+      .then(async (selection) => {
+        if (generation.current === current) setCollecting(false);
+        if (
+          generation.current === current &&
+          (selection.files.length || selection.directories.length)
+        )
+          await onFiles(selection, path);
+      })
+      .catch((error) => {
+        if (generation.current === current) onError((error as Error).message);
+      })
+      .finally(() => {
+        reading.current = false;
+        if (generation.current === current) setCollecting(false);
+      });
   }
   return {
     dragging,
     targetPath,
+    collecting,
     containerProps: {
       onDragEnter: (event: DragEvent<HTMLElement>) => over(event, rootPath),
       onDragOver: (event: DragEvent<HTMLElement>) => over(event, rootPath),

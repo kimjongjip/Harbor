@@ -3,6 +3,20 @@ import type { AppState, TerminalInfo } from "../shared/types";
 import { peerConnection } from "./peer-status";
 
 export function connectionLabel(terminal: TerminalInfo) {
+  if (terminal.connectionState === "reconnecting") return "서버 재연결 중";
+  if (
+    terminal.connectionState === "disconnected" &&
+    terminal.connectionIssue === "remote-missing"
+  )
+    return "서버 세션 없음";
+  if (terminal.connectionState === "disconnected") return "세션 연결 확인 필요";
+  if (
+    terminal.exited &&
+    terminal.persistent === false &&
+    terminal.connectionIssue &&
+    terminal.connectionIssue !== "remote-exit"
+  )
+    return "SSH 연결 끊김";
   return terminal.exited
     ? "종료"
     : terminal.agentConnected
@@ -23,6 +37,11 @@ export default function ConnectionOverview({
   const host = state.hosts.find((h) => h.id === terminal?.hostId);
   const peers = state.terminals.filter((t) => t.agentConnected && !t.exited);
   const status = state.connections?.find((c) => c.terminalId === terminal?.id);
+  const transportReady =
+    terminal &&
+    !["disconnected", "reconnecting", "connecting", "exited"].includes(
+      terminal.connectionState || "",
+    );
   return (
     <section className="connection-overview" aria-label="세션 연결 상태">
       <div className="connection-overview-title">
@@ -35,7 +54,7 @@ export default function ConnectionOverview({
           <div className="connection-route">
             <span className="live">Harbor</span>
             <ArrowRight size={12} />
-            <span className={!terminal.exited ? "live" : ""}>
+            <span className={!terminal.exited && transportReady ? "live" : ""}>
               {host.kind === "ssh" ? "SSH" : "로컬"}
             </span>
             <ArrowRight size={12} />
@@ -52,13 +71,15 @@ export default function ConnectionOverview({
             </span>
           </div>
           <p>
-            {terminal.exited
-              ? "종료된 세션입니다."
-              : terminal.agentConnected
-                ? `${host.name}의 ${terminal.title} 연결됨`
-                : terminal.integration === "ready"
-                  ? "AI 연결 대기 · CLI를 실행하면 작업 상태가 표시됩니다."
-                  : "일반 셸 연결입니다. 세션 메시지 연결은 사용할 수 없습니다."}
+            {!transportReady && !terminal.exited
+              ? connectionLabel(terminal)
+              : terminal.exited
+                ? "종료된 세션입니다."
+                : terminal.agentConnected
+                  ? `${host.name}의 ${terminal.title} 연결됨`
+                  : terminal.integration === "ready"
+                    ? "AI 연결 대기 · CLI를 실행하면 작업 상태가 표시됩니다."
+                    : "일반 셸 연결입니다. 세션 메시지 연결은 사용할 수 없습니다."}
           </p>
           {terminal.agentConnected && !terminal.exited && (
             <button className="connection-message-link" onClick={onMessages}>

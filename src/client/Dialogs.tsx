@@ -1,4 +1,12 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowRight,
   Check,
@@ -35,12 +43,18 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  backdropClassName = "",
+  backdropStyle,
+  isolateEvents = false,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  backdropClassName?: string;
+  backdropStyle?: CSSProperties;
+  isolateEvents?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -78,8 +92,15 @@ export function Modal({
       previous?.focus();
     };
   }, []);
-  return (
-    <div className="modal-backdrop">
+  return createPortal(
+    <div
+      className={`modal-backdrop ${backdropClassName}`}
+      style={backdropStyle}
+      onClick={isolateEvents ? (event) => event.stopPropagation() : undefined}
+      onDoubleClick={
+        isolateEvents ? (event) => event.stopPropagation() : undefined
+      }
+    >
       <div
         ref={ref}
         className={`modal ${wide ? "wide" : ""}`}
@@ -104,7 +125,8 @@ export function Modal({
         </header>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 function FormError({ error }: { error: string }) {

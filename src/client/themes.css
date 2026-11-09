@@ -129,7 +129,7 @@ select:focus {
   color: var(--text);
 }
 .brand small {
-  font-size: 8px;
+  font-size: calc(var(--ui-font-size, 14px) * 8 / 12);
   letter-spacing: 1.2px;
 }
 .version {
@@ -144,7 +144,7 @@ select:focus {
   min-height: 34px;
   padding: 7px 8px;
   gap: 7px;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
 }
 .main-nav > button.active {
   background: var(--accent-soft);
@@ -201,7 +201,7 @@ select:focus {
   margin-bottom: 6px;
 }
 .local-indicator {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
 }
 .topbar {
   min-height: 52px;
@@ -213,7 +213,7 @@ select:focus {
   gap: 12px;
 }
 .workspace-stats {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .statusbar {
   color: var(--muted);
@@ -264,7 +264,7 @@ select:focus {
 .theme-select {
   padding: 6px 8px;
   max-width: 94px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .host-card,
 .discussion-card {

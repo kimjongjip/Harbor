@@ -3,7 +3,12 @@ import { once } from "node:events";
 import { createConnection } from "node:net";
 import test from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { CodexPeerRuntime, codexPeerPrompt } from "./codex-peer-runtime.js";
+import {
+  CodexPeerRuntime,
+  codexPeerPrompt,
+  codexFailureNotice,
+  type CodexCompletedAnswer,
+} from "./codex-peer-runtime.js";
 
 const sessionId = "synthetic-codex-session-123";
 const token = "synthetic_capability_token_1234567890";
@@ -15,7 +20,15 @@ const peer = {
 };
 
 async function fixture(
-  options: { loaded?: boolean; rejectQueue?: boolean } = {},
+  options: {
+    loaded?: boolean;
+    rejectQueue?: boolean;
+    fresh?: boolean;
+    rejectResume?: boolean;
+    displayFailure?: boolean;
+    closeQueue?: boolean;
+    active?: boolean;
+  } = {},
 ) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(server, "listening");
@@ -25,6 +38,12 @@ async function fixture(
   const requests: any[] = [];
   const received: { messageId: string; sessionId: string }[] = [];
   const states: string[] = [];
+  const answers: { terminalId: string; answer: CodexCompletedAnswer }[] = [];
+  const completed: { terminalId: string; sessionId: string; turnId: string }[] =
+    [];
+  const failures: { terminalId: string; sessionId: string; notice: string }[] =
+    [];
+  let hasRollout = !options.fresh;
   server.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, `Bearer ${token}`);
     connection = socket;
@@ -33,6 +52,23 @@ async function fixture(
       requests.push(message);
       if (message.id === undefined || !message.method) return;
       let result: any = {};
+      if (
+        message.method === "thread/resume" &&
+        (!hasRollout || options.rejectResume)
+      ) {
+        socket.send(
+          JSON.stringify({
+            id: message.id,
+            error: {
+              code: -32600,
+              message: options.rejectResume
+                ? "synthetic resume rejection"
+                : `no rollout found for thread id ${sessionId}`,
+            },
+          }),
+        );
+        return;
+      }
       if (message.method === "thread/loaded/list")
         result = { data: options.loaded === false ? [] : [sessionId] };
       if (
@@ -44,10 +80,16 @@ async function fixture(
             id: message.params.threadId,
             source: "cli",
             parentThreadId: null,
-            status: { type: "idle" },
+            cwd: "/synthetic-primary-project",
+            status: { type: options.active ? "active" : "idle" },
           },
         };
       if (message.method === "thread/queue/add") {
+        hasRollout = true;
+        if (options.closeQueue) {
+          socket.close();
+          return;
+        }
         if (options.rejectQueue) {
           socket.send(
             JSON.stringify({
@@ -73,6 +115,15 @@ async function fixture(
     onState: (_terminalId, state) => states.push(state),
     onDelivered: (_terminalId, messageId, id) =>
       received.push({ messageId, sessionId: id }),
+    onTurnFailed: (terminalId, sessionId, notice) =>
+      failures.push({ terminalId, sessionId, notice }),
+    onAnswer: (terminalId, answer) => {
+      answers.push({ terminalId, answer });
+      if (options.displayFailure)
+        throw new Error("Synthetic display is unavailable");
+    },
+    onTurnCompleted: (terminalId, sessionId, turnId) =>
+      completed.push({ terminalId, sessionId, turnId }),
   });
   await runtime.attach("fixture-terminal", { port: address.port, token });
   return {
@@ -80,6 +131,9 @@ async function fixture(
     requests,
     received,
     states,
+    failures,
+    answers,
+    completed,
     notify(method: string, params: any) {
       assert.ok(connection);
       connection.send(JSON.stringify({ method, params }));
@@ -102,6 +156,365 @@ async function fixture(
 }
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+test("IDE text enters the exact native conversation FIFO without peer instructions or peer receipts", async () => {
+  const app = await fixture({ fresh: true });
+  try {
+    const input = {
+      requestId: "ide-request-1",
+      sessionId,
+      text: "  사용자 질문\nSecond line  ",
+    };
+    let checks = 0;
+    assert.equal(
+      await app.runtime.submitUser("fixture-terminal", input, () => {
+        checks++;
+      }),
+      "queued",
+    );
+    assert.equal(
+      await app.runtime.submitUser("fixture-terminal", input),
+      "queued",
+    );
+    const requests = app.requests.filter(
+      (r) => r.method === "thread/queue/add",
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(checks, 1);
+    assert.deepEqual(requests[0].params, {
+      threadId: sessionId,
+      input: [{ type: "text", text: input.text, text_elements: [] }],
+      clientUserMessageId: "harbor-ide-ide-request-1",
+    });
+    app.notify("item/started", {
+      threadId: sessionId,
+      item: { type: "userMessage", clientId: "harbor-ide-ide-request-1" },
+    });
+    await settle();
+    assert.deepEqual(app.received, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test("IDE native queue refuses revoked control and mismatched sessions before queue/add", async () => {
+  const app = await fixture();
+  try {
+    const input = { requestId: "ide-request-1", sessionId, text: "Question" };
+    await assert.rejects(
+      app.runtime.submitUser("fixture-terminal", {
+        ...input,
+        sessionId: "other-session",
+      }),
+    );
+    await assert.rejects(
+      app.runtime.submitUser("fixture-terminal", input, () => {
+        throw new Error("Control revoked");
+      }),
+    );
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/queue/add").length,
+      0,
+    );
+    assert.equal(
+      await app.runtime.submitUser("fixture-terminal", input),
+      "queued",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("IDE native queue distinguishes a definite rejection from an uncertain acknowledgement", async () => {
+  for (const uncertain of [false, true]) {
+    const app = await fixture(
+      uncertain ? { closeQueue: true } : { rejectQueue: true },
+    );
+    try {
+      const send = app.runtime.submitUser("fixture-terminal", {
+        requestId: "ide-request-1",
+        sessionId,
+        text: "Question",
+      });
+      if (uncertain) assert.equal(await send, "uncertain");
+      else await assert.rejects(send);
+      assert.equal(
+        app.requests.filter((r) => r.method === "thread/queue/add").length,
+        1,
+      );
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test("IDE native queue awaits asynchronous authorization and rechecks a replacement native session", async () => {
+  const app = await fixture();
+  try {
+    const input = { requestId: "ide-async-guard", sessionId, text: "Question" };
+    await assert.rejects(
+      app.runtime.submitUser("fixture-terminal", input, async () => {
+        await Promise.resolve();
+        throw new Error("Asynchronous authorization revoked");
+      }),
+      (error: any) => error.definiteRejection === true,
+    );
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/queue/add").length,
+      0,
+    );
+    assert.equal(
+      await app.runtime.submitUser("fixture-terminal", input),
+      "queued",
+    );
+    await assert.rejects(
+      app.runtime.submitUser(
+        "fixture-terminal",
+        { ...input, requestId: "ide-replaced-guard" },
+        async () => {
+          await Promise.resolve();
+          app.notify("thread/started", {
+            thread: { id: "different-session", source: "cli" },
+          });
+          await settle();
+        },
+      ),
+      (error: any) => error.definiteRejection === true,
+    );
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/queue/add").length,
+      1,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("rejected IDE queue input preserves the native working state", async () => {
+  const app = await fixture({ rejectQueue: true, active: true });
+  try {
+    await assert.rejects(
+      app.runtime.submitUser("fixture-terminal", {
+        requestId: "ide-request-1",
+        sessionId,
+        text: "Question",
+      }),
+    );
+    assert.equal(app.states.at(-1), "working");
+  } finally {
+    await app.close();
+  }
+});
+
+test("completed display answers use exact authoritative text from only the native primary thread", async () => {
+  const app = await fixture();
+  try {
+    const item = {
+      type: "agentMessage",
+      id: "answer-1",
+      text: "  ## 한글\n\n$$\\frac{a}{b}$$\n",
+      phase: "final_answer",
+    };
+    app.notify("item/started", { threadId: sessionId, item });
+    app.notify("item/agentMessage/delta", {
+      threadId: sessionId,
+      itemId: item.id,
+      delta: "unfinished",
+    });
+    app.notify("item/completed", { threadId: "sibling-thread", item });
+    app.notify("thread/started", {
+      thread: {
+        id: "child-thread",
+        parentThreadId: sessionId,
+        cwd: "/unrelated",
+      },
+    });
+    app.notify("item/completed", { threadId: "child-thread", item });
+    for (const type of ["plan", "reasoning", "userMessage", "commandExecution"])
+      app.notify("item/completed", {
+        threadId: sessionId,
+        item: { ...item, type },
+      });
+    for (const invalid of [
+      { ...item, id: "" },
+      { ...item, text: " \n" },
+      { ...item, text: "가".repeat(85334) },
+      { ...item, text: "x".repeat(128001) },
+    ])
+      app.notify("item/completed", { threadId: sessionId, item: invalid });
+    await settle();
+    assert.equal(app.answers.length, 0);
+    app.notify("item/completed", { threadId: sessionId, item });
+    app.notify("item/completed", { threadId: sessionId, item });
+    await settle();
+    assert.deepEqual(app.answers, [
+      {
+        terminalId: "fixture-terminal",
+        answer: {
+          id: item.id,
+          text: item.text,
+          sessionId,
+          cwd: "/synthetic-primary-project",
+          phase: "final_answer",
+        },
+      },
+    ]);
+    assert.ok(
+      !app.requests.some((r) =>
+        ["turn/start", "turn/steer", "thread/queue/add"].includes(r.method),
+      ),
+    );
+    app.notify("thread/started", {
+      thread: {
+        id: "next-primary",
+        cwd: "/next-project",
+        source: "cli",
+        parentThreadId: null,
+      },
+    });
+    app.notify("item/completed", {
+      threadId: sessionId,
+      item: { ...item, id: "stale-thread" },
+    });
+    app.notify("item/completed", { threadId: "next-primary", item });
+    await settle();
+    assert.equal(app.answers.length, 2);
+    assert.equal(app.answers[1].answer.sessionId, "next-primary");
+    assert.equal(app.answers[1].answer.cwd, "/next-project");
+  } finally {
+    await app.close();
+  }
+});
+
+test("a display callback failure cannot break later authoritative answers or native state updates", async () => {
+  const app = await fixture({ displayFailure: true });
+  try {
+    for (const id of ["answer-A", "answer-B"])
+      app.notify("item/completed", {
+        threadId: sessionId,
+        item: { type: "agentMessage", id, text: "unchanged native answer" },
+      });
+    app.notify("thread/status/changed", {
+      threadId: sessionId,
+      status: { type: "active" },
+    });
+    await settle();
+    assert.equal(app.answers.length, 2);
+    assert.equal(app.states.at(-1), "working");
+    assert.equal(app.runtime.available("fixture-terminal"), true);
+  } finally {
+    await app.close();
+  }
+});
+
+test("only a failed turn on the native primary thread raises research failure; retries, approvals and sibling threads do not", async () => {
+  const app = await fixture();
+  try {
+    const error = {
+      message:
+        "The 'Astra' model is not supported when using Codex with a ChatGPT account. Private token: synthetic-secret",
+    };
+    app.requestApproval();
+    app.notify("error", {
+      threadId: sessionId,
+      turnId: "retrying",
+      willRetry: true,
+      error,
+    });
+    app.notify("turn/completed", {
+      threadId: "sibling",
+      turn: { id: "wrong", status: "failed", error },
+    });
+    for (const status of ["completed", "interrupted"])
+      app.notify("turn/completed", {
+        threadId: sessionId,
+        turn: { id: status, status },
+      });
+    await settle();
+    assert.equal(app.failures.length, 0);
+    assert.deepEqual(app.completed, [
+      { terminalId: "fixture-terminal", sessionId, turnId: "completed" },
+    ]);
+    app.notify("turn/completed", {
+      threadId: "sibling",
+      turn: { id: "sibling-complete", status: "completed" },
+    });
+    app.notify("turn/completed", {
+      threadId: sessionId,
+      turn: { status: "completed" },
+    });
+    const params = {
+      threadId: sessionId,
+      turn: { id: "failed-primary", status: "failed", error },
+    };
+    app.notify("turn/completed", params);
+    app.notify("turn/completed", params);
+    await settle();
+    assert.equal(app.failures.length, 1);
+    assert.equal(app.completed.length, 1);
+    assert.equal(app.failures[0].sessionId, sessionId);
+    assert.match(app.failures[0].notice, /모델.*실패/);
+    assert.doesNotMatch(app.failures[0].notice, /synthetic-secret/);
+    assert.ok(!app.requests.some((r) => r.id === "native-approval-1"));
+    assert.match(
+      codexFailureNotice({
+        message: "token-private",
+        codexErrorInfo: "UsageLimitExceeded",
+      }),
+      /한도/,
+    );
+    assert.match(
+      codexFailureNotice({ codexErrorInfo: "Unauthorized" }),
+      /인증/,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("a freshly loaded native thread can receive its first input before a rollout exists", async () => {
+  const app = await fixture({ fresh: true });
+  try {
+    assert.equal(await app.runtime.deliver("fixture-terminal", peer), true);
+    await settle();
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/queue/add").length,
+      1,
+    );
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/resume").length,
+      2,
+    );
+    assert.deepEqual(app.received, []);
+    app.notify("item/started", {
+      threadId: sessionId,
+      item: { type: "userMessage", clientId: `harbor-peer-${peer.id}` },
+    });
+    await settle();
+    assert.equal(app.received.length, 1);
+    assert.equal(await app.runtime.deliver("fixture-terminal", peer), true);
+    assert.equal(
+      app.requests.filter((r) => r.method === "thread/queue/add").length,
+      1,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("an unrelated resume rejection cannot trigger a first-turn fallback", async () => {
+  const app = await fixture({ rejectResume: true });
+  try {
+    assert.equal(await app.runtime.deliver("fixture-terminal", peer), false);
+    assert.equal(
+      app.requests.some((r) => r.method === "thread/queue/add"),
+      false,
+    );
+    assert.deepEqual(app.received, []);
+  } finally {
+    await app.close();
+  }
+});
 
 test("peer input enters the native FIFO once and is acknowledged only when its own native item starts", async () => {
   const app = await fixture();
@@ -340,4 +753,30 @@ test("peer replies return as task context without demanding another automatic re
     from: peer.sender,
     text: peer.text,
   });
+});
+
+test("lab peer questions carry current scope while replies stay context rather than another assignment", () => {
+  const question = codexPeerPrompt({
+    ...peer,
+    purpose: "question",
+    labId: "fixture-lab",
+    questionSource: {
+      assignmentId: "fixture-assignment",
+      index: 0,
+      revision: 3,
+    },
+  });
+  assert.match(question, /harbor_lab_context/);
+  assert.match(question, /answer using harbor_reply/);
+  assert.match(question, /instead of asking the user/);
+  const content = JSON.parse(question.slice(question.indexOf("\n") + 1));
+  assert.equal(content.labId, "fixture-lab");
+  assert.equal(content.revision, 3);
+  const reply = codexPeerPrompt({
+    ...peer,
+    labId: "fixture-lab",
+    replyToId: "fixture-question",
+  });
+  assert.match(reply, /Do not acknowledge automatically/);
+  assert.doesNotMatch(reply, /answer using harbor_reply/);
 });

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+import {
   ANNOTATION_COMMENT_LIMIT,
   ANNOTATION_DRAFT_TEXT_LIMIT,
   ANNOTATION_PROMPT_LIMIT,
@@ -26,6 +34,101 @@ const ready = () => {
   registry.markReady("terminal-a", "session-a");
   return registry;
 };
+
+test("private annotation snapshots preserve notes, native binding and reference high-water after backend restart", () => {
+  const root = resolve(".cache/annotation-persistence-tests");
+  mkdirSync(root, { recursive: true });
+  const directory = mkdtempSync(join(root, "snapshot-"));
+  try {
+    let registry = new TerminalAnnotations(directory);
+    registry.markReady("terminal-a", "native-a");
+    const first = registry.capture(
+      "terminal-a",
+      input("Original selected text"),
+    );
+    registry.attach("terminal-a", [
+      {
+        number: first.number,
+        annotation: "Question tied to original selection",
+      },
+    ]);
+    registry = new TerminalAnnotations(directory);
+    const context = registry.resolve(
+      "terminal-a",
+      `${first.reference} explain`,
+      "native-a",
+    )!;
+    assert.equal(context.annotations[0].text, "Original selected text");
+    assert.equal(
+      context.annotations[0].annotation,
+      "Question tied to original selection",
+    );
+    assert.throws(
+      () => registry.resolve("terminal-a", first.reference, "different-native"),
+      /대화가 다릅니다/,
+    );
+    registry = new TerminalAnnotations(directory);
+    assert.throws(
+      () =>
+        registry.attach("terminal-a", [
+          {
+            number: first.number,
+            annotation: "Cannot rewrite a submitted note",
+          },
+        ]),
+      /전송한 인용/,
+    );
+    registry.markReady("terminal-b", "native-b");
+    const second = registry.capture("terminal-b", input("Other terminal"));
+    assert.ok(second.number > first.number);
+    registry.retain(new Set(["terminal-a"]));
+    registry = new TerminalAnnotations(directory);
+    assert.equal(registry.isReady("terminal-b"), false);
+    registry.revoke("terminal-a");
+    registry = new TerminalAnnotations(directory);
+    registry.markReady("new-terminal", "new-native");
+    const third = registry.capture("new-terminal", input("New selection"));
+    assert.ok(third.number > second.number);
+    assert.throws(
+      () => registry.resolve("new-terminal", first.reference, "new-native"),
+      /찾을 수 없습니다/,
+    );
+    const stored = readFileSync(
+      join(directory, "terminal-annotations.json"),
+      "utf8",
+    );
+    assert.equal(
+      stored.includes("Original selected text"),
+      false,
+      "closed terminal contents removed",
+    );
+  } finally {
+    assert.ok(directory.startsWith(root));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an invalid persisted annotation sequence is rejected instead of aliasing an old draft marker", () => {
+  const root = resolve(".cache/annotation-persistence-tests");
+  mkdirSync(root, { recursive: true });
+  const directory = mkdtempSync(join(root, "invalid-"));
+  try {
+    const registry = new TerminalAnnotations(directory);
+    registry.markReady("terminal-a", "native-a");
+    registry.capture("terminal-a", input());
+    const file = join(directory, "terminal-annotations.json"),
+      snapshot = JSON.parse(readFileSync(file, "utf8"));
+    snapshot.nextNumber = 1;
+    writeFileSync(file, JSON.stringify(snapshot));
+    assert.throws(
+      () => new TerminalAnnotations(directory),
+      /자동 초기화하지 않습니다/,
+    );
+  } finally {
+    assert.ok(directory.startsWith(root));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("annotations require native readiness; ordinary prompts add nothing", () => {
   const registry = new TerminalAnnotations();

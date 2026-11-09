@@ -18,4 +18,6 @@ export interface HistoryDetail {
   thread: HistoryThread;
   items: MessageItem[];
   nextCursor: string | null;
+  /** A bounded read omitted an oversized record; other messages remain usable. */
+  notice?: string;
 }

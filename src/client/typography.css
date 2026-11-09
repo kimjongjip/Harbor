@@ -1,0 +1,161 @@
+@font-face {
+  font-family: "Harbor D2Coding";
+  src: url("/fonts/d2coding/D2Coding-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Harbor D2Coding";
+  src: url("/fonts/d2coding/D2Coding-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Harbor Pretendard";
+  src: url("/fonts/pretendard/PretendardVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+:root {
+  --font-ui:
+    "Harbor Pretendard", Pretendard, "Segoe UI", "Malgun Gothic", sans-serif;
+  --font-mono:
+    "Harbor D2Coding", "D2Coding", "Cascadia Code", Consolas, "Malgun Gothic",
+    monospace;
+  --ui-font-size: 14px;
+  --terminal-font-size: 15px;
+  --terminal-line-height: 1.45;
+  --document-font-size: 16px;
+  --document-line-height: 1.7;
+  font-family: var(--font-ui);
+  font-size: var(--ui-font-size);
+}
+
+/* Document settings are independent of menu scaling and document Ctrl+wheel. */
+:root .markdown,
+:root .preview-markdown .markdown,
+:root .history-message .markdown,
+:root .research-work .markdown,
+:root .research-detail-body > .markdown {
+  font-family: var(--font-ui);
+  font-size: var(--document-font-size);
+  line-height: var(--document-line-height);
+}
+:root .markdown :is(h1, h2, h3, h4, h5, h6) {
+  line-height: 1.35;
+}
+:root .markdown h1 {
+  font-size: 2em;
+}
+:root .markdown h2 {
+  font-size: 1.55em;
+}
+:root .markdown h3 {
+  font-size: 1.25em;
+}
+:root .markdown h4 {
+  font-size: 1.1em;
+}
+:root .markdown :is(h5, h6) {
+  font-size: 1em;
+}
+:root .markdown pre,
+:root .resource-preview-shell .preview-markdown .markdown pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: var(--document-line-height);
+}
+:root .markdown table,
+:root .preview-markdown .markdown table {
+  font-size: 0.95em;
+}
+:root .markdown code,
+:root code,
+:root pre,
+:root kbd {
+  font-family: var(--font-mono);
+}
+:root .resource-preview-shell .text-file-preview pre,
+:root .resource-preview-shell .delimited-table {
+  font-size: var(--document-font-size);
+  line-height: var(--document-line-height);
+}
+:root .resource-preview-shell .delimited-table .delimited-row-number {
+  font-size: 0.8em;
+}
+
+.typography-dialog .modal {
+  width: min(640px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.typography-dialog .modal-header {
+  flex: none;
+}
+.typography-settings {
+  padding: 0 22px 20px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.typography-settings section {
+  padding-top: 18px;
+}
+.typography-settings h3 {
+  font-size: var(--ui-font-size);
+  margin-bottom: 10px;
+}
+.typography-settings section > p:not(.typography-document-sample) {
+  font-size: calc(var(--ui-font-size) * 0.9);
+  line-height: 1.65;
+  color: var(--muted);
+  margin: 8px 0;
+}
+.typography-font-label {
+  display: grid;
+  gap: 6px;
+}
+.typography-font-label select {
+  width: 100%;
+  padding: 8px;
+}
+.typography-slider {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+}
+.typography-slider > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.typography-slider output {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.typography-slider input {
+  width: 100%;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.typography-terminal-sample,
+.typography-document-sample {
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  overflow: auto;
+}
+.typography-document-sample {
+  font-size: var(--document-font-size);
+  line-height: var(--document-line-height);
+}
+.typography-dialog .modal-footer {
+  justify-content: space-between;
+  flex: none;
+}

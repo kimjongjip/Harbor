@@ -1,0 +1,82 @@
+.tailscale-onboarding {
+  padding: 16px;
+  border: 1px solid var(--border, #d9dfeb);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+.tailscale-onboarding ol {
+  padding-left: 22px;
+  display: grid;
+  gap: 14px;
+}
+.tailscale-onboarding li {
+  padding-left: 4px;
+}
+.tailscale-onboarding li span {
+  margin: 0 12px;
+  color: var(--muted, #66738b);
+  font-size: 13px;
+}
+.mobile-settings {
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+  line-height: 1.6;
+  overflow: auto;
+  min-height: 0;
+}
+.mobile-settings p {
+  margin: 0;
+}
+.mobile-settings h3 {
+  margin: 8px 0 0;
+}
+.mobile-settings label {
+  display: grid;
+  gap: 6px;
+  font-weight: 500;
+}
+.mobile-settings input,
+.mobile-settings select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+.mobile-settings input[type="number"] {
+  max-width: 150px;
+}
+.mobile-settings button:not(.primary) {
+  justify-self: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  cursor: pointer;
+}
+.mobile-settings button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mobile-settings [role="alert"] {
+  color: var(--danger, #b42318);
+}
+.mobile-settings [role="status"] {
+  color: var(--success, #16794c);
+}
+.mobile-settings details {
+  font-size: 0.9em;
+}
+.mobile-settings details p {
+  margin-top: 12px;
+}
+.mobile-settings pre {
+  overflow-wrap: anywhere;
+}

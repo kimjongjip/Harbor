@@ -1,7 +1,10 @@
 import type { Terminal, IBufferCell } from "@xterm/headless";
-import { explicitUnderline, terminalLinkedChars } from "./terminal-screen-links.js";
+import {
+  explicitUnderline,
+  terminalLinkedChars,
+} from "./terminal-screen-links.js";
 
-function rendition(cell: IBufferCell) {
+export function rendition(cell: IBufferCell) {
   const values = [0];
   if (cell.isBold()) values.push(1);
   if (cell.isDim()) values.push(2);
@@ -34,6 +37,28 @@ function rendition(cell: IBufferCell) {
     }
   }
   return `\x1b[${values.join(";")}m`;
+}
+
+/** Modes are restored after painting cells, never while replaying a snapshot. */
+export function terminalModeSuffix(terminal: Terminal) {
+  const modes = terminal.modes;
+  const flags = [
+    [1, modes.applicationCursorKeysMode],
+    [66, modes.applicationKeypadMode],
+    [2004, modes.bracketedPasteMode],
+    [6, modes.originMode],
+    [45, modes.reverseWraparoundMode],
+    [1004, modes.sendFocusMode],
+    [7, modes.wraparoundMode],
+  ] as const;
+  let result = flags
+    .map(([code, on]) => `\x1b[?${code}${on ? "h" : "l"}`)
+    .join("");
+  result += `\x1b[4${modes.insertMode ? "h" : "l"}`;
+  const mouse = { x10: 9, vt200: 1000, drag: 1002, any: 1003 };
+  if (modes.mouseTrackingMode !== "none")
+    result += `\x1b[?${mouse[modes.mouseTrackingMode]}h`;
+  return result;
 }
 
 export function alternateBufferPrefix(terminal: Terminal) {

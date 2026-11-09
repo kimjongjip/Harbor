@@ -1,0 +1,339 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
+import test from "node:test";
+import {
+  claudeRichBootstrap,
+  claudeRichModFiles,
+  claudeRichModModule,
+} from "./claude-rich-mod.js";
+
+const ENGINE = { type: "Text", props: {}, children: ["native reply"] };
+const descriptor = {
+  enabled: true,
+  id: "00112233445566778899aabbccddeeff",
+  marker: "~HBR:00112233445566778899~",
+  rows: 13,
+  columns: 78,
+};
+
+async function fixture() {
+  const native = await import(
+    `data:text/javascript;base64,${Buffer.from(claudeRichModModule()).toString("base64")}#${randomUUID()}`
+  );
+  const hooks = new Map<string, (...args: any[]) => any>();
+  native.register(
+    (event: string, matcher: unknown, callback?: (...args: any[]) => any) => {
+      hooks.set(event, (callback || matcher) as (...args: any[]) => any);
+      return { catch() {} };
+    },
+  );
+  const deferred: (() => Promise<void>)[] = [];
+  const requests: { url: string; init: any }[] = [];
+  let now = 100;
+  let invalidations = 0;
+  let reply: unknown = descriptor;
+  let fail = false;
+  let token: string | undefined = "synthetic-hook-token";
+  let url = "http://127.0.0.1:43219/bridge/claude";
+  let pending: Promise<void> | undefined;
+  const $ = {
+    env: {
+      get: async (name: string) => (name === "HARBOR_HOOK_TOKEN" ? token : url),
+    },
+    session: {
+      id: async () => "synthetic-native-session",
+      cwd: async () => "/synthetic/project",
+    },
+    clock: {
+      now: async () => now,
+      after: (_ms: number, callback: () => Promise<void>) => {
+        deferred.push(callback);
+        return { cancel() {} };
+      },
+    },
+    http: {
+      fetch: async (requestUrl: string, init: any) => {
+        requests.push({ url: requestUrl, init });
+        await pending;
+        if (fail) throw new Error("Synthetic renderer unavailable");
+        return { ok: true, text: JSON.stringify(reply) };
+      },
+    },
+    ui: {
+      invalidate: (event: string) => {
+        assert.equal(event, "ui.render");
+        invalidations++;
+      },
+      resolve: () => ({
+        Box: (props: any) => ({ type: "Box", props }),
+        Text: (props: any) => {
+          assert.equal(
+            "height" in props || "flexShrink" in props,
+            false,
+            "layout props belong on Box, not native Text",
+          );
+          return { type: "Text", props };
+        },
+      }),
+    },
+  };
+  const message = (changes: Record<string, any> = {}) => ({
+    surface: "terminal",
+    component: "AssistantMessage",
+    requestId: "native-block-7",
+    props: { text: "## 설명\n\n$$\\frac{a}{b}$$", isFirstOfReply: true },
+    viewport: { columns: 80, rows: 30 },
+    ...changes,
+  });
+  const render = (event = message()) =>
+    hooks.get("ui.render")!($, event, async () => ENGINE);
+  return {
+    $,
+    hooks,
+    message,
+    render,
+    deferred,
+    requests,
+    get invalidations() {
+      return invalidations;
+    },
+    set time(value: number) {
+      now = value;
+    },
+    set response(value: unknown) {
+      reply = value;
+    },
+    set failed(value: boolean) {
+      fail = value;
+    },
+    set token(value: string | undefined) {
+      token = value;
+    },
+    set url(value: string) {
+      url = value;
+    },
+    set pending(value: Promise<void> | undefined) {
+      pending = value;
+    },
+    flush: async () => {
+      while (deferred.length) await deferred.shift()!();
+    },
+  };
+}
+
+test("completed native reply reserves exactly the acknowledged rows and leaves the transcript unchanged", async () => {
+  const f = await fixture();
+  const event = f.message();
+  assert.equal(
+    await f.render(event),
+    ENGINE,
+    "first draw stays native while rendering",
+  );
+  assert.equal(f.requests.length, 0, "network is outside the drawing hook");
+  await f.flush();
+  const tree = await f.render(event);
+  assert.equal(tree.type, "Box");
+  assert.equal(tree.props.height, 13);
+  assert.equal(tree.props.width, 78);
+  assert.equal(tree.props.children.length, descriptor.rows);
+  assert.equal(
+    tree.props.children[0].props.children[0].props.children[0],
+    descriptor.marker.slice(0, -1) + ":0~",
+  );
+  assert.equal(
+    tree.props.children.at(-1).props.children[0].props.children[0],
+    descriptor.marker.slice(0, -1) + ":12~",
+  );
+  assert.equal(f.invalidations, 1);
+  const { url, init } = f.requests[0];
+  assert.equal(url, "http://127.0.0.1:43219/bridge/rich");
+  assert.equal(init.headers.Authorization, "Bearer synthetic-hook-token");
+  const body = JSON.parse(init.body);
+  assert.equal(body.sessionId, "synthetic-native-session");
+  assert.equal(body.cwd, "/synthetic/project");
+  assert.equal(body.text, event.props.text);
+  assert.equal(event.props.text, "## 설명\n\n$$\\frac{a}{b}$$");
+  assert.equal(
+    f.requests.length,
+    1,
+    "cached redraw does not duplicate the request",
+  );
+});
+
+test("actual model stream passes all chunks and results unchanged and stays native until completion", async () => {
+  const f = await fixture();
+  const chunks = [
+    { kind: "text", index: 0, text: "unfinished" },
+    { kind: "thinking", index: 1, text: "opaque thought" },
+    { kind: "tool", index: 2, name: "Bash", id: "tool-1" },
+  ];
+  const result = {
+    turnId: "turn-1",
+    answer: "complete",
+    stopReason: "end_turn",
+  };
+  const stream = f.hooks.get("turn.step")!(f.$, {}, async function* () {
+    for (const item of chunks) yield item;
+    return result;
+  });
+  for (const item of chunks) {
+    assert.equal((await stream.next()).value, item);
+    assert.equal(await f.render(), ENGINE);
+    assert.equal(
+      f.deferred.length,
+      0,
+      "streaming text is never guessed complete",
+    );
+  }
+  assert.equal((await stream.next()).value, result);
+  assert.equal(f.invalidations, 1);
+  await f.render();
+  await f.flush();
+  assert.equal((await f.render()).type, "Box");
+});
+
+test("closing or failing a model stream closes the original generator and restores rendering", async () => {
+  const f = await fixture();
+  let closed = false;
+  const stream = f.hooks.get("turn.step")!(f.$, {}, async function* () {
+    try {
+      yield { kind: "text", index: 0, text: "partial" };
+    } finally {
+      closed = true;
+    }
+  });
+  await stream.next();
+  await stream.return();
+  assert.equal(closed, true);
+  await f.render();
+  await f.flush();
+  assert.equal((await f.render()).type, "Box");
+});
+
+test("completed replies keep their typesetting while a new reply streams", async () => {
+  const f = await fixture();
+  await f.render();
+  await f.flush();
+  const stream = f.hooks.get("turn.step")!(f.$, {}, async function* () {
+    yield { kind: "text", index: 0, text: "new reply" };
+  });
+  await stream.next();
+  assert.equal((await f.render()).type, "Box");
+  assert.equal(
+    await f.render(f.message({ requestId: "next-native-block" })),
+    ENGINE,
+  );
+  assert.equal(f.deferred.length, 0);
+  await stream.return();
+});
+
+test("narrow surfaces, summaries, other surfaces and over-limit text retain native drawing", async () => {
+  const f = await fixture();
+  for (const event of [
+    f.message({ surface: "vscode" }),
+    f.message({ props: { text: "summary", isSummary: true } }),
+    f.message({ props: { text: "x".repeat(128001) } }),
+    f.message({ props: { text: " \n" } }),
+    f.message({ viewport: { columns: 39, rows: 40 } }),
+  ])
+    assert.equal(await f.render(event), ENGINE);
+  assert.equal(f.deferred.length, 0);
+});
+
+test("unavailable renderer, missing credentials, invalid reservation and wrong endpoint always retain text", async () => {
+  for (const setup of [
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.failed = true;
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.token = undefined;
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.url = "https://external.invalid/bridge/claude";
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.response = { enabled: false };
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.response = { ...descriptor, marker: "\u001b[2J" };
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.response = { ...descriptor, rows: 99999 };
+    },
+    (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.response = { ...descriptor, columns: 81 };
+    },
+  ]) {
+    const f = await fixture();
+    setup(f);
+    await f.render();
+    await f.flush();
+    assert.equal(await f.render(), ENGINE);
+  }
+});
+
+test("geometry changes get a new measured reservation; stale responses cannot cross native sessions", async () => {
+  const f = await fixture();
+  await f.render();
+  await f.flush();
+  assert.equal((await f.render()).props.height, 13);
+  f.response = { ...descriptor, rows: 21, columns: 58 };
+  const resized = f.message({ viewport: { columns: 60, rows: 31 } });
+  assert.equal(await f.render(resized), ENGINE);
+  await f.flush();
+  assert.equal((await f.render(resized)).props.height, 21);
+  f.time = 1200;
+  await f.render(resized);
+  let release!: () => void;
+  f.pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const updating = f.flush();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await f.hooks.get("session.start")!(f.$, {}, async () => ({}));
+  release();
+  await updating;
+  assert.equal(await f.render(resized), ENGINE);
+});
+
+test(
+  "Windows bootstrap materializes an isolated credential-free native plugin",
+  { skip: process.platform !== "win32" },
+  () => {
+    const script =
+      claudeRichBootstrap("windows") + " [Console]::Write($harborRichPath)";
+    const run = spawnSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      { encoding: "utf8", timeout: 10000, windowsHide: true },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const directory = realpathSync(run.stdout.trim());
+    const root = realpathSync(tmpdir());
+    assert.ok(directory.startsWith(root + sep));
+    assert.ok(directory.split(sep).at(-1)!.startsWith("harbor-rich-"));
+    try {
+      for (const [file, contents] of Object.entries(claudeRichModFiles())) {
+        const path = resolve(directory, file);
+        assert.ok(path.startsWith(directory + sep));
+        assert.equal(readFileSync(path, "utf8"), contents);
+      }
+      const source = readFileSync(join(directory, "hooks/register.js"), "utf8");
+      assert.ok(!source.includes("synthetic-hook-token"));
+      assert.ok(!source.includes("model.complete"));
+      assert.ok(!source.includes("prompt.submit"));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);

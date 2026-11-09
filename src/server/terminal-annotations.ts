@@ -1,5 +1,13 @@
 import { z } from "zod";
 import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import {
   ANNOTATION_COMMENT_LIMIT,
   ANNOTATION_DRAFT_LIMIT,
   ANNOTATION_DRAFT_TEXT_LIMIT,
@@ -74,7 +82,7 @@ interface Namespace {
   records: Map<number, StoredAnnotation>;
 }
 
-/** In-memory selections, available only to the originating native CLI session. */
+/** Private selections, available only to the originating native CLI session. */
 export class TerminalAnnotations {
   private namespaces = new Map<string, Namespace>();
   // A global sequence also keeps each terminal's numbers increasing after revoke.
@@ -82,6 +90,113 @@ export class TerminalAnnotations {
   private nextNumber = 1;
   private recordCount = 0;
   private byteCount = 0;
+  private readonly file?: string;
+  constructor(directory?: string) {
+    if (!directory) return;
+    mkdirSync(directory, { recursive: true });
+    this.file = join(directory, "terminal-annotations.json");
+    try {
+      if (statSync(this.file).size > 8 * 1024 * 1024)
+        throw new Error("Annotation snapshot is too large");
+      const recordSchema = annotationCaptureSchema
+        .extend({
+          number: numberSchema,
+          annotation: z.string().max(ANNOTATION_COMMENT_LIMIT),
+          sessionId: idSchema.optional(),
+          submitted: z.literal(true).optional(),
+        })
+        .strict();
+      const data = z
+        .object({
+          version: z.literal(1),
+          nextNumber: numberSchema,
+          namespaces: z
+            .array(
+              z
+                .object({
+                  terminalId: idSchema,
+                  sessionId: idSchema.optional(),
+                  records: z.array(recordSchema).max(ANNOTATION_RECORD_LIMIT),
+                })
+                .strict(),
+            )
+            .max(ANNOTATION_RECORD_LIMIT),
+        })
+        .strict()
+        .parse(JSON.parse(readFileSync(this.file, "utf8")));
+      const numbers = new Set<number>();
+      for (const namespace of data.namespaces) {
+        if (this.namespaces.has(namespace.terminalId))
+          throw new Error("Duplicate annotation namespace");
+        const records = new Map<number, StoredAnnotation>();
+        for (const saved of namespace.records) {
+          if (numbers.has(saved.number) || saved.number >= data.nextNumber)
+            throw new Error("Invalid annotation sequence");
+          numbers.add(saved.number);
+          const reference = annotationReference(saved.number);
+          const source = Object.freeze(saved.source);
+          const bytes = Buffer.byteLength(
+            JSON.stringify({
+              reference,
+              text: saved.text,
+              annotation: saved.annotation,
+              source,
+            }),
+            "utf8",
+          );
+          const { number: _number, ...record } = saved;
+          records.set(
+            saved.number,
+            Object.freeze({ ...record, source, reference, bytes }),
+          );
+          this.recordCount++;
+          this.byteCount += bytes;
+        }
+        this.namespaces.set(namespace.terminalId, {
+          sessionId: namespace.sessionId,
+          records,
+        });
+      }
+      if (
+        this.recordCount > ANNOTATION_RECORD_LIMIT ||
+        this.byteCount > ANNOTATION_BYTE_LIMIT
+      )
+        throw new Error("Annotation capacity exceeded");
+      this.nextNumber = data.nextNumber;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        throw new Error(
+          "저장된 인용 정보를 읽지 못했습니다. 잘못된 번호로 연결하지 않도록 자동 초기화하지 않습니다. 개인 데이터 폴더의 terminal-annotations.json을 확인하세요.",
+        );
+    }
+  }
+  private save() {
+    if (!this.file) return;
+    const temporary = `${this.file}.tmp`;
+    const namespaces = [...this.namespaces].map(([terminalId, namespace]) => ({
+      terminalId,
+      ...(namespace.sessionId ? { sessionId: namespace.sessionId } : {}),
+      records: [...namespace.records].map(([number, record]) => ({
+        number,
+        text: record.text,
+        annotation: record.annotation,
+        source: record.source,
+        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        ...(record.submitted ? { submitted: true } : {}),
+      })),
+    }));
+    writeFileSync(
+      temporary,
+      JSON.stringify({ version: 1, nextNumber: this.nextNumber, namespaces }),
+      { mode: 0o600 },
+    );
+    renameSync(temporary, this.file);
+  }
+  /** Remove departed terminals without ever reusing their reference numbers. */
+  retain(terminalIds: ReadonlySet<string>) {
+    for (const id of this.namespaces.keys())
+      if (!terminalIds.has(id)) this.revoke(id);
+  }
 
   /** Trusted wrapper/MCP readiness allows capture before deferred SessionStart. */
   prepare(terminalId: string): void {
@@ -91,6 +206,7 @@ export class TerminalAnnotations {
       // A fresh managed handshake must confirm the active native session again.
       // Previously assigned references retain their original session binding.
       existing.sessionId = undefined;
+      this.save();
       return;
     }
     if (this.namespaces.size >= ANNOTATION_RECORD_LIMIT)
@@ -98,6 +214,7 @@ export class TerminalAnnotations {
         "인용을 연결한 터미널이 너무 많습니다. 사용하지 않는 터미널을 닫아주세요.",
       );
     this.namespaces.set(terminalId, { records: new Map() });
+    this.save();
   }
 
   markReady(terminalId: string, sessionId: string): void {
@@ -117,6 +234,7 @@ export class TerminalAnnotations {
       }
       // Keep old records bound to their original session so stale markers fail.
       existing.sessionId = sessionId;
+      this.save();
       return;
     }
     if (this.namespaces.size >= ANNOTATION_RECORD_LIMIT)
@@ -124,6 +242,7 @@ export class TerminalAnnotations {
         "인용을 연결한 터미널이 너무 많습니다. 사용하지 않는 터미널을 닫아주세요.",
       );
     this.namespaces.set(terminalId, { sessionId, records: new Map() });
+    this.save();
   }
 
   isReady(terminalId: string): boolean {
@@ -165,6 +284,7 @@ export class TerminalAnnotations {
     );
     this.recordCount++;
     this.byteCount += bytes;
+    this.save();
     return Object.freeze({ number, reference });
   }
 
@@ -211,6 +331,7 @@ export class TerminalAnnotations {
     for (let index = 0; index < updated.length; index++)
       namespace.records.set(comments[index].number, updated[index]);
     this.byteCount += additionalBytes;
+    this.save();
   }
 
   /** Ordinary prompts add no context. Markers must resolve in this native session. */
@@ -254,6 +375,7 @@ export class TerminalAnnotations {
           numbers[index],
           Object.freeze({ ...records[index], submitted: true }),
         );
+    this.save();
     return Object.freeze({
       annotations: Object.freeze(
         records.map((record) =>
@@ -280,6 +402,7 @@ export class TerminalAnnotations {
       this.recordCount--;
       this.byteCount -= record.bytes;
     }
+    this.save();
   }
 
   revoke(terminalId: string): void {
@@ -290,6 +413,7 @@ export class TerminalAnnotations {
       this.byteCount -= record.bytes;
     }
     this.namespaces.delete(terminalId);
+    this.save();
   }
 
   private ready(terminalId: string): Namespace {

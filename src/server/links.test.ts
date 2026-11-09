@@ -15,6 +15,8 @@ test("relative Korean paths and source line suffixes are clickable without chang
     "docs/설명.md:12:3",
     "../docs/설명.md#L12",
     "./설명.md:12",
+    "보고서.html:12",
+    "report.HTM:12",
   ]) {
     const target = classifyLink(value);
     assert.equal(target.kind, "file");

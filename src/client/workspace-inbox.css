@@ -9,7 +9,7 @@
   margin: 0 12px 10px;
 }
 .harbor-side-switch button {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   gap: 5px;
 }
 .harbor-session-row {
@@ -21,12 +21,12 @@
   min-width: 65px;
 }
 .harbor-session-row > small {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
 }
 .connection-overview {
   border-bottom: 1px solid var(--border);
   padding: 13px 17px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .connection-overview-title {
   display: flex;
@@ -40,7 +40,7 @@
 }
 .connection-overview-title > span {
   margin-left: auto;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .connection-route {
   display: flex;
@@ -50,7 +50,7 @@
   color: var(--muted);
 }
 .connection-route > span {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   padding: 4px 7px;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -60,7 +60,7 @@
   background: var(--success-soft);
 }
 .connection-overview p {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   line-height: 1.8;
   color: var(--muted);
   overflow-wrap: anywhere;
@@ -77,7 +77,7 @@
 }
 .connection-overview details {
   margin-top: 10px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
 }
 .connection-overview summary {
@@ -88,7 +88,7 @@
 }
 .connection-overview details small {
   display: block;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   line-height: 1.8;
   margin-top: 8px;
 }
@@ -98,7 +98,7 @@
   gap: 7px;
   margin-top: 9px;
   color: var(--accent);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .sidebar-pending {
   display: flex;
@@ -108,7 +108,7 @@
   padding: 11px 14px;
   background: var(--warning-soft);
   color: var(--warning);
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   border-bottom: 1px solid var(--border);
 }
 .sidebar-alert-button {
@@ -122,11 +122,11 @@
   background: var(--accent);
   color: var(--on-accent);
   padding: 1px 4px;
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
 }
 .sidebar-collapse {
   padding: 10px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   border-top: 1px solid var(--border);
   color: var(--muted);
 }
@@ -146,7 +146,7 @@
   gap: 8px;
 }
 .workspace-inbox h2 {
-  font-size: 16px;
+  font-size: calc(var(--ui-font-size, 14px) * 16 / 12);
   font-weight: 600;
 }
 .workspace-inbox .inbox-close {
@@ -155,7 +155,7 @@
 }
 .workspace-inbox > header small {
   display: block;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   margin-top: 8px;
   line-height: 1.7;
@@ -172,7 +172,7 @@
   gap: 5px;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   padding: 9px 5px;
   border-radius: 6px;
   color: var(--muted);
@@ -182,13 +182,13 @@
   background: var(--accent-soft);
 }
 .inbox-tabs b {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
 }
 .inbox-history-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   padding: 13px 17px;
   color: var(--muted);
 }
@@ -216,7 +216,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   flex-wrap: wrap;
 }
@@ -225,12 +225,12 @@
   align-items: center;
   gap: 4px;
   color: var(--accent);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   overflow-wrap: anywhere;
   text-align: left;
 }
 .inbox-request h3 {
-  font-size: 13px;
+  font-size: calc(var(--ui-font-size, 14px) * 13 / 12);
   line-height: 1.7;
   margin: 12px 0 8px;
   overflow-wrap: anywhere;
@@ -238,7 +238,7 @@
 .inbox-question {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   line-height: 1.85;
 }
 .inbox-permission {
@@ -246,7 +246,7 @@
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.8;
 }
 .inbox-permission b {
@@ -257,14 +257,14 @@
   display: block;
   overflow-wrap: anywhere;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .inbox-permission pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 220px;
   overflow: auto;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   margin-top: 8px;
   user-select: text;
 }
@@ -284,7 +284,7 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.7;
   padding: 9px;
   border: 1px solid var(--border);
@@ -304,7 +304,7 @@
   resize: vertical;
   min-height: 74px;
   max-height: 200px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.8;
 }
 .inbox-request-actions {
@@ -315,19 +315,19 @@
   gap: 10px;
 }
 .inbox-request-actions > button:first-child {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
 }
 .inbox-request-actions .button {
   min-height: 32px;
   padding: 7px 10px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
 .inbox-request-result {
   border-top: 1px solid var(--border);
   margin-top: 12px;
   padding-top: 12px;
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--muted);
   line-height: 1.8;
 }
@@ -340,7 +340,7 @@
   overflow-wrap: anywhere;
 }
 .inbox-error {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   color: var(--red);
   margin-top: 8px;
   overflow-wrap: anywhere;
@@ -357,16 +357,16 @@
   color: var(--muted);
 }
 .inbox-empty b {
-  font-size: 12px;
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 12);
   font-weight: 550;
   color: var(--text);
 }
 .inbox-empty p {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.85;
 }
 .inbox-empty small {
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   line-height: 1.85;
 }
 .inbox-notice-toolbar {
@@ -375,13 +375,13 @@
   justify-content: space-between;
   padding: 13px 17px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .inbox-notice-toolbar button {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
 }
 .inbox-notice {
   width: 100%;
@@ -395,11 +395,11 @@
   background: var(--accent-soft);
 }
 .inbox-notice b {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   font-weight: 550;
 }
 .inbox-notice p {
-  font-size: 11px;
+  font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
   line-height: 1.8;
   color: var(--muted);
   margin-top: 7px;
@@ -409,7 +409,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   color: var(--muted);
   margin-top: 12px;
 }
@@ -445,12 +445,12 @@
 }
 .mailbox-delivery {
   margin-top: 7px;
-  font-size: 10px;
+  font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   color: var(--muted);
   line-height: 1.8;
 }
 .mailbox-host-route {
-  font-size: 9px;
+  font-size: calc(var(--ui-font-size, 14px) * 9 / 12);
   color: var(--muted);
   margin-bottom: 9px;
 }
@@ -473,7 +473,7 @@
     display: none;
   }
   .harbor-side-switch button {
-    font-size: 10px;
+    font-size: calc(var(--ui-font-size, 14px) * 10 / 12);
   }
   .harbor-session-row {
     padding-left: 13px;
@@ -501,11 +501,11 @@
     flex-direction: row;
   }
   .harbor-sidebar.with-inbox .harbor-side-switch button {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
     gap: 6px;
   }
   .harbor-sidebar.with-inbox .harbor-history-link {
-    font-size: 11px;
+    font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
     justify-content: flex-start;
     padding: 11px 18px;
   }
