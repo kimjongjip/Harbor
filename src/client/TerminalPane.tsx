@@ -1761,7 +1761,12 @@ export default function TerminalPane({
         data-testid={`terminal-${info.id}`}
       />
       {nativeTerminal && (
-        <TerminalRich term={nativeTerminal} info={info} blocks={richBlocks} />
+        <TerminalRich
+          term={nativeTerminal}
+          info={info}
+          blocks={richBlocks}
+          covered={!rawOutput && !!(info.agentSessionId || info.resumeThreadId)}
+        />
       )}
       {nativeTerminal && (info.agentSessionId || info.resumeThreadId) && (
         <TerminalConversation

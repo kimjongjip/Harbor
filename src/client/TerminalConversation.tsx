@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -13,9 +14,14 @@ import type { TerminalInfo } from "../shared/types";
 import type { HistoryDetail } from "../shared/history";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { api } from "./api";
-import { TranscriptItems } from "./TranscriptItems";
+import { TranscriptItems, type TranscriptItemsProps } from "./TranscriptItems";
+import { Markdown } from "./RichMarkdown";
+import { transcriptEntries } from "./transcript-steps";
 import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
-import { transcriptBoundary } from "./terminal-transcript-boundary";
+import {
+  liveTranscriptLayout,
+  type LiveTranscriptLayout,
+} from "./terminal-transcript-boundary";
 import { TerminalCompletionCue } from "./terminal-completion-cue";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import {
@@ -38,6 +44,59 @@ const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
   return `${last.kind}:${last.id}`;
 };
+/** One turn's saved work. A running turn's group is open and also hosts the
+ * CLI rows newer than history; any group can be folded at any time. */
+const WorkGroup = memo(function WorkGroup({
+  items,
+  state,
+  busy = false,
+  open,
+  onToggle,
+  target,
+  props,
+}: {
+  items: TranscriptItemsProps["items"];
+  state: "live" | "done" | "saved";
+  /** The CLI is visibly working on this turn (not merely unverified). */
+  busy?: boolean;
+  open: boolean;
+  onToggle(open: boolean): void;
+  target?: (node: HTMLDivElement | null) => void;
+  props: Omit<TranscriptItemsProps, "items">;
+}) {
+  const count = useMemo(() => transcriptEntries(items).length, [items]);
+  return (
+    <details
+      className={`conversation-work${state === "live" ? " live" : ""}`}
+      data-work-state={state}
+      open={open}
+    >
+      <summary
+        onClick={(event) => {
+          event.preventDefault();
+          onToggle(!open);
+        }}
+      >
+        {state === "live" && busy && (
+          <span className="conversation-work-spinner" aria-hidden="true" />
+        )}
+        {state === "live"
+          ? busy
+            ? "작업 중"
+            : "작업 기록"
+          : state === "done"
+            ? "작업 과정"
+            : "저장된 작업"}
+        {count ? ` · ${count}개` : ""}
+      </summary>
+      {open && !!items.length && (
+        <TranscriptItems items={items} {...props} stepsOpen />
+      )}
+      {target && <div className="conversation-live-work" ref={target} />}
+    </details>
+  );
+});
+
 /** One terminal document: persisted work and native live output/input share one scroller. */
 export function TerminalConversation({
   term,
@@ -309,6 +368,9 @@ export function TerminalConversation({
   };
   useEffect(() => {
     const input = term.onData?.(() => {
+      // Already following: nothing to restore. Reading scrollHeight here would
+      // force a synchronous layout of the whole transcript on every key.
+      if (followingRef.current && !pending.current) return;
       if (!hasSelection()) resumeFollowing();
     });
     return () => input?.dispose();
@@ -401,27 +463,34 @@ export function TerminalConversation({
   const visible = active && mode !== "terminal";
   // Completion is verified from the saved turn, never inferred from an idle
   // composer or an approval dialog waiting for input.
-  const working = info.agentState !== "idle";
+  const waiting = info.agentState === "waiting";
   // Echoed keystrokes belong to the native tail. They must not rerender every
   // saved Markdown/tool block or schedule a second full native capture.
-  const boundaryForFrame = useMemo(() => {
+  const layoutForFrame = useMemo(() => {
     let cachedFrame: NativeFlowFrame | undefined;
-    let cachedBoundary: ReturnType<typeof transcriptBoundary>;
+    let cachedLayout: LiveTranscriptLayout;
     return (frame: NativeFlowFrame) => {
       if (frame !== cachedFrame) {
         cachedFrame = frame;
-        cachedBoundary = transcriptBoundary(turns, frame, blocks, working);
+        cachedLayout = liveTranscriptLayout(turns, frame, blocks, { waiting });
       }
-      return cachedBoundary;
+      return cachedLayout;
     };
-  }, [turns, blocks, working]);
-  const startNativeRow = useCallback(
-    (frame: NativeFlowFrame) => boundaryForFrame(frame).nativeStart,
-    [boundaryForFrame],
+  }, [turns, blocks, waiting]);
+  const nativeRange = useCallback(
+    (frame: NativeFlowFrame) => {
+      const next = layoutForFrame(frame);
+      return {
+        start: next.nativeStart,
+        split: next.live ? next.chromeStart : next.nativeStart,
+      };
+    },
+    [layoutForFrame],
   );
-  const publishedBoundary = useRef<
-    ReturnType<typeof transcriptBoundary> | undefined
-  >(undefined);
+  const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
+  // A running CLI shows "esc to interrupt" in its live area even when no
+  // native event reported working (poll-only sessions).
+  const [nativeBusy, setNativeBusy] = useState(false);
   const completionCue = useMemo(
     () => ({
       detector: new TerminalCompletionCue(),
@@ -446,45 +515,76 @@ export function TerminalConversation({
           setTimeout(() => void load.current(false, true), delay),
         );
       }
-      const next = boundaryForFrame(frame);
+      const next = layoutForFrame(frame);
+      const current = publishedLayout.current;
       if (
-        next.historyCount !== publishedBoundary.current?.historyCount ||
-        next.nativeStart !== publishedBoundary.current?.nativeStart
+        !current ||
+        next.historyCount !== current.historyCount ||
+        next.nativeStart !== current.nativeStart ||
+        next.chromeStart !== current.chromeStart ||
+        next.live !== current.live
       ) {
-        publishedBoundary.current = next;
+        publishedLayout.current = next;
         setBoundaryRevision((value) => value + 1);
       }
+      const busy =
+        next.live &&
+        frame.lines
+          .slice(next.chromeStart, frame.end)
+          .some((line) => line.includes("esc to interrupt"));
+      setNativeBusy((value) => (value === busy ? value : busy));
     },
-    [boundaryForFrame, completionCue, provider],
+    [layoutForFrame, completionCue, provider],
   );
+  // A completed answer the CLI reserved rows for is typeset at once from its
+  // received text, instead of raw Markdown until history catches up.
   const renderNativeAnswer = useCallback(
-    (text: string) => <pre className="terminal-native-answer-text">{text}</pre>,
-    [],
+    (text: string) => (
+      <div className="terminal-native-answer-text">
+        <Markdown text={text} location={{ hostId: info.hostId, cwd: info.cwd }} />
+      </div>
+    ),
+    [info.hostId, info.cwd],
   );
-  const lastBoundary = useRef<
-    { historyCount: number; nativeStart: number; turnCount: number } | undefined
+  const lastLayout = useRef<
+    (LiveTranscriptLayout & { turnCount: number }) | undefined
   >(undefined);
-  const nextBoundary = nativeFrame.current
-    ? boundaryForFrame(nativeFrame.current)
+  const nextLayout: LiveTranscriptLayout = nativeFrame.current
+    ? layoutForFrame(nativeFrame.current)
     : {
         historyCount: Math.max(
           0,
           turns.length - (turns.at(-1)?.complete ? 0 : 1),
         ),
         nativeStart: 0,
+        chromeStart: 0,
+        live: false,
       };
-  publishedBoundary.current = nextBoundary;
-  const boundary =
-    frozen && lastBoundary.current
+  publishedLayout.current = nextLayout;
+  const layout =
+    frozen && lastLayout.current
       ? {
-          historyCount:
-            lastBoundary.current.historyCount +
-            turns.length -
-            lastBoundary.current.turnCount,
-          nativeStart: lastBoundary.current.nativeStart,
+          ...lastLayout.current,
+          historyCount: lastLayout.current.live
+            ? turns.length
+            : lastLayout.current.historyCount +
+              turns.length -
+              lastLayout.current.turnCount,
         }
-      : nextBoundary;
-  lastBoundary.current = { ...boundary, turnCount: turns.length };
+      : nextLayout;
+  lastLayout.current = { ...layout, turnCount: turns.length };
+  const running =
+    layout.live && turns.length > 0 && !turns.at(-1)!.complete;
+  // Saved steps of a running turn stream in while its CLI works.
+  const agentBusy = info.agentState === "working" || waiting || nativeBusy;
+  const refreshing = visible && agentBusy && running;
+  useEffect(() => {
+    if (!refreshing) return;
+    const timer = setInterval(() => void load.current(false, true), 2000);
+    return () => clearInterval(timer);
+  }, [refreshing]);
+  const [workOpen, setWorkOpen] = useState<Record<string, boolean>>({});
+  const [workTarget, setWorkTarget] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const node = body.current,
       saved = anchor.current;
@@ -518,7 +618,8 @@ export function TerminalConversation({
       role="region"
       aria-label="터미널 출력"
       data-terminal-rich="true"
-      data-native-start={boundary.nativeStart}
+      data-native-start={layout.nativeStart}
+      data-native-live={layout.live ? layout.chromeStart : undefined}
       data-following={following}
       data-selected={selected}
       hidden={!visible}
@@ -572,7 +673,7 @@ export function TerminalConversation({
             </button>
           )}
           {detail?.notice && <p role="status">{detail.notice}</p>}
-          {turns.slice(0, boundary.historyCount).map((turn, turnIndex) => {
+          {turns.slice(0, layout.historyCount).map((turn, turnIndex) => {
             const props = {
               provider: provider === "claude" ? "Claude" : "Codex",
               hostId: info.hostId,
@@ -582,39 +683,50 @@ export function TerminalConversation({
               completed: turn.complete,
               selectionActive: selected,
             };
+            const live = running && turnIndex === turns.length - 1;
             // Old records can lack completion metadata. Group their existing
             // work together without claiming completion. Only a trailing saved
-            // assistant message stays outside that group; an active unknown
-            // turn is kept wholly native by transcriptBoundary.
+            // assistant message stays outside that group. The running turn
+            // keeps all of its saved work in a live group, open by default.
             const last = turn.items.at(-1);
             const replyIds = turn.complete
               ? turn.finalIds
-              : turnIndex < turns.length - 1 && last?.kind === "assistant"
+              : !live &&
+                  turnIndex < turns.length - 1 &&
+                  last?.kind === "assistant"
                 ? new Set([last.id])
                 : new Set<string>();
             const work = turn.items.filter(
               (item) => item.kind !== "user" && !replyIds.has(item.id),
             );
+            const state = turn.complete ? "done" : live ? "live" : "saved";
+            const workKey = `${turn.id}:${state}`;
             return (
               <section
-                key={turnKey(turn)}
-                className="conversation-turn"
+                key={turn.items.some((item) => item.turnId) ? turn.id : turnKey(turn)}
+                className={`conversation-turn${live ? " running" : ""}`}
                 data-turn-id={turn.id}
               >
-                {turn.complete || turnIndex < turns.length - 1 ? (
+                {turn.complete || turnIndex < turns.length - 1 || live ? (
                   <>
                     <TranscriptItems
                       items={turn.items.filter((item) => item.kind === "user")}
                       {...props}
                     />
-                    {!!work.length && (
-                      <details className="conversation-work">
-                        <summary>
-                          {turn.complete ? "작업 과정" : "저장된 작업"}{" "}
-                          {work.length}개
-                        </summary>
-                        <TranscriptItems items={work} {...props} />
-                      </details>
+                    {(!!work.length ||
+                      (live &&
+                        (agentBusy || layout.nativeStart < layout.chromeStart))) && (
+                      <WorkGroup
+                        items={work}
+                        state={state}
+                        busy={live && agentBusy}
+                        open={workOpen[workKey] ?? live}
+                        onToggle={(open) =>
+                          setWorkOpen((value) => ({ ...value, [workKey]: open }))
+                        }
+                        target={live ? setWorkTarget : undefined}
+                        props={props}
+                      />
                     )}
                     <TranscriptItems
                       items={turn.items.filter((item) => replyIds.has(item.id))}
@@ -633,7 +745,8 @@ export function TerminalConversation({
             blocks={blocks}
             active={visible}
             frozen={selected || !following}
-            startRow={startNativeRow}
+            startRow={nativeRange}
+            workTarget={running ? workTarget : null}
             onFrame={updateNativeFrame}
             onLink={onLink}
             renderAnswer={renderNativeAnswer}

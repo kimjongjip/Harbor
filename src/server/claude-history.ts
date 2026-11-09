@@ -7,10 +7,11 @@ import type { HistoryThread, HistoryPage, HistoryDetail, HistoryReadOptions } fr
 import { passwordConnection } from './ssh-connect.js';
 import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCursor, readClaudeRecordsBackwards } from './claude-history-pages.js';
 import { assembleClaudeHistory, belongsToClaudeSession, projectClaudeRecord, type ClaudeHistoryRecord } from './claude-history-items.js';
-import { activityBudget, historyActivities } from './history-activity.js';
+import { historyActivities } from './history-activity.js';
 
 const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
+const sessionKey = (hostId: string, id: string) => `${hostId}\0${id}`;
 const call = <T>(fn: (cb: (e: Error | null | undefined, value: T) => void) => void) => new Promise<T>((resolve, reject) => fn((e, v) => e ? reject(e) : resolve(v)));
 export interface ClaudeHistoryReader {
   root: string;
@@ -121,21 +122,80 @@ function titleValues(text: string, id: string): Titles {
   return titles;
 }
 type Entry = { file: string; size: number; thread: HistoryThread; titles: Titles };
+interface Lease { key: string; generation: number; reader: Promise<ClaudeHistoryReader>; busy: number; timer?: NodeJS.Timeout }
 export class ClaudeHistory {
   private active = new Map<ClaudeHistoryReader, string>();
   private stopped = false;
   private generations = new Map<string, number>();
   private cache = new Map<string, { time: number; entries: Entry[] }>();
-  constructor(private readonly create = connect) {}
+  // A running session is re-read every few seconds. Keep its file and the SSH
+  // connection instead of rescanning every project or reconnecting each time.
+  private sessions = new Map<string, Entry>();
+  private leases = new Map<string, Lease>();
+  constructor(private readonly create = connect, private readonly idleMs = 60_000) {}
+  private release(hostId: string, lease: Lease) {
+    if (this.leases.get(hostId) === lease) this.leases.delete(hostId);
+    clearTimeout(lease.timer);
+    void lease.reader.then(reader => { this.active.delete(reader); reader.close(); }).catch(() => {});
+  }
   private async using<T>(host: HostConfig, password: string | undefined, fn: (reader: ClaudeHistoryReader) => Promise<T>): Promise<T> {
     if (this.stopped) throw new Error('Claude history connection is closed.');
     const generation = this.generations.get(host.id) || 0;
-    const r = await this.create(host, password);
-    if (this.stopped || generation !== (this.generations.get(host.id) || 0)) { r.close(); throw new Error('Claude history connection is closed.'); }
-    this.active.set(r, host.id);
+    if (host.kind !== 'ssh') {
+      const r = await this.create(host, password);
+      if (this.stopped || generation !== (this.generations.get(host.id) || 0)) { r.close(); throw new Error('Claude history connection is closed.'); }
+      this.active.set(r, host.id);
+      let timer: NodeJS.Timeout | undefined;
+      try { return await Promise.race([fn(r), new Promise<never>((_, reject) => { timer = setTimeout(() => { r.close(); reject(new Error('Claude history lookup timed out.')); }, 60000); })]); }
+      finally { clearTimeout(timer); this.active.delete(r); r.close(); }
+    }
+    const key = JSON.stringify([host.address, host.username, host.port, host.identityFile]);
+    let lease = this.leases.get(host.id);
+    if (lease && (lease.key !== key || lease.generation !== generation)) { this.release(host.id, lease); lease = undefined; }
+    if (!lease) {
+      const created: Lease = { key, generation, busy: 0, reader: this.create(host, password) };
+      created.reader.then(reader => {
+        if (this.leases.get(host.id) === created) this.active.set(reader, host.id);
+        else reader.close();
+      }, () => this.release(host.id, created));
+      this.leases.set(host.id, lease = created);
+    }
+    const current = lease;
+    clearTimeout(current.timer);
+    current.busy++;
     let timer: NodeJS.Timeout | undefined;
-    try { return await Promise.race([fn(r), new Promise<never>((_, reject) => { timer = setTimeout(() => { r.close(); reject(new Error('Claude history lookup timed out.')); }, 60000); })]); }
-    finally { clearTimeout(timer); this.active.delete(r); r.close(); }
+    try {
+      const r = await current.reader;
+      if (this.stopped || generation !== (this.generations.get(host.id) || 0) || this.leases.get(host.id) !== current || !this.active.has(r))
+        throw new Error('Claude history connection is closed.');
+      return await Promise.race([fn(r), new Promise<never>((_, reject) => { timer = setTimeout(() => { this.release(host.id, current); reject(new Error('Claude history lookup timed out.')); }, 60000); })]);
+    } catch (error) {
+      // A failed read may leave the SSH channel unusable; never reuse it.
+      this.release(host.id, current);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      current.busy--;
+      if (!current.busy && this.leases.get(host.id) === current) {
+        current.timer = setTimeout(() => this.release(host.id, current), this.idleMs);
+        current.timer.unref?.();
+      }
+    }
+  }
+  private async locate(reader: ClaudeHistoryReader, hostId: string, id: string, fresh = false): Promise<Entry> {
+    const key = sessionKey(hostId, id);
+    const known = fresh ? undefined : this.sessions.get(key);
+    if (known) return known;
+    if (fresh) this.cache.delete(hostId);
+    const entry = (await this.catalog(reader, hostId)).find(e => e.thread.id === id);
+    if (!entry) throw new Error('Claude 대화 기록을 찾을 수 없습니다.');
+    this.remember(key, entry);
+    return entry;
+  }
+  private remember(key: string, entry: Entry) {
+    this.sessions.delete(key);
+    this.sessions.set(key, entry);
+    if (this.sessions.size > 256) this.sessions.delete(this.sessions.keys().next().value!);
   }
   private async catalog(reader: ClaudeHistoryReader, hostId: string): Promise<Entry[]> {
     const cached = this.cache.get(hostId);
@@ -174,12 +234,19 @@ export class ClaudeHistory {
     if (!validId(id)) throw new Error('잘못된 Claude 세션 ID입니다.');
     const page = decodeClaudePageCursor(cursor);
     return this.using(host, password, async r => {
-      const entry = (await this.catalog(r, host.id)).find(e => e.thread.id === id);
-      if (!entry) throw new Error('Claude 대화 기록을 찾을 수 없습니다.');
+      let entry = await this.locate(r, host.id, id);
       // The catalog may be cached, but an attached CLI appends to its transcript
       // continuously. Stat only this file so refresh sees new messages without
       // scanning every project again. Also honor truncation/replacement.
-      const current = r.stat ? await r.stat(entry.file) : { directory: false, size: entry.size, modified: entry.thread.updatedAt };
+      const stat = async () => r.stat ? await r.stat(entry.file) : { directory: false, size: entry.size, modified: entry.thread.updatedAt };
+      let current;
+      try { current = await stat(); } catch (error: any) {
+        // A remembered transcript can move or disappear; look it up once more.
+        if (error?.code !== 'ENOENT' && error?.code !== 2) throw error;
+        this.sessions.delete(sessionKey(host.id, id));
+        entry = await this.locate(r, host.id, id, true);
+        current = await stat();
+      }
       if (current.directory || !Number.isSafeInteger(current.size) || current.size < 0) throw new Error('Claude 대화 기록 파일을 읽을 수 없습니다.');
       const alive = () => { if (!this.active.has(r)) throw new Error('Claude history connection is closed.'); };
       const read = async (start: number, length: number) => { alive(); const bytes = await r.read(entry.file, start, length); alive(); return bytes; };
@@ -198,6 +265,7 @@ export class ClaudeHistory {
         const sample = head + '\n' + tail;
         thread = parseClaudeHistory(host.id, id, sample, current.modified).thread;
         titles = titleValues(sample, id);
+        this.remember(sessionKey(host.id, id), { file: entry.file, size: current.size, thread, titles });
       }
       const projected: ClaudeHistoryRecord[] = [], seen = new Set<string>(), latestTitles: Titles = {};
       let remaining = snapshot.remaining, fallbackCwd = '', visibleCount = 0, activityCount = 0;
@@ -225,8 +293,8 @@ export class ClaudeHistory {
       const combined = snapshot.at === snapshot.size ? { ...titles, ...latestTitles } : { ...latestTitles, ...titles };
       const { activityOmitted, ...messages } = assembleClaudeHistory(projected.reverse(), !!options.includeActivity);
       if (messages.timeline) {
-        const budget = activityBudget();
-        messages.timeline = messages.timeline.map(item => item.kind === 'user' || item.kind === 'assistant' ? item : historyActivities.preview(host, 'claude', id, item, budget));
+        // The newest work (often a running turn) gets the preview budget first.
+        messages.timeline = historyActivities.previewAll(host, 'claude', id, messages.timeline, item => item.kind !== 'user' && item.kind !== 'assistant');
       }
       const notice = [
         scanned.oversized ? '8 MB를 넘는 개별 기록 항목은 표시하지 않았습니다. 원본 파일은 유지되며 이전 대화를 계속 불러올 수 있습니다.' : '',
@@ -244,7 +312,10 @@ export class ClaudeHistory {
   close(hostId: string) {
     this.generations.set(hostId, (this.generations.get(hostId) || 0) + 1);
     this.cache.delete(hostId);
+    const lease = this.leases.get(hostId);
+    if (lease) this.release(hostId, lease);
+    for (const key of this.sessions.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.sessions.delete(key);
     for (const [reader, id] of this.active) if (id === hostId) { this.active.delete(reader); reader.close(); }
   }
-  shutdown() { this.stopped = true; for (const reader of this.active.keys()) reader.close(); this.active.clear(); this.cache.clear(); }
+  shutdown() { this.stopped = true; for (const [hostId, lease] of this.leases) this.release(hostId, lease); for (const reader of this.active.keys()) reader.close(); this.active.clear(); this.cache.clear(); this.sessions.clear(); }
 }

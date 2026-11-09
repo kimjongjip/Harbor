@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  liveTranscriptLayout,
   transcriptBoundary,
   type TranscriptFrame,
 } from "./terminal-transcript-boundary";
@@ -614,4 +615,121 @@ test("list-looking code remains literal when matching rendered answers", () => {
       },
     );
   }
+});
+
+// Fullscreen CLIs: saved turns render from history; only rows newer than the
+// saved transcript and the CLI's live area stay native.
+const rule = "─".repeat(40);
+const composer = [rule, "❯ draft", rule, "  ⏸ manual mode on · esc to interrupt"];
+const liveFrame = (lines: string[]): TranscriptFrame => ({
+  lines,
+  cursorRow: lines.length - 3,
+  baseY: 0,
+  end: lines.length,
+});
+
+test("a completed turn keeps only the CLI's live area under the saved transcript", () => {
+  const lines = [
+    "● This is the complete final answer.",
+    "",
+    "✻ Churned for 8s · done",
+    "",
+    ...composer,
+  ];
+  assert.deepEqual(
+    liveTranscriptLayout(conversationTurns(records()), liveFrame(lines), [], {
+      waiting: false,
+    }),
+    { historyCount: 2, nativeStart: 2, chromeStart: 2, live: true },
+  );
+});
+
+test("an unmatched completed screen (e.g. a final table) still shows only the live area", () => {
+  const lines = ["│ build │ ok │", "└───────┴────┘", "", ...composer];
+  assert.deepEqual(
+    liveTranscriptLayout(conversationTurns(records()), liveFrame(lines), [], {
+      waiting: false,
+    }),
+    { historyCount: 2, nativeStart: 3, chromeStart: 3, live: true },
+  );
+});
+
+test("a running turn renders from history and keeps rows after its latest saved text native", () => {
+  const items = [
+    ...records(false).slice(0, 4),
+    {
+      id: "c2",
+      kind: "assistant" as const,
+      turnId: "2",
+      text: "Now running the second compiler pass.",
+      phase: "commentary",
+      turnStatus: "inProgress" as const,
+    },
+  ];
+  const lines = [
+    "❯ Please inspect the compiler output",
+    "● Now running the second compiler pass.",
+    "  Running 1 shell command…",
+    "  ⎿  $ make pass2",
+    "",
+    "✢ Marinating… (3s · ↓ 47 tokens)",
+    "",
+    ...composer,
+  ];
+  assert.deepEqual(
+    liveTranscriptLayout(conversationTurns(items), liveFrame(lines), [], {
+      waiting: false,
+    }),
+    { historyCount: 2, nativeStart: 2, chromeStart: 5, live: true },
+  );
+});
+
+test("a running turn with no saved text yet starts after its typed prompt", () => {
+  const lines = [
+    "● Earlier answer.",
+    "❯ Please inspect the compiler",
+    "  output",
+    "● Ran compiler",
+    "",
+    "✢ Working… (1s)",
+    "",
+    ...composer,
+  ];
+  assert.equal(
+    liveTranscriptLayout(conversationTurns(records(false)), liveFrame(lines), [], {
+      waiting: false,
+    }).nativeStart,
+    3,
+  );
+});
+
+test("nothing saved on screen keeps the newest native block, and unknown screens fall back", () => {
+  const lines = [
+    "  streaming continuation 1",
+    "● Fresh unsaved block",
+    "  more text",
+    "",
+    ...composer,
+  ];
+  assert.equal(
+    liveTranscriptLayout(conversationTurns(records(false)), liveFrame(lines), [], {
+      waiting: false,
+    }).nativeStart,
+    1,
+  );
+  const unknown = liveTranscriptLayout(
+    conversationTurns(records()),
+    liveFrame(["vim", "~", ":wq"]),
+    [],
+    { waiting: false },
+  );
+  assert.equal(unknown.live, false);
+  // An unframed choice list during an approval keeps the whole native tail.
+  const codexApproval = liveTranscriptLayout(
+    conversationTurns(records(false)),
+    liveFrame(["Would you like to run the following command?", "$ rm -rf build", "› 1. Yes", "  2. No"]),
+    [],
+    { waiting: true },
+  );
+  assert.equal(codexApproval.live, false);
 });

@@ -1,5 +1,21 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.17.0 작업 중 표시와 CLI 작업 로그
+
+Claude Code 2.1.3xx와 Codex 0.16x는 기본으로 대체 화면(전체 화면)을 쓰므로 xterm에는 화면 한 장만 남는다. 1.16.x는 이 화면을 저장 기록과 문자열로 맞춰 이어 붙였고, 표로 끝나는 답변이나 긴 작업에서 맞추기에 실패하면 화면 전체가 "칸"처럼 붙고 현재 턴 앞부분이 사라졌다. `terminal-native-chrome.ts`는 하단의 CLI 영역만 찾는다. Claude는 맨 아래 실선 묶음(입력창 위·아래 줄 또는 승인 상자 윗줄)과 바로 위 진행 표시·할 일 줄, Codex는 바닥 근처 `›` 입력줄과 상태줄이다. `liveTranscriptLayout`은 진행 중 턴을 포함한 모든 턴을 기록에서 그리고, 마지막 저장 텍스트(또는 현재 질문·직전 완료 답변) 이후의 화면 행과 하단 영역만 네이티브로 남긴다. 아무것도 맞지 않으면 최신 블록부터 보여준다. 하단 영역을 찾지 못하거나 프레임 없는(Codex형) 선택지가 승인 대기 중이면 기존 `transcriptBoundary`로 화면 전체를 유지한다. 실제 녹화 화면으로 만든 `terminal-native-chrome.test.ts`를 CLI 화면이 바뀔 때 갱신한다.
+
+`TerminalNativeFlow`는 `{start, split}`을 받아 `[start, split)` 행을 실행 중 턴의 **작업 중** 묶음 안(`workTarget` portal)에, 나머지를 맨 아래에 그린다. 묶음을 접으면 두 부분이 함께 숨는다. 갱신은 키 입력 직후 250ms 동안 microtask로 즉시, 그 밖의 출력은 40ms 묶음으로 처리하며 RAF에 의존하지 않는다. 예약된 묶음을 새 출력으로 취소하면 갱신이 영구히 멈추므로 앞당기기만 한다. `nativeRow`는 셀 객체를 재사용하고 JSON 대신 문자열 키로 run을 합친다(모바일 공유). 대화 화면이 덮은 `TerminalRich`(`covered`)는 출력마다 재배치하지 않고 새 완료 답변의 높이 측정·`/rich/:id/layout` 응답만 유지한다. 예약 행의 완료 답변은 `renderNativeAnswer`가 Markdown으로 즉시 조판한다. 실행 중이고 화면에 `esc to interrupt`가 있거나 상태가 working/waiting이면 2초마다 기록을 다시 읽는다. 완료된 묶음은 펼칠 때만 내용을 렌더링한다.
+
+`transcript-steps.ts`는 저장 순서를 바꾸지 않고 도구 호출과 결과를 `toolUseId`(구버전은 발생 순서)로 묶는다. `TranscriptWork.tsx`는 `Update(파일)`·`Bash(명령)` 머리줄과 한 줄 결과를 summary에 두고, 접힌 단계는 본문을 DOM에 남기지 않는다. 접힌 `<details>`의 숨은 내용은 스크롤 뒤 선택 문자열에 섞일 수 있었다. 서버의 `editResult`는 Claude `toolUseResult.structuredPatch`를 hunk 머리줄이 있는 unified diff(`format: "diff"`)로, 새 파일은 `format: "file"`로 보낸다. 레코드 하나에 도구 결과가 둘 이상이면 적용하지 않는다. 출력은 `AnsiText`가 SGR 색만 살린다. 터미널 작업 묶음 안의 단계는 펼친 상태로, 사이드바 기록 미리보기의 단계는 접힌 상태로 시작한다. 사용자가 직접 펼칠 때만 잘린 원문 첫 페이지를 자동으로 읽는다.
+
+`shared/user-message-origin.ts`는 CLI가 user로 저장했지만 사람이 입력하지 않은 기록을 정확한 표식으로만 분류한다. Claude 2.1.295+의 `origin.kind`(human·voice-call 등은 입력, task-notification·channel·peer·plugin 등은 생성), `<command-name>`·`<local-command-stdout|stderr|caveat>`·`<bash-*>`·`<task-notification>`·`[Request interrupted…]`·`<channel>`·`<system-reminder>`, Harbor 자신의 Codex 동료 봉투가 대상이다. 서버는 `MessageItem.origin`과 표시용 텍스트를 보내고 저장 파일은 바꾸지 않는다. 클라이언트 `userMessageView`는 구버전 서버의 원문 태그에도 같은 분류를 적용한다. 터미널·모바일 대화·IDE 패널은 "나" 대신 명령·알림·메시지 라벨을 쓴다. 알림·채널은 새 턴을 열고 명령 출력·중단은 이전 기록에 붙는다.
+
+`assembleClaudeHistory`는 직접 입력한 프롬프트가 부모 레코드의 턴을 물려받지 않게 한다. 실제 기록은 턴 사이 system 레코드 때문에 대개 끊겼지만, 프롬프트의 부모가 바로 이전 답변이면 모든 턴이 첫 턴으로 합쳐졌다. 작업 항목은 user/assistant 레코드에서만 만든다. Claude Code 2.1.319의 `api-request-blob`은 보낸 요청의 도구 결과 사본을 담는다. `HistoryActivities.previewAll`은 미리보기 용량을 최신 작업부터 배분하되 원문 캐시는 시간순으로 넣어 LRU가 최신 원문을 먼저 버리지 않게 한다.
+
+`ClaudeHistory.read`는 세션 파일 위치를 최대 256개 기억하고 매번 stat으로 확인한다. 사라지면 한 번만 목록을 다시 만든다. 10초 캐시가 끝날 때마다 모든 세션 파일의 앞뒤를 다시 읽지 않는다. SSH 호스트의 읽기 연결은 60초 유휴까지 재사용한다. 실패·시간 초과·`close(hostId)`·설정 변경 시 폐기하고 진행 중 읽기는 `closed` 오류로 끝낸다. 로컬은 요청마다 열고 닫는다.
+
+검증: `terminal-native-chrome`, `terminal-transcript-boundary`, `transcript-steps`, `user-message-origin`, `claude-history*`, `history*` 단위 테스트. 바뀐 구조를 반영한 브라우저 테스트는 `terminal-conversation`, `terminal-conversation-pane`, `terminal-completion-refresh`, `history-preview`이다. 실행 중 턴은 live 묶음, 완료 증명 후에만 done 묶음, 접힌 단계 DOM 없음, 키 입력 중 저장 기록 재렌더 없음, 입력 미전송을 확인한다. `mobile-settings.browser`의 일회용 연결 링크 대기 실패는 1.16.3 HEAD에서도 같아 이번 변경과 무관하다. 별도로 `.cache`의 격리 스크립트로 실제 Claude Code 2.1.319를 실행했다. 별도 `HARBOR_DATA_DIR`·포트·Electron 프로필·`CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 쓰고, 루프백 모의 모델과 그 밖의 HTTP(S)는 닫힌 로컬 프록시 포트로 보냈다. 이 상태에서 합성 장기 대화 재개 → 입력 → 3단계 작업 → 완료를 오프스크린 Electron으로 측정·캡처했다. Harbor 터미널 안에서 실행하는 셸에는 실행 중 Harbor의 `HARBOR_DATA_DIR`·`HARBOR_PORT`·토큰이 상속되므로 격리 실행 전에 모두 제거한다. 실제 Codex를 격리 실행할 때 첫 화면의 Windows 샌드박스 설정 질문에 Enter를 보내면 안 된다. 격리 `CODEX_HOME`이어도 컴퓨터 전체의 CodexSandbox 계정 비밀번호와 방화벽 규칙을 다시 구성한다. `[windows] sandbox = "unelevated"`를 미리 넣거나 Esc로 닫는다. 작업 폴더는 Git 저장소 밖에 둔다.
+
 ## 1.16.3 Codex 표시 차이와 완료 조회
 
 `terminal-transcript-boundary`는 저장된 Markdown의 원본과 링크 제목·목록 기호가 바뀐 비교용 텍스트를 함께 확인한다. 목록은 줄 시작의 문법만 정규화하고 본문 하이픈은 유지한다. 코드 안의 링크·목록·잘못된 문법은 임의로 제거하지 않으며, 저장된 원문을 수정하지 않는다. 비교 결과는 메시지 객체별로 캐시하고 기존 최소 일치 길이·완료 증명·반복 질문 보호를 유지한다. `»` 프롬프트도 같은 네이티브 질문으로 인식한다.

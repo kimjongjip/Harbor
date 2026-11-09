@@ -59,7 +59,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         setup(builder) {
           builder.onLoad({ filter: /[/\\]TranscriptItems\.tsx$/ }, async ({ path }) => {
             const source = await readFile(path, "utf8");
-            const entry = "export function TranscriptItems({ items, ...props }: TranscriptItemsProps) {";
+            const entry = "}: TranscriptItemsProps) {";
             assert.ok(source.includes(entry), "the render counter must instrument the actual saved transcript");
             return {
               contents: source.replace(entry, entry + "\n(window as any).savedTranscriptRenders = ((window as any).savedTranscriptRenders || 0) + 1;"),
@@ -103,10 +103,24 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.locator(".terminal-conversation").isVisible(),
         true,
       );
-      await page
-        .locator(".terminal-native-flow")
-        .getByText("LIVE NATIVE WORK OUTPUT", { exact: true })
-        .waitFor();
+      // A running turn renders from saved history: its question, then a live
+      // work group (not a completed one) with the saved steps. The CLI keeps
+      // only rows newer than history plus its own input line.
+      await page.locator('[data-rich-block="conversation-user-q2"]').waitFor();
+      const liveGroup = page.locator(
+        '[data-turn-id="two"] > .conversation-work[data-work-state="live"]',
+      );
+      await liveGroup.waitFor();
+      assert.equal(await liveGroup.evaluate((node) => (node as HTMLDetailsElement).open), true);
+      assert.match(await liveGroup.locator(":scope > summary").innerText(), /^작업 중 · 2개/);
+      assert.equal(await liveGroup.locator('[data-work-item="tool2"]').count(), 1);
+      assert.ok(
+        (await page.locator(".terminal-native-flow").innerText()).includes("UNSENT DRAFT"),
+      );
+      assert.ok(
+        !(await page.locator(".terminal-native-flow").innerText()).includes("QUESTION TWO"),
+        "the saved question is not repeated by the native screen",
+      );
       assert.equal(
         await page.locator(".terminal-conversation > header").count(),
         0,
@@ -126,18 +140,17 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         "native state changes must not switch to a separate conversation screen",
       );
       assert.equal(
-        await page.locator('[data-turn-id="two"] .conversation-work').count(),
+        await page
+          .locator('[data-turn-id="two"] .conversation-work[data-work-state="done"]')
+          .count(),
         0,
         "an idle process and final_answer phase alone must not mark an in-progress turn complete",
       );
       const secondWork = page.locator('[data-work-item="tool2"]');
-      assert.equal(
-        await secondWork.count(),
-        0,
-        "stale idle status must not turn unfinished CLI output into a partial tool list",
-      );
-      assert.equal(await page.locator('[data-turn-id="two"]').count(), 0);
-      assert.ok((await page.locator(".terminal-native-flow").innerText()).includes("LIVE NATIVE WORK OUTPUT"));
+      // Stale idle keeps the unfinished work visible as a record, never as done.
+      assert.match(await liveGroup.locator(":scope > summary").innerText(), /^작업 기록 · 2개/);
+      assert.equal(await liveGroup.locator(".conversation-work-spinner").count(), 0);
+      assert.equal(await secondWork.count(), 1);
       // Only state/API events change here: no scrolling or mouse movement to trigger rendering.
       await page.evaluate(() => (window as any).advanceHistory(1));
       await page
@@ -162,12 +175,26 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       });
       assert.equal(await page.locator(".conversation-work").count(), 2);
       assert.equal(await page.locator(".conversation-work[open]").count(), 0);
-      assert.equal(await secondWork.locator("pre").isVisible(), false);
+      // A folded completed group keeps no hidden step DOM.
+      assert.equal(await secondWork.count(), 0);
       await page
         .locator('[data-turn-id="two"] > .conversation-work > summary')
         .click();
+      // Opening the group shows the CLI-like log with each step expanded.
+      assert.equal(
+        await secondWork.evaluate((node) => (node as HTMLDetailsElement).open),
+        true,
+      );
+      assert.ok(
+        (await secondWork.locator(".transcript-step-title").innerText()).includes(
+          "SECRET TOOL TWO",
+        ),
+      );
       await secondWork.locator("summary").click();
-      assert.equal(await secondWork.locator("pre").isVisible(), true);
+      assert.equal(
+        await secondWork.evaluate((node) => (node as HTMLDetailsElement).open),
+        false,
+      );
       await page
         .locator('[data-turn-id="two"] > .conversation-work > summary')
         .click();
@@ -266,50 +293,50 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       // Rich completion notifications must not restructure selected legacy content either.
       await page.evaluate(() => (window as any).useLegacy());
       const legacyWork = page.locator('[data-work-item="legacy-tool"]');
-      await page.waitForFunction(() =>
-        document.querySelector(".terminal-native-flow")?.textContent?.includes("LEGACY FINAL ANSWER"),
-      );
+      const legacyGroup = page.locator('.conversation-work[data-work-state="live"]');
+      const doneGroups = page.locator('.conversation-work[data-work-state="done"]');
+      await page.locator('[data-rich-block="conversation-assistant-legacy-a"]').waitFor();
       await page.waitForTimeout(200);
-      assert.equal(await legacyWork.count(), 0, "an unverified latest Claude turn stays native");
-      assert.equal(await page.locator('[data-rich-block="conversation-user-legacy-q"]').count(), 0);
-      await page.evaluate(() => {
-        const start = document.querySelector(
-          '.terminal-native-flow [data-native-row="0"] > span',
-        )!.firstChild!;
-        const end = document.querySelector(
-          '.terminal-native-flow [data-native-row="2"] > span',
-        )!.firstChild!;
-        const range = document.createRange();
-        range.setStart(start, 0);
-        range.setEnd(end, end.textContent!.length);
-        const selection = window.getSelection()!;
-        selection.removeAllRanges();
-        selection.addRange(range);
-        (window as any).selectedLegacyNode = end;
-      });
+      // An unverified latest Claude turn is a visible work record, never folded as done.
+      assert.equal(await page.locator('[data-rich-block="conversation-user-legacy-q"]').count(), 1);
+      assert.match(await legacyGroup.locator(":scope > summary").innerText(), /^작업 기록 · 2개/);
+      assert.equal(await legacyWork.count(), 1);
+      assert.equal(await doneGroups.count(), 0);
+      assert.ok(!(await page.locator(".terminal-native-flow").innerText()).includes("LEGACY FINAL ANSWER"));
+      const selectLegacy = () =>
+        page.evaluate(() => {
+          const start = document.querySelector(
+            '[data-rich-block="conversation-user-legacy-q"] .conversation-question',
+          )!.firstChild!;
+          const end = document.querySelector(
+            '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+          )!.firstChild!;
+          const range = document.createRange();
+          range.setStart(start, 0);
+          range.setEnd(end, end.textContent!.length);
+          const selection = window.getSelection()!;
+          selection.removeAllRanges();
+          selection.addRange(range);
+          (window as any).selectedLegacyNode = end;
+        });
+      const legacyNodeKept = () =>
+        page.evaluate(
+          () =>
+            document.querySelector(
+              '[data-rich-block="conversation-assistant-legacy-a"] .markdown p',
+            )?.firstChild === (window as any).selectedLegacyNode,
+        );
+      await selectLegacy();
       await page.evaluate(() => (window as any).advanceHistory(4));
       await page.waitForFunction(() =>
         (window as any).requests.some((request: any) => request.stage === 4),
       );
       await page.waitForTimeout(150);
-      assert.equal(
-        await legacyWork.count(),
-        0,
-        "new completion blocks must not collapse selected DOM",
-      );
-      assert.equal(
-        await page.evaluate(
-          () =>
-            document.querySelector(
-              '.terminal-native-flow [data-native-row="2"] > span',
-            )!.firstChild === (window as any).selectedLegacyNode,
-        ),
-        true,
-      );
+      assert.equal(await legacyNodeKept(), true, "new completion blocks must not replace selected DOM");
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
       await page.waitForTimeout(150);
       assert.equal(
-        await page.locator(".conversation-work").count(),
+        await doneGroups.count(),
         0,
         "a rich block alone is not a whole-turn completion proof",
       );
@@ -318,7 +345,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(200);
       assert.equal(
-        await page.locator(".conversation-work").count(),
+        await doneGroups.count(),
         0,
         "completion from a different native conversation must be ignored",
       );
@@ -327,48 +354,27 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(200);
       assert.equal(
-        await page.locator(".conversation-work").count(),
+        await doneGroups.count(),
         0,
         "the Stop hook must identify the actual last answer",
       );
-      await page.evaluate(() => {
-        const start = document.querySelector(
-          '.terminal-native-flow [data-native-row="0"] > span',
-        )!.firstChild!;
-        const end = document.querySelector(
-          '.terminal-native-flow [data-native-row="2"] > span',
-        )!.firstChild!;
-        const range = document.createRange();
-        range.setStart(start, 0);
-        range.setEnd(end, end.textContent!.length);
-        const selection = window.getSelection()!;
-        selection.removeAllRanges();
-        selection.addRange(range);
-        (window as any).selectedLegacyNode = end;
-      });
+      await selectLegacy();
       await page.evaluate(() => (window as any).completeLegacy());
       await page.waitForTimeout(250);
       assert.equal(
-        await legacyWork.count(),
+        await doneGroups.count(),
         0,
         "a verified Stop event must wait to fold while its turn is selected",
       );
-      assert.equal(
-        await page.evaluate(
-          () =>
-            document.querySelector(
-              '.terminal-native-flow [data-native-row="2"] > span',
-            )!.firstChild === (window as any).selectedLegacyNode,
-        ),
-        true,
-      );
+      assert.equal(await legacyNodeKept(), true);
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
       await page.waitForFunction(
-        () => !!document.querySelector(".conversation-work:not([open])"),
+        () => !!document.querySelector('.conversation-work[data-work-state="done"]:not([open])'),
       );
       assert.equal(await page.locator('[data-rich-block="conversation-user-legacy-q"]').count(), 1);
       assert.equal(await page.locator('[data-rich-block="conversation-assistant-legacy-a"]').count(), 1);
-      assert.equal(await legacyWork.count(), 1);
+      assert.match(await doneGroups.locator(":scope > summary").innerText(), /^작업 과정 · 1개/);
+      assert.equal(await legacyWork.count(), 0, "a folded group keeps no hidden step DOM");
       assert.ok(!(await page.locator(".terminal-native-flow").innerText()).includes("LEGACY FINAL ANSWER"));
       assert.equal(
         await page.locator(".terminal-conversation").isVisible(),
@@ -401,16 +407,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         () => typeof (window as any).releaseHeldHistory === "function",
       );
       await page.evaluate(() => (window as any).useNext());
+      // Shown by the native screen until its own history arrives, then saved.
       await page
-        .locator(".terminal-native-flow")
-        .getByText("❯ NEXT SESSION ONLY", { exact: true })
+        .locator(".terminal-conversation")
+        .getByText(/^(❯ )?NEXT SESSION ONLY$/)
+        .first()
         .waitFor();
       await page.evaluate(() => (window as any).releaseHeldHistory());
       await page.waitForTimeout(200);
       assert.equal(
         await page
-          .locator(".terminal-native-flow")
-          .getByText("❯ NEXT SESSION ONLY", { exact: true })
+          .locator(".terminal-conversation")
+          .getByText(/^(❯ )?NEXT SESSION ONLY$/)
           .count(),
         1,
       );

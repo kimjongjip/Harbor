@@ -1,9 +1,18 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import {
   mobileFlowParts,
   clipNativeRuns,
+  nativeSeparator,
+  type FlowPart,
   type NativeRun,
 } from "./mobile/terminal-flow";
 import {
@@ -17,10 +26,16 @@ import { nativeComposerFill } from "./terminal-native-composer";
 export type { NativeFlowFrame } from "./terminal-native-flow";
 
 const emptyBlocks: RichTerminalBlock[] = [];
+/** Rows [start, split) are newer than saved history; [split, end) is the CLI's live area. */
+export interface NativeFlowRange {
+  start: number;
+  split?: number;
+}
 interface View {
   frame: NativeFlowFrame;
   rows: NativeRun[][];
   start: number;
+  split: number;
   cursorOffset: number;
   fontSize: number;
   fontFamily: string;
@@ -28,6 +43,11 @@ interface View {
   blocks: RichTerminalBlock[];
   composerFill?: ReturnType<typeof nativeComposerFill>;
 }
+// Echo right after a key must not wait; repaint storms (spinners, streamed
+// output) are coalesced so other sessions and typing keep the main thread.
+const typingWindowMs = 250;
+const outputCoalesceMs = 40;
+
 /** A selectable native buffer projection. It never writes, resizes or replays PTY input. */
 export function TerminalNativeFlow({
   term,
@@ -36,6 +56,7 @@ export function TerminalNativeFlow({
   frozen = false,
   codexComposer = false,
   startRow = 0,
+  workTarget,
   onFrame,
   onInput,
   renderAnswer,
@@ -46,7 +67,9 @@ export function TerminalNativeFlow({
   active?: boolean;
   frozen?: boolean;
   codexComposer?: boolean;
-  startRow?: number | ((frame: NativeFlowFrame) => number);
+  startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
+  /** Optional element (inside a running turn's work group) for rows before split. */
+  workTarget?: HTMLElement | null;
   onFrame?(frame: NativeFlowFrame): void;
   onInput?(): void;
   renderAnswer?(text: string): ReactNode;
@@ -78,20 +101,27 @@ export function TerminalNativeFlow({
     previous.current = null;
     const reader = new NativeFlowReader(term);
     let scheduled = false,
-      timer: ReturnType<typeof setTimeout> | undefined;
+      timer: ReturnType<typeof setTimeout> | undefined,
+      lastInput = 0,
+      lastCapture = 0;
     let disposed = false;
+    const inside = (node: Node | null | undefined) =>
+      !!node &&
+      (!!root.current?.contains(node) ||
+        !!(workTarget && workTarget.contains(node)));
     const selected = () => {
       const selection = root.current?.ownerDocument.getSelection();
       return (
         !!selection &&
         !selection.isCollapsed &&
-        (!!root.current?.contains(selection.anchorNode) ||
-          !!root.current?.contains(selection.focusNode))
+        (inside(selection.anchorNode) || inside(selection.focusNode))
       );
     };
     let hadSelection = selected();
     const capture = () => {
       scheduled = false;
+      clearTimeout(timer);
+      timer = undefined;
       const hasSelection = selected();
       // A parsed write can observe a selection before selectionchange is
       // delivered. Remember it so clearing that range releases deferred output.
@@ -104,26 +134,31 @@ export function TerminalNativeFlow({
       )
         return;
       if (term.modes.synchronizedOutputMode) {
-        timer = setTimeout(schedule, 60);
+        timer = setTimeout(() => {
+          timer = undefined;
+          schedule();
+        }, 60);
         return;
       }
+      lastCapture = performance.now();
       const frame = reader.frame();
-      const start = Math.min(
+      const requested =
+        typeof latest.current.startRow === "function"
+          ? latest.current.startRow(frame)
+          : latest.current.startRow;
+      const range =
+        typeof requested === "number" ? { start: requested } : requested;
+      const start = Math.min(frame.end, Math.max(0, Math.floor(range.start)));
+      const split = Math.min(
         frame.end,
-        Math.max(
-          0,
-          Math.floor(
-            typeof latest.current.startRow === "function"
-              ? latest.current.startRow(frame)
-              : latest.current.startRow,
-          ),
-        ),
+        Math.max(start, Math.floor(range.split ?? start)),
       );
       const rows = reader.rows(frame, start);
       const old = previous.current;
       const next: View = {
         frame,
         start,
+        split,
         rows,
         cursorOffset: nativeFlowCursorOffset(
           term.buffer.active.getLine(frame.cursorRow),
@@ -156,24 +191,39 @@ export function TerminalNativeFlow({
       )
         latest.current.onFrame?.(frame);
     };
-    const schedule = () => {
+    function schedule() {
+      if (disposed) return;
+      const now = performance.now();
+      // The parsed buffer is ready independently of painting, and Electron can
+      // suspend RAF while occluded, so never wait for a frame here. Typing
+      // echoes run at once; other output joins the next short batch.
+      const urgent =
+        now - lastInput < typingWindowMs ||
+        now - lastCapture >= outputCoalesceMs;
+      if (scheduled) {
+        // A pending batch never gets cancelled; an echo only makes it sooner.
+        if (urgent && timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+          queueMicrotask(capture);
+        }
+        return;
+      }
+      scheduled = true;
       clearTimeout(timer);
       timer = undefined;
-      // The parsed terminal buffer is ready independently of browser painting.
-      // Electron can suspend RAF while occluded, leaving a history-boundary-only
-      // change stale until the next mouse interaction. Coalesce without waiting
-      // for paint. Parsed writes already arrive in batches; a fixed output
-      // timeout here delays every echoed key, even while the terminal is idle.
-      if (!scheduled && !disposed) {
-        scheduled = true;
-        queueMicrotask(capture);
-      }
-    };
+      if (urgent) queueMicrotask(capture);
+      else
+        timer = setTimeout(capture, outputCoalesceMs - (now - lastCapture));
+    }
     refresh.current = schedule;
     const listeners = [
       term.onWriteParsed(schedule),
       term.onResize(schedule),
-      term.onData(() => latest.current.onInput?.()),
+      term.onData(() => {
+        lastInput = performance.now();
+        latest.current.onInput?.();
+      }),
     ];
     const selectionChanged = () => {
       const hasSelection = selected();
@@ -192,106 +242,132 @@ export function TerminalNativeFlow({
       listeners.forEach((listener) => listener.dispose());
       document.removeEventListener("selectionchange", selectionChanged);
     };
-  }, [term]);
+  }, [term, workTarget]);
   useLayoutEffect(() => {
     refresh.current();
   }, [active, frozen, codexComposer, startRow, blocks]);
   if (!view || !active) return null;
-  const lines = view.frame.lines.slice(view.start);
-  const parts =
-    mobileFlowParts(lines, view.blocks) ||
-    lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }));
-  return (
-    <div
-      className="terminal-native-flow"
-      ref={root}
-      style={{
-        fontFamily: view.fontFamily,
-        fontSize: view.fontSize,
-        textAlign: "left",
-        width: "100%",
-        minWidth: 0,
-        userSelect: "text",
-      }}
-      onClick={(event) => {
-        if (
-          (event.target as Element).closest(
-            "button,a,summary,input,textarea,[role=button]",
-          )
-        )
-          return;
-        const selection = event.currentTarget.ownerDocument.getSelection();
-        if (selection && !selection.isCollapsed) return;
-        if ((event.ctrlKey || event.metaKey) && onLink) {
-          const rowNode = (event.target as Element).closest<HTMLElement>(
-            "[data-native-row]",
-          );
-          const range = event.currentTarget.ownerDocument.caretRangeFromPoint(
-            event.clientX,
-            event.clientY,
-          );
-          if (rowNode && range && rowNode.contains(range.startContainer)) {
-            const prefix = event.currentTarget.ownerDocument.createRange();
-            prefix.selectNodeContents(rowNode);
-            prefix.setEnd(range.startContainer, range.startOffset);
-            const link = nativeFlowLinkAt(
-              view.frame,
-              Number(rowNode.dataset.nativeRow),
-              prefix.toString().length,
-            );
-            if (link) {
-              event.preventDefault();
-              onLink(link);
-              return;
-            }
-          }
-        }
-        term.focus();
-      }}
-    >
-      {parts.map((part) =>
-        part.kind === "answer" ? (
-          <section
-            key={`rich:${part.id}`}
-            data-rich-block={`native-answer:${part.id}`}
-            data-terminal-rich="true"
-            className="terminal-native-answer"
-          >
-            {part.block ? (
-              (renderAnswer?.(part.block.text) ?? (
-                <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
-                  {part.block.text}
-                </pre>
-              ))
-            ) : (
-              <span className="muted">답변을 불러오는 중…</span>
-            )}
-          </section>
+  const partsFor = (from: number, to: number) => {
+    const lines = view.frame.lines.slice(from, to);
+    return (
+      mobileFlowParts(lines, view.blocks) ||
+      lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }))
+    ).map((part) =>
+      part.kind === "row" ? { ...part, row: part.row + from - view.start } : part,
+    );
+  };
+  const renderPart = (part: FlowPart) =>
+    part.kind === "answer" ? (
+      <section
+        key={`rich:${part.id}`}
+        data-rich-block={`native-answer:${part.id}`}
+        data-terminal-rich="true"
+        className="terminal-native-answer"
+      >
+        {part.block ? (
+          (renderAnswer?.(part.block.text) ?? (
+            <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+              {part.block.text}
+            </pre>
+          ))
         ) : (
-          <NativeRow
-            key={`row:${view.start + part.row}`}
-            row={view.start + part.row}
-            runs={
-              part.start
-                ? clipNativeRuns(view.rows[part.row] || [], part.start)
-                : view.rows[part.row] || []
-            }
-            cursorOffset={
-              view.start + part.row === view.frame.cursorRow
-                ? view.cursorOffset
-                : undefined
-            }
-            lineHeight={view.lineHeight}
-            backgroundColor={
-              view.composerFill &&
-              view.start + part.row >= view.composerFill.first &&
-              view.start + part.row <= view.composerFill.last
-                ? view.composerFill.color
-                : undefined
-            }
-          />
-        ),
-      )}
-    </div>
+          <span className="muted">답변을 불러오는 중…</span>
+        )}
+      </section>
+    ) : (
+      <NativeRow
+        key={`row:${view.start + part.row}`}
+        row={view.start + part.row}
+        runs={
+          part.start
+            ? clipNativeRuns(view.rows[part.row] || [], part.start)
+            : view.rows[part.row] || []
+        }
+        cursorOffset={
+          view.start + part.row === view.frame.cursorRow
+            ? view.cursorOffset
+            : undefined
+        }
+        lineHeight={view.lineHeight}
+        separator={nativeSeparator(view.frame.lines[view.start + part.row] || "")}
+        backgroundColor={
+          view.composerFill &&
+          view.start + part.row >= view.composerFill.first &&
+          view.start + part.row <= view.composerFill.last
+            ? view.composerFill.color
+            : undefined
+        }
+      />
+    );
+  const style = {
+    fontFamily: view.fontFamily,
+    fontSize: view.fontSize,
+    textAlign: "left" as const,
+    width: "100%",
+    minWidth: 0,
+    userSelect: "text" as const,
+  };
+  const click = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (
+      (event.target as Element).closest(
+        "button,a,summary,input,textarea,[role=button]",
+      )
+    )
+      return;
+    const selection = event.currentTarget.ownerDocument.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    if ((event.ctrlKey || event.metaKey) && onLink) {
+      const rowNode = (event.target as Element).closest<HTMLElement>(
+        "[data-native-row]",
+      );
+      const range = event.currentTarget.ownerDocument.caretRangeFromPoint(
+        event.clientX,
+        event.clientY,
+      );
+      if (rowNode && range && rowNode.contains(range.startContainer)) {
+        const prefix = event.currentTarget.ownerDocument.createRange();
+        prefix.selectNodeContents(rowNode);
+        prefix.setEnd(range.startContainer, range.startOffset);
+        const link = nativeFlowLinkAt(
+          view.frame,
+          Number(rowNode.dataset.nativeRow),
+          prefix.toString().length,
+        );
+        if (link) {
+          event.preventDefault();
+          onLink(link);
+          return;
+        }
+      }
+    }
+    term.focus();
+  };
+  const work =
+    view.split > view.start ? partsFor(view.start, view.split).map(renderPart) : null;
+  const live = partsFor(view.split, view.frame.end).map(renderPart);
+  return (
+    <>
+      {work && workTarget
+        ? createPortal(
+            <div
+              className="terminal-native-flow terminal-native-work"
+              style={style}
+              onClick={click}
+            >
+              {work}
+            </div>,
+            workTarget,
+          )
+        : null}
+      <div
+        className="terminal-native-flow"
+        ref={root}
+        style={style}
+        onClick={click}
+      >
+        {!workTarget && work}
+        {live}
+      </div>
+    </>
   );
 }

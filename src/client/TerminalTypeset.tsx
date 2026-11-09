@@ -322,10 +322,14 @@ export function TerminalRich({
   term,
   info,
   blocks,
+  covered = false,
 }: {
   term: Terminal;
   info: TerminalInfo;
   blocks: RichTerminalBlock[];
+  /** The conversation view hides this layer: skip per-write repositioning.
+   * New answers are still measured so the CLI receives its row allocation. */
+  covered?: boolean;
 }) {
   const [frame, setFrame] = useState(0);
   const currentSession = info.agentSessionId || info.resumeThreadId;
@@ -380,6 +384,7 @@ export function TerminalRich({
       root.ownerDocument.removeEventListener("selectionchange", changed);
   }, [term]);
   useEffect(() => {
+    if (covered) return;
     let scheduled = 0;
     const update = () => {
       if (!scheduled)
@@ -404,7 +409,7 @@ export function TerminalRich({
       subscriptions.forEach((sub) => sub.dispose());
       resize.disconnect();
     };
-  }, [term]);
+  }, [term, covered]);
   useEffect(() => {
     const root = layer.current;
     if (!root) return;

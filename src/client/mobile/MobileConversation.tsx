@@ -9,6 +9,7 @@ import {
 import type { MobileConversationPage } from "../../shared/mobile";
 import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
+import { userMessageView, userOriginLabel } from "../user-origin";
 
 type Item = MobileConversationPage["items"][number];
 const itemKey = (item: Item) => `${item.kind}:${item.turnId || ""}:${item.id}`;
@@ -330,23 +331,27 @@ export function MobileConversation({
         </p>
       )}
       {!legacy &&
-        visibleItems.map((item) => (
-          <article
-            className={`conversation-message message-${item.kind}`}
-            key={itemKey(item)}
-            data-message-key={itemKey(item)}
-          >
-            <header>{item.kind === "user" ? "나" : provider}</header>
-            {item.kind === "user" ? (
-              <div className="question-text">{item.text}</div>
-            ) : (
-              renderText(item.text)
-            )}
-            {!!item.imageCount && (
-              <small>첨부 이미지 {item.imageCount}개</small>
-            )}
-          </article>
-        ))}
+        visibleItems.map((item) => {
+          const view = item.kind === "user" ? userMessageView(item) : undefined;
+          if (view?.hidden) return null;
+          return (
+            <article
+              className={`conversation-message message-${item.kind}${view?.origin ? " message-generated" : ""}`}
+              key={itemKey(item)}
+              data-message-key={itemKey(item)}
+            >
+              <header>{view ? userOriginLabel(view) : provider}</header>
+              {view ? (
+                <div className="question-text">{view.text}</div>
+              ) : (
+                renderText(item.text)
+              )}
+              {!!item.imageCount && (
+                <small>첨부 이미지 {item.imageCount}개</small>
+              )}
+            </article>
+          );
+        })}
       {(legacy || (historyPaused && !visibleItems.length)) &&
         visibleBlocks.map((block) => (
           <article

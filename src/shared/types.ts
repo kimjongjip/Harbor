@@ -69,6 +69,12 @@ export interface MessageItem {
   /** Native turn outcome. Unknown/absent is never evidence that work finished. */
   turnStatus?: "completed" | "inProgress" | "failed" | "interrupted" | "unknown";
   imageCount?: number;
+  /** A user-kind record the person did not type (slash command, notice, channel…). */
+  origin?: import("./user-message-origin.js").UserMessageOrigin;
+  /** Native tool call id pairing a call with its result. */
+  toolUseId?: string;
+  /** detail is a unified diff with hunk line numbers, or a created file's text. */
+  format?: "diff" | "file";
 }
 
 export interface FileEntry {

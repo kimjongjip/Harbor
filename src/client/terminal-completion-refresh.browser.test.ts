@@ -103,13 +103,22 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       await page.waitForTimeout(250);
       assert.equal(
-        await page.locator(".conversation-work").count(),
+        await page
+          .locator('.conversation-work[data-work-state="done"]')
+          .count(),
         0,
         "the footer cannot turn in-progress history into a completed answer",
       );
+      // Unverified saved work stays visible as a record of the running turn.
+      assert.match(
+        await page
+          .locator('.conversation-work[data-work-state="live"] > summary')
+          .innerText(),
+        /^작업 기록/,
+      );
       assert.ok(
-        (await page.locator(".terminal-native-flow").innerText()).includes(
-          "LIVE NATIVE WORK",
+        (await page.locator(".terminal-native-flow").last().innerText()).includes(
+          "› DRAFT",
         ),
       );
 
@@ -118,8 +127,13 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => {
         (window as any).stage = 2;
       });
+      // The unverified answer is already readable inside the running record;
+      // completion is the moment its work folds into a closed group.
       await page
-        .locator('[data-rich-block="conversation-assistant-a"]')
+        .locator('.conversation-work[data-work-state="done"]')
+        .waitFor({ timeout: 2500 });
+      await page
+        .locator('.conversation-turn > .transcript-items [data-rich-block="conversation-assistant-a"]')
         .getByText("VERIFIED COMPLETE FINAL ANSWER", { exact: true })
         .waitFor({ timeout: 2500 });
       assert.equal(await page.locator(".conversation-work").count(), 1);

@@ -104,3 +104,28 @@
   color: var(--selection-text, #fff);
   background: var(--selection-bg, #2457b8);
 }
+.conversation-work.live {
+  border-left-color: var(--accent);
+}
+.conversation-work-spinner {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 6px 1px 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: transcript-step-pulse 1.2s ease-in-out infinite;
+}
+.conversation-live-work:empty {
+  display: none;
+}
+.conversation-live-work {
+  margin-top: 4px;
+}
+div.terminal-native-answer-text {
+  margin: 4px 0;
+  font-family: var(--font-ui, sans-serif);
+  font-size: var(--document-font-size, 16px);
+  line-height: var(--document-line-height, 1.7);
+}

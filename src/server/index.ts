@@ -957,7 +957,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.16.3" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.17.0" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({

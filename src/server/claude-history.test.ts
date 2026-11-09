@@ -192,7 +192,14 @@ test('Claude fallback titles and previews skip local commands and preserve the o
   const detail = parseClaudeHistory('h', 'id', jsonl(rows), 1);
   assert.equal(detail.thread.title, '컴파일 오류를 수정해줘');
   assert.equal(detail.thread.preview, '컴파일 오류를 수정해줘');
-  assert.equal(detail.items[1].text, command);
+  // The stored lines stay intact; display items name what the person did not type.
+  assert.deepEqual(detail.items.map(item => ({ text: item.text, origin: item.origin, detail: item.detail })), [
+    { text: '/resume', origin: 'command', detail: undefined },
+    { text: 'Command output', origin: 'command-output', detail: undefined },
+    { text: '이전 대화를 요약해 이어서 진행했습니다.', origin: 'system', detail: 'Compacted context' },
+    { text: '컴파일 오류를 수정해줘', origin: undefined, detail: undefined },
+  ]);
+  assert.ok(jsonl(rows).includes(JSON.stringify(command).slice(1, -1)));
   assert.equal(parseClaudeHistory('h', 'id', jsonl([{ type: 'user', message: { content: '<command-name>/review</command-name><command-args>src/main.ts</command-args>' } }]), 1).thread.title, '/review src/main.ts');
 });
 

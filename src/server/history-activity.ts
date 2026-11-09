@@ -6,6 +6,14 @@ type Provider = "codex" | "claude";
 interface Entry { binding: string; text: string; bytes: number; expires: number }
 export interface ActivityBudget { remaining: number; truncated: boolean }
 export const activityBudget = (): ActivityBudget => ({ remaining: 96000, truncated: false });
+interface Limits { text: number; detail: number }
+function reserve(item: MessageItem, budget: ActivityBudget): Limits {
+  const text = Math.min(4000, Math.max(160, budget.remaining));
+  const shownText = Math.min(item.text.length, text);
+  const detail = Math.min(4000, Math.max(0, budget.remaining - shownText));
+  budget.remaining = Math.max(0, budget.remaining - shownText - Math.min(item.detail?.length || 0, detail));
+  return { text, detail };
+}
 const bindingFor = (host: HostConfig, provider: Provider, sessionId: string) =>
   JSON.stringify([host.id, host.kind, host.address, host.username, host.port, host.identityFile, host.codexPath, provider, sessionId]);
 
@@ -27,11 +35,20 @@ export class HistoryActivities {
     for (const [ref, entry] of this.entries) if (entry.expires <= now) this.remove(ref);
   }
   preview(host: HostConfig, provider: Provider, sessionId: string, item: MessageItem, budget: ActivityBudget): MessageItem {
-    const textLimit = Math.min(4000, Math.max(160, budget.remaining));
-    const text = item.text.slice(0, textLimit);
-    const detailLimit = Math.min(4000, Math.max(0, budget.remaining - text.length));
-    const detail = item.detail?.slice(0, detailLimit);
-    budget.remaining = Math.max(0, budget.remaining - text.length - (detail?.length || 0));
+    return this.store(host, provider, sessionId, item, reserve(item, budget), budget);
+  }
+  /** Newest work gets the shared preview budget first (a running turn is at the
+   * end), while originals are still cached oldest-first so LRU keeps the newest. */
+  previewAll(host: HostConfig, provider: Provider, sessionId: string, items: MessageItem[], include: (item: MessageItem) => boolean): MessageItem[] {
+    const budget = activityBudget();
+    const limits: (Limits | undefined)[] = [];
+    for (let index = items.length - 1; index >= 0; index--)
+      if (include(items[index])) limits[index] = reserve(items[index], budget);
+    return items.map((item, index) => limits[index] ? this.store(host, provider, sessionId, item, limits[index]!, budget) : item);
+  }
+  private store(host: HostConfig, provider: Provider, sessionId: string, item: MessageItem, limits: Limits, budget: ActivityBudget): MessageItem {
+    const text = item.text.slice(0, limits.text);
+    const detail = item.detail?.slice(0, limits.detail);
     if (text === item.text && detail === item.detail) return item;
     budget.truncated = true;
     const original = item.text + (item.detail ? `\n${item.detail}` : "");

@@ -183,14 +183,26 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         0,
       );
       assert.equal(await page.locator(".terminal-view-modes").count(), 0);
+      // The running turn: its saved question and steps render from history in
+      // a live work group, which also hosts the CLI rows newer than history.
       await page
-        .locator(".terminal-native-flow")
+        .locator(".conversation-live-work .terminal-native-flow")
         .getByText("  └ NATIVE WORK OUTPUT", { exact: true })
         .waitFor();
-      assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
+      assert.equal(
+        await page
+          .locator('.conversation-work[data-work-state="live"] [data-work-item="tool2"]')
+          .count(),
+        1,
+      );
       assert.equal(
         await page.locator('[data-rich-block="conversation-user-q2"]').count(),
-        0,
+        1,
+      );
+      assert.ok(
+        (await page.locator(".terminal-native-flow").last().innerText()).includes(
+          "UNSENT DRAFT",
+        ),
       );
       await page.screenshot({ path: join(root, "native-working.png") });
       await page.evaluate(() => (window as any).term.focus());
@@ -202,13 +214,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       completed = true;
       await page.evaluate(() => (window as any).setAgentState("idle"));
       await page.waitForTimeout(300);
+      // A natively completed saved turn folds even before the CLI repaints its
+      // answer; the live input line stays native and nothing is resized.
+      await page
+        .locator('[data-turn-id="two"] > .conversation-work[data-work-state="done"]:not([open])')
+        .waitFor();
       assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
       assert.equal(
         await page.locator('[data-rich-block="conversation-user-q2"]').count(),
-        0,
+        1,
       );
       assert.ok(
-        (await page.locator(".terminal-native-flow").innerText()).includes(
+        !(await page.locator(".terminal-conversation").innerText()).includes(
           "NATIVE WORK OUTPUT",
         ),
       );
@@ -337,12 +354,21 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       assert.ok(!copied.includes("HIDDEN TOOL DETAIL"));
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
       await page.locator(".conversation-work > summary").click();
-      await page.locator('[data-work-item="tool2"] > summary').click();
+      // Inside an opened group each step starts expanded and folds on its own.
+      const tool2 = page.locator('[data-work-item="tool2"]');
       assert.equal(
-        await page.locator('[data-work-item="tool2"] pre').innerText(),
-        "HIDDEN TOOL DETAIL",
+        await tool2.evaluate((node) => (node as HTMLDetailsElement).open),
+        true,
       );
-      await page.locator('[data-work-item="tool2"] > summary').click();
+      assert.equal(
+        await tool2.locator(".transcript-step-title").innerText(),
+        "Ran HIDDEN TOOL DETAIL",
+      );
+      await tool2.locator(":scope > summary").click();
+      assert.equal(
+        await tool2.evaluate((node) => (node as HTMLDetailsElement).open),
+        false,
+      );
       await page.locator(".conversation-work > summary").click();
       await page.evaluate(() => {
         const first = document.querySelector(

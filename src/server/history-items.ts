@@ -1,5 +1,6 @@
 import type { MessageItem } from "../shared/types.js";
 import { normalizeItem } from "./session.js";
+import { classifyUserMessage } from "../shared/user-message-origin.js";
 
 const text = (value: unknown): string => typeof value === "string" ? value : "";
 /** Only explicit public text blocks, never hidden reasoning/image/binary fields. */
@@ -18,7 +19,18 @@ export function historyItem(raw: any, turnId?: string): MessageItem | null {
   const item = normalizeItem(raw, turnId);
   if (!item) return null;
   switch (raw.type) {
-    case "userMessage": item.text = textBlocks(raw.content); break;
+    case "userMessage": {
+      item.text = textBlocks(raw.content);
+      // Harbor's own peer/research deliveries are queued as user input.
+      const generated = classifyUserMessage(item.text);
+      if (generated.hidden) return null;
+      if (generated.origin) {
+        item.origin = generated.origin;
+        item.text = generated.text;
+        if (generated.detail) item.detail = generated.detail;
+      }
+      break;
+    }
     case "agentMessage": case "plan": item.text = text(raw.text); break;
     case "commandExecution": item.text = text(raw.command); item.detail = text(raw.aggregatedOutput); break;
     case "fileChange":

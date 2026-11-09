@@ -36,6 +36,7 @@ import type { IdeSelection } from "./types";
 import { getToken } from "../api";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
+import { userMessageView, userOriginLabel } from "../user-origin";
 import "./chat.css";
 
 export type IdeChatRequest = (
@@ -120,6 +121,15 @@ const ChatItem = memo(
     conversation: IdeChatConversation;
     renderMarkdown?: RenderChatMarkdown;
   }) {
+    const generated = item.kind === "user" ? userMessageView(item) : undefined;
+    if (generated?.hidden) return null;
+    if (generated?.origin)
+      return (
+        <article className="ide-chat-message user generated">
+          <strong>{userOriginLabel(generated)}</strong>
+          <pre>{generated.text}</pre>
+        </article>
+      );
     const displayed = displayMessage(item);
     if (item.kind !== "user" && item.kind !== "assistant")
       return (

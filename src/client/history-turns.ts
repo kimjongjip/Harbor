@@ -1,4 +1,5 @@
 import type { MessageItem } from "../shared/types";
+import { typedPrompt } from "./user-origin";
 
 export interface HistoryTurn {
   id: string;
@@ -45,7 +46,7 @@ export function newestHistoryTurns(items: MessageItem[]): HistoryTurn[] {
 }
 
 export function recentHistoryQuestion(items: MessageItem[]): string {
-  return [...items].reverse().find((item) => item.kind === "user")?.text || "";
+  return [...items].reverse().find(typedPrompt)?.text || "";
 }
 
 export function historySnippet(text: string, limit = 180): string {

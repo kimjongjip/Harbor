@@ -1,5 +1,7 @@
 import type { ConversationTurn } from "./conversation-turns";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
+import { typedPrompt } from "./user-origin";
+import { lastNativeBlock, nativeChrome } from "./terminal-native-chrome";
 
 export interface TranscriptFrame {
   lines: string[];
@@ -233,7 +235,8 @@ export function transcriptBoundary(
   const last = turns.at(-1);
   if (!last) return { historyCount: 0, nativeStart: 0 };
   const lookup = frameLookup(frame.lines);
-  const question = last.items.find((item) => item.kind === "user");
+  // Slash commands, notices and channel deliveries never appear as a typed prompt row.
+  const question = last.items.find(typedPrompt);
   const start = question ? questionRow(lookup, question.text) : -1;
   const completedEnd = (turn: ConversationTurn) => {
     if (!turn.complete) return -1;
@@ -274,4 +277,101 @@ export function transcriptBoundary(
     historyCount: turns.length - (last.complete ? 0 : 1),
     nativeStart: 0,
   };
+}
+
+/** Rows after a typed prompt's own rows (it may wrap or continue indented). */
+function questionEnd(lookup: FrameLookup, text: string, limit: number): number {
+  const row = questionRow(lookup, text);
+  if (row < 0 || row >= limit) return -1;
+  const wanted = comparable(text);
+  let value = comparable(lookup.lines[row].replace(promptPrefix, ""));
+  let end = row + 1;
+  while (end < limit && value.length < wanted.length && end - row < 64) {
+    value += lookup.normalized(end);
+    end++;
+  }
+  return end;
+}
+
+export interface LiveTranscriptLayout {
+  historyCount: number;
+  /** First native row shown. */
+  nativeStart: number;
+  /** First row of the CLI's composer/spinner/dialog. Rows in between are
+   * newer than the saved transcript (streaming text, a running step). */
+  chromeStart: number;
+  /** False when the live area is unknown: the legacy whole-screen tail. */
+  live: boolean;
+}
+
+/**
+ * Fullscreen CLIs keep only one repainted screen in the emulator. Every saved
+ * turn — including the one still running — renders from history; the native
+ * flow keeps just what history cannot show yet plus the interactive area.
+ */
+export function liveTranscriptLayout(
+  turns: ConversationTurn[],
+  frame: TranscriptFrame,
+  blocks: RichTerminalBlock[],
+  state: { waiting: boolean },
+): LiveTranscriptLayout {
+  const chrome = nativeChrome(frame.lines, frame.end);
+  // An unframed (Codex-style) prompt row can be a dialog choice whose question
+  // sits above it; approvals keep the whole native tail.
+  if (!chrome || (state.waiting && !chrome.framed)) {
+    const legacy = transcriptBoundary(turns, frame, blocks, false);
+    return { ...legacy, chromeStart: frame.end, live: false };
+  }
+  const limit = chrome.start;
+  const last = turns.at(-1);
+  if (!last)
+    return { historyCount: 0, nativeStart: 0, chromeStart: limit, live: true };
+  const lookup = frameLookup(frame.lines.slice(0, limit));
+  const ending = (turn: ConversationTurn) => {
+    if (!turn.complete) return -1;
+    const answer = [...turn.items]
+      .reverse()
+      .find((item) => item.kind === "assistant" && turn.finalIds.has(item.id));
+    return answer ? answerEnd(lookup, answer, blocks) : -1;
+  };
+  if (last.complete) {
+    // Anything after the saved final answer is newer than history (a prompt
+    // just submitted); an unmatched screen only repeats saved turns.
+    const end = ending(last);
+    return {
+      historyCount: turns.length,
+      nativeStart:
+        end >= 0 ? skipBlankRows(frame.lines, Math.min(end, limit), limit) : limit,
+      chromeStart: limit,
+      live: true,
+    };
+  }
+  let anchor = -1;
+  const latest = [...last.items]
+    .reverse()
+    .find((item) => item.kind === "assistant" && item.text.trim());
+  if (latest) anchor = answerEnd(lookup, latest, blocks);
+  if (anchor < 0) {
+    const question = last.items.find(typedPrompt);
+    if (question) anchor = questionEnd(lookup, question.text, limit);
+  }
+  if (anchor < 0) {
+    let index = turns.length - 2;
+    while (index >= 0 && !turns[index].complete) index--;
+    if (index >= 0) anchor = ending(turns[index]);
+  }
+  // Nothing on screen is saved yet: keep the newest block being written.
+  if (anchor < 0) anchor = lastNativeBlock(frame.lines, limit);
+  return {
+    historyCount: turns.length,
+    nativeStart: skipBlankRows(frame.lines, Math.min(anchor, limit), limit),
+    chromeStart: limit,
+    live: true,
+  };
+}
+
+/** Separator rows before newer native output carry nothing to show. */
+function skipBlankRows(lines: string[], start: number, limit: number) {
+  while (start < limit && !lines[start]?.trim()) start++;
+  return start;
 }

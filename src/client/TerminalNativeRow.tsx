@@ -13,12 +13,15 @@ export const NativeRow = memo(function NativeRow({
   cursorOffset,
   lineHeight,
   backgroundColor,
+  separator = false,
 }: {
   row: number;
   runs: NativeRun[];
   cursorOffset?: number;
   lineHeight: number;
   backgroundColor?: string;
+  /** A full-width rule: clip it instead of wrapping one stray cell. */
+  separator?: boolean;
 }) {
   let offset = 0;
   const nodes: ReactNode[] = [];
@@ -93,8 +96,9 @@ export const NativeRow = memo(function NativeRow({
         position: "relative",
         minHeight: lineHeight,
         lineHeight: `${lineHeight}px`,
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
+        whiteSpace: separator ? "pre" : "pre-wrap",
+        overflowWrap: separator ? "normal" : "anywhere",
+        overflow: separator ? "hidden" : undefined,
         backgroundColor,
       }}
     >

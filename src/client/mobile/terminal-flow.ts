@@ -1,4 +1,4 @@
-import type { IBuffer, IBufferLine, ITheme } from "@xterm/xterm";
+import type { IBuffer, IBufferCell, IBufferLine, ITheme } from "@xterm/xterm";
 import type { CSSProperties } from "react";
 import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { richFragments } from "../terminal-rich-layout";
@@ -158,42 +158,49 @@ export function nativeRow(
   const result: NativeRun[] = [];
   if (start) result.push({ text: " ".repeat(start), style: {} });
   let previous = "";
+  // One reusable cell and a plain string key: this runs for every live cell
+  // on each parsed write, so avoid per-cell allocation and JSON encoding.
+  let cell: IBufferCell | undefined;
+  const foreground = theme.foreground || "#182235",
+    backdrop = theme.background || "#ffffff";
   for (let col = start; col < columns; col++) {
-    const cell = line?.getCell(col);
+    cell = line?.getCell(col, cell);
     if (cell?.getWidth() === 0) continue;
     const text = cell?.isInvisible()
       ? " ".repeat(cell.getWidth() || 1)
       : cell?.getChars() || " ";
     let color =
       !cell || cell.isFgDefault()
-        ? theme.foreground || "#182235"
+        ? foreground
         : ansiColor(cell.getFgColor(), cell.isFgRGB(), theme);
     let background =
       !cell || cell.isBgDefault()
-        ? theme.background || "#ffffff"
+        ? backdrop
         : ansiColor(cell.getBgColor(), cell.isBgRGB(), theme);
     if (cell?.isInverse()) [color, background] = [background, color];
+    const bold = !!cell?.isBold(),
+      italic = !!cell?.isItalic(),
+      dim = !!cell?.isDim(),
+      underline = !!cell?.isUnderline(),
+      strike = !!cell?.isStrikethrough();
+    const key = `${color}\0${background}\0${+bold}${+italic}${+dim}${+underline}${+strike}`;
+    if (result.length && key === previous) {
+      result[result.length - 1].text += text;
+      continue;
+    }
     const style: CSSProperties = {
       color,
       backgroundColor: background,
-      ...(cell?.isBold() ? { fontWeight: 700 } : {}),
-      ...(cell?.isItalic() ? { fontStyle: "italic" } : {}),
-      ...(cell?.isDim() ? { opacity: 0.65 } : {}),
+      ...(bold ? { fontWeight: 700 } : {}),
+      ...(italic ? { fontStyle: "italic" } : {}),
+      ...(dim ? { opacity: 0.65 } : {}),
       textDecoration:
-        [
-          cell?.isUnderline() && "underline",
-          cell?.isStrikethrough() && "line-through",
-        ]
+        [underline && "underline", strike && "line-through"]
           .filter(Boolean)
           .join(" ") || undefined,
     };
-    const key = JSON.stringify(style);
-    if (result.length && key === previous)
-      result[result.length - 1].text += text;
-    else {
-      result.push({ text, style });
-      previous = key;
-    }
+    result.push({ text, style });
+    previous = key;
   }
   return result;
 }

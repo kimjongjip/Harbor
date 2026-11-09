@@ -1,4 +1,5 @@
 import type { MessageItem } from "../shared/types.js";
+import { classifyUserMessage } from "../shared/user-message-origin.js";
 
 /** Projection of one native record; never retain image bytes or thinking blocks. */
 export interface ClaudeHistoryRecord {
@@ -41,6 +42,30 @@ function toolResult(part: any): string {
   return text;
 }
 
+/** Claude's own record of an edit: the exact hunks its TUI renders, with line numbers. */
+function editResult(value: any): Pick<MessageItem, "text" | "detail" | "format"> | undefined {
+  if (!value || typeof value !== "object") return;
+  const hunks = Array.isArray(value.structuredPatch) ? value.structuredPatch : [];
+  const lines: string[] = [];
+  let added = 0, removed = 0;
+  for (const hunk of hunks) {
+    if (!hunk || !Array.isArray(hunk.lines) || ![hunk.oldStart, hunk.oldLines, hunk.newStart, hunk.newLines].every(Number.isSafeInteger)) return;
+    lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+    for (const line of hunk.lines) {
+      if (typeof line !== "string") return;
+      if (line.startsWith("+")) added++;
+      else if (line.startsWith("-")) removed++;
+      lines.push(line);
+    }
+  }
+  if (lines.length)
+    return { format: "diff", detail: lines.join("\n"), text: `${added}줄 추가 · ${removed}줄 삭제` };
+  if (value.type === "create" && typeof value.content === "string") {
+    const count = value.content ? value.content.split("\n").length : 0;
+    return { format: "file", detail: value.content, text: `${count}줄 작성` };
+  }
+}
+
 export function projectClaudeRecord(
   row: any,
   id: string,
@@ -51,10 +76,17 @@ export function projectClaudeRecord(
   if (row.isMeta && !input) return;
   const content = Array.isArray(row.message?.content) ? row.message.content : [];
   const images = content.filter((part: any) => part?.type === "image").length;
-  const visible = ["user", "assistant"].includes(row.type) && (!!text || (row.type === "user" && images > 0));
-  const actualPrompt = row.type === "user" && visible && !row.isCompactSummary &&
-    !content.some((part: any) => part?.type === "tool_result") &&
-    !/^<local-command-(?:caveat|stdout|stderr)>/.test(text.trim());
+  const hasToolResult = content.some((part: any) => part?.type === "tool_result");
+  // Slash commands, their output, background notices and channel deliveries
+  // are stored as user records but were not typed by the person.
+  const generated = row.type !== "user" || input || hasToolResult || !text ? undefined
+    : row.isCompactSummary
+      ? { origin: "system" as const, text: "이전 대화를 요약해 이어서 진행했습니다.", detail: text, startsTurn: false }
+      : classifyUserMessage(text, row.origin?.kind);
+  const shown = generated && !generated.hidden ? generated.text : generated ? "" : text;
+  const visible = ["user", "assistant"].includes(row.type) && (!!shown || (row.type === "user" && images > 0));
+  const actualPrompt = row.type === "user" && visible && !row.isCompactSummary && !hasToolResult &&
+    (generated ? generated.startsTurn : true);
   const record: ClaudeHistoryRecord = {
     id,
     parentId: typeof row.parentUuid === "string" ? row.parentUuid : undefined,
@@ -78,22 +110,30 @@ export function projectClaudeRecord(
   if (visible) record.items.push({
     id: input ? `harbor-ide-user:${input.requestId}` : id,
     kind: row.type,
-    text: input?.text || text,
+    text: input?.text || shown,
     imageCount: images,
+    ...(generated?.origin ? { origin: generated.origin, ...(generated.detail ? { detail: generated.detail } : {}) } : {}),
     ...(row.type === "assistant" ? {
       phase: completed ? "final_answer" : tools || row.message?.stop_reason === "tool_use" ? "commentary" : undefined,
       turnStatus: record.outcome || "unknown",
     } : {}),
   });
-  if (includeActivity) for (const [index, part] of content.entries()) {
+  // Only conversation records carry work. Newer CLIs also store copies of API
+  // requests (e.g. "api-request-blob") whose tool results duplicate the real ones.
+  if (includeActivity && (row.type === "user" || row.type === "assistant")) for (const [index, part] of content.entries()) {
     if (record.items.length >= 2048) { record.activityOmitted = true; break; }
     if (part?.type === "tool_use") record.items.push({
-      id: `${id}:tool:${index}`, kind: part.name === "Bash" ? "command" : "tool",
+      id: `${id}:tool:${index}`, kind: part.name === "Bash" || part.name === "PowerShell" ? "command" : "tool",
       text: bounded(part.name, 200) || "도구 실행", detail: toolDescription(part), status: "started",
+      ...(typeof part.id === "string" ? { toolUseId: part.id.slice(0, 200) } : {}),
     });
     else if (part?.type === "tool_result") record.items.push({
       id: `${id}:result:${index}`, kind: "tool", text: "도구 결과",
       detail: toolResult(part), status: part.is_error ? "failed" : "completed",
+      ...(typeof part.tool_use_id === "string" ? { toolUseId: part.tool_use_id.slice(0, 200) } : {}),
+      // toolUseResult belongs to the whole record; use it only when unambiguous.
+      ...(!part.is_error && content.filter((entry: any) => entry?.type === "tool_result").length === 1
+        ? editResult(row.toolUseResult) : {}),
     });
   }
   return record.items.length || record.outcome ? record : undefined;
@@ -110,7 +150,9 @@ export function assembleClaudeHistory(records: ClaudeHistoryRecord[], includeAct
     const explicitTurn = record.userId ? `claude-user:${record.userId}` : undefined;
     if (record.prompt) currentTurn = `claude-user:${record.id}`;
     else if (explicitTurn) currentTurn = explicitTurn;
-    const turnId = explicitTurn || (record.parentId && byRecord.get(record.parentId)) || currentTurn;
+    // A prompt always opens its own turn even when its parent is the previous
+    // answer; other records follow their parent (tool results, branches).
+    const turnId = explicitTurn || (!record.prompt && record.parentId && byRecord.get(record.parentId)) || currentTurn;
     if (turnId) {
       byRecord.set(record.id, turnId);
       if (record.outcome) outcomes.set(turnId, record.outcome);

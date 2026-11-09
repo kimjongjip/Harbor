@@ -87,16 +87,24 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .filter({ hasText: "Investigate task" })
         .click();
       await page.locator('[data-history-message="a3"]').waitFor();
-      assert.deepEqual(
-        await page
-          .locator(".history-message")
+      const transcriptOrder = () =>
+        page
+          .locator("[data-history-message], [data-work-item]")
           .evaluateAll((elements) =>
-            elements.map((element) =>
-              element.getAttribute("data-history-message"),
+            elements.map(
+              (element) =>
+                element.getAttribute("data-history-message") ||
+                element.getAttribute("data-work-item"),
             ),
-          ),
-        ["q3", "new-work", "a3", "q2", "old-work", "a2"],
-      );
+          );
+      assert.deepEqual(await transcriptOrder(), [
+        "q3",
+        "new-work",
+        "a3",
+        "q2",
+        "old-work",
+        "a2",
+      ]);
       assert.equal(
         (await page.locator(".history-recent-question").innerText()).replace(
           /\s+/g,
@@ -142,9 +150,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         false,
       );
       await historicalWork.locator("summary").click();
+      // A CLI-like step: the record names the step, its output stays verbatim.
+      assert.equal(
+        await historicalWork.locator(".transcript-step-title").innerText(),
+        "Interacted with peer",
+      );
       assert.equal(
         await historicalWork.locator("pre").innerText(),
-        "Interacted with peer\nORIGINAL PEER RESULT\nUnmodified historical output",
+        "ORIGINAL PEER RESULT\nUnmodified historical output",
       );
       await historicalWork.locator("summary").focus();
       await page.keyboard.press("Enter");
@@ -175,7 +188,12 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       );
       assert.equal(
         await latestWork.locator("pre").innerText(),
-        "Ran rg --files\nFIRST ORIGINAL TOOL LINE\nSECOND ORIGINAL TOOL LINE\nLAST ORIGINAL TOOL LINE",
+        "FIRST ORIGINAL TOOL LINE\nSECOND ORIGINAL TOOL LINE\nLAST ORIGINAL TOOL LINE",
+      );
+      assert.ok(
+        (await latestWork.locator("summary").innerText()).includes(
+          "Ran rg --files",
+        ),
       );
       await latestWork.locator("summary").click();
       await page
@@ -238,16 +256,16 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .getByRole("button", { name: "이전 대화 더 읽기", exact: true })
         .click();
       await page.locator('[data-history-message="a1"]').waitFor();
-      assert.deepEqual(
-        await page
-          .locator(".history-message")
-          .evaluateAll((elements) =>
-            elements.map((element) =>
-              element.getAttribute("data-history-message"),
-            ),
-          ),
-        ["q3", "new-work", "a3", "q2", "old-work", "a2", "q1", "a1"],
-      );
+      assert.deepEqual(await transcriptOrder(), [
+        "q3",
+        "new-work",
+        "a3",
+        "q2",
+        "old-work",
+        "a2",
+        "q1",
+        "a1",
+      ]);
       assert.equal(
         await page.getByText("STALE PARTIAL ANSWER", { exact: true }).count(),
         0,

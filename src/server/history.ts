@@ -2,7 +2,7 @@ import { RpcClient } from "./rpc.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { historyItem } from "./history-items.js";
-import { activityBudget, historyActivities } from "./history-activity.js";
+import { historyActivities } from "./history-activity.js";
 import type { HostConfig, MessageItem } from "../shared/types.js";
 import { researchEfforts } from "../shared/research.js";
 import type { ResearchEffort, ResearchModel } from "../shared/research.js";
@@ -278,7 +278,6 @@ export class History {
         turns = await readLegacy(0);
       }
       const items: MessageItem[] = [], timeline: MessageItem[] = [];
-      const budget = activityBudget();
       for (const turn of turns) {
         const turnStatus: MessageItem["turnStatus"] = ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
           ? turn.status : "unknown";
@@ -290,12 +289,14 @@ export class History {
             items.push(item);
             if (options.includeActivity) timeline.push(item);
           } else if (options.includeActivity) {
-            timeline.push(historyActivities.preview(host, "codex", threadId, item, budget));
+            timeline.push(item);
           }
         }
       }
+      // The newest work (often a running turn) gets the preview budget first.
+      const previews = historyActivities.previewAll(host, "codex", threadId, timeline, (item) => !["user", "assistant", "notice"].includes(item.kind));
       return { thread, items, nextCursor,
-        ...(options.includeActivity ? { timeline } : {}),
+        ...(options.includeActivity ? { timeline: previews } : {}),
       };
     });
   }

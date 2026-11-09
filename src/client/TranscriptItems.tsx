@@ -1,7 +1,8 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useMemo } from "react";
 import type { MessageItem } from "../shared/types";
-import { api } from "./api";
 import { Markdown } from "./RichMarkdown";
+import { transcriptEntries } from "./transcript-steps";
+import { CommentaryLine, SystemLine, WorkStep } from "./TranscriptWork";
 import "./transcript-items.css";
 
 export interface TranscriptItemsProps {
@@ -13,6 +14,8 @@ export interface TranscriptItemsProps {
   completed?: boolean;
   historical?: boolean;
   selectionActive?: boolean;
+  /** Show each work step expanded (inside an already folded work group). */
+  stepsOpen?: boolean;
 }
 
 const TranscriptMessage = memo(function TranscriptMessage({
@@ -20,7 +23,12 @@ const TranscriptMessage = memo(function TranscriptMessage({
   provider,
   hostId,
   cwd,
-}: Omit<TranscriptItemsProps, "items"> & { item: MessageItem }) {
+}: {
+  item: MessageItem;
+  provider: string;
+  hostId: string;
+  cwd: string;
+}) {
   return (
     <article
       className={`history-message transcript-message ${item.kind}`}
@@ -48,189 +56,71 @@ const TranscriptMessage = memo(function TranscriptMessage({
   );
 });
 
-const WorkDisclosure = memo(function WorkDisclosure({
-  item,
-  completed = false,
-  historical = false,
-  selectionActive = false,
-  sessionId,
-  ...props
-}: Omit<TranscriptItemsProps, "items"> & { item: MessageItem }) {
-  const [automaticOpen, setAutomaticOpen] = useState(!completed && !historical);
-  const [manualOpen, setManualOpen] = useState<boolean>();
-  // Do not replace a selected work block while an output/completion arrives.
-  useEffect(() => {
-    if (!selectionActive) setAutomaticOpen(!completed && !historical);
-  }, [completed, historical, selectionActive]);
-  const open = manualOpen ?? automaticOpen;
-  const ref = item.activityRef;
-  const identity = `${props.hostId}:${sessionId}:${props.provider}:${item.kind}:${item.id}`;
-  const scope = `${identity}:${ref}`;
-  const [full, setFull] = useState<{
-    scope: string;
-    text: string;
-    nextOffset: number | null;
-  }>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const request = useRef<AbortController | undefined>(undefined);
-  const busy = useRef(false);
-  const selection = useRef(selectionActive);
-  selection.current = selectionActive;
-  const pending = useRef<typeof full>(undefined);
-  const current = full?.scope === scope ? full : undefined;
-  const load = async (offset = 0) => {
-    if (!sessionId || !ref || busy.current) return;
-    const controller = new AbortController();
-    request.current = controller;
-    busy.current = true;
-    setLoading(true);
-    setError("");
-    try {
-      const page = await api<{
-        text: string;
-        offset: number;
-        nextOffset: number | null;
-        total: number;
-      }>(
-        `/hosts/${encodeURIComponent(props.hostId)}/history/${encodeURIComponent(sessionId)}/activity/${encodeURIComponent(ref)}?${new URLSearchParams({ provider: props.provider.toLowerCase(), offset: String(offset) })}`,
-        undefined,
-        "GET",
-        controller.signal,
-      );
-      if (controller.signal.aborted || request.current !== controller) return;
-      if (
-        page.offset !== offset ||
-        (page.nextOffset !== null && page.nextOffset <= offset)
-      )
-        throw new Error("작업 원문의 읽기 위치가 올바르지 않습니다.");
-      const next = {
-        scope,
-        text: (offset ? current?.text || "" : "") + page.text,
-        nextOffset: page.nextOffset,
-      };
-      if (selection.current) pending.current = next;
-      else setFull(next);
-    } catch (cause) {
-      if (!controller.signal.aborted) setError((cause as Error).message);
-    } finally {
-      if (request.current === controller) {
-        busy.current = false;
-        setLoading(false);
-      }
-    }
-  };
-  useEffect(() => {
-    setFull(undefined);
-    setError("");
-    setLoading(false);
-    pending.current = undefined;
-    return () => {
-      request.current?.abort();
-      request.current = undefined;
-      busy.current = false;
-    };
-  }, [scope]);
-  useEffect(() => setManualOpen(undefined), [identity]);
-  useEffect(() => {
-    if (!selectionActive && pending.current) {
-      if (pending.current.scope === scope) setFull(pending.current);
-      pending.current = undefined;
-    }
-  }, [selectionActive, scope]);
-  useEffect(() => {
-    if (
-      open &&
-      item.activityTruncated &&
-      ref &&
-      sessionId &&
-      !current &&
-      !loading &&
-      !error &&
-      !pending.current
-    )
-      void load();
-  }, [open, scope, item.activityTruncated, loading, error, current?.scope]);
-  const heading =
-    item.text.split(/\r?\n/, 1)[0] ||
-    (item.kind === "command"
-      ? "명령 실행"
-      : item.kind === "change"
-        ? "코드 변경"
-        : "작업 기록");
-  return (
-    <details
-      className={`transcript-work-item ${item.kind}`}
-      data-work-item={item.id}
-      open={open}
-    >
-      <summary
-        title={heading}
-        onClick={(event) => {
-          event.preventDefault();
-          setManualOpen(!open);
-        }}
-      >
-        <span>{heading}</span>
-      </summary>
-      <TranscriptMessage
-        item={
-          current ? { ...item, text: current.text, detail: undefined } : item
-        }
-        {...props}
-      />
-      {item.activityTruncated && !ref && (
-        <small className="transcript-work-status">
-          이 항목은 저장된 원문이 커서 일부만 표시됩니다.
-        </small>
-      )}
-      {loading && (
-        <small className="transcript-work-status" role="status">
-          원문을 읽는 중…
-        </small>
-      )}
-      {error && (
-        <div className="transcript-work-status" role="alert">
-          {error}{" "}
-          <button onClick={() => void load(current?.nextOffset || 0)}>
-            다시 읽기
-          </button>
-        </div>
-      )}
-      {current?.nextOffset != null && !error && (
-        <button
-          className="transcript-work-more"
-          disabled={loading || !!pending.current}
-          onClick={() => void load(current.nextOffset!)}
-        >
-          원문 더 보기
-        </button>
-      )}
-    </details>
-  );
-});
-
 /** Display existing records only. Folding changes DOM visibility, never the data or AI context. */
-export function TranscriptItems({ items, ...props }: TranscriptItemsProps) {
+export function TranscriptItems({
+  items,
+  provider,
+  hostId,
+  cwd,
+  sessionId,
+  selectionActive = false,
+  stepsOpen = false,
+}: TranscriptItemsProps) {
+  const entries = useMemo(() => transcriptEntries(items), [items]);
+  const context = useMemo(
+    () => ({ provider, hostId, cwd, sessionId, selectionActive }),
+    [provider, hostId, cwd, sessionId, selectionActive],
+  );
   return (
     <div className="transcript-items">
-      {items.map((item) => {
-        const work =
-          ["command", "tool", "change", "plan"].includes(item.kind) ||
-          (item.kind === "assistant" && item.phase === "commentary");
-        return work ? (
-          <WorkDisclosure
-            key={`${item.kind}:${item.id}`}
-            item={item}
-            {...props}
-          />
-        ) : (
-          <TranscriptMessage
-            key={`${item.kind}:${item.id}`}
-            item={item}
-            {...props}
-          />
-        );
+      {entries.map((entry) => {
+        switch (entry.kind) {
+          case "message":
+            return (
+              <TranscriptMessage
+                key={`${entry.item.kind}:${entry.item.id}`}
+                item={entry.item}
+                provider={provider}
+                hostId={hostId}
+                cwd={cwd}
+              />
+            );
+          case "system":
+            return (
+              <SystemLine
+                key={`system:${entry.item.id}`}
+                item={entry.item}
+                outputs={entry.outputs}
+              />
+            );
+          case "commentary":
+            return (
+              <CommentaryLine
+                key={`commentary:${entry.item.id}`}
+                item={entry.item}
+                context={context}
+              />
+            );
+          case "step":
+            return (
+              <WorkStep
+                key={entry.key}
+                call={entry.call}
+                result={entry.result}
+                context={context}
+                defaultOpen={stepsOpen}
+              />
+            );
+          case "item":
+            return (
+              <WorkStep
+                key={`${entry.item.kind}:${entry.item.id}`}
+                item={entry.item}
+                context={context}
+                defaultOpen={stepsOpen}
+              />
+            );
+        }
       })}
     </div>
   );
