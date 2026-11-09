@@ -4,7 +4,10 @@ import type { MessageItem } from "./types";
 export interface MobileConversationPage {
   sessionId: string;
   provider: "codex" | "claude";
-  items: Pick<MessageItem, "id" | "turnId" | "kind" | "text" | "imageCount">[];
+  items: Pick<MessageItem, "id" | "turnId" | "kind" | "text" | "imageCount" | "phase" | "turnStatus">[];
+  timeline?: MessageItem[];
+  activity?: MessageItem[];
+  timelineIds?: string[];
   nextCursor: string | null;
   notice?: string;
 }

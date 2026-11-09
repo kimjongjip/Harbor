@@ -219,3 +219,72 @@ test('catalog and detail retain the same AI-generated title from a long transcri
     assert.equal((await history.list(host, undefined, { search: '자동 제목' })).data.length, 1);
   } finally { history.shutdown(); }
 });
+
+test('Claude timeline groups a native completed turn and keeps tools, image bytes and thinking out of Q/A', () => {
+  const rows = [
+    { type: 'user', uuid: 'q', sessionId: 'id', message: { content: [{ type: 'image', source: { data: 'private-image-bytes' } }] } },
+    { type: 'assistant', uuid: 'a1', parentUuid: 'q', message: { stop_reason: 'tool_use', content: [
+      { type: 'thinking', thinking: 'private-thinking' },
+      { type: 'text', text: 'Checking the files' },
+      { type: 'tool_use', id: 't', name: 'Bash', input: { command: 'npm test', ignored: 'private-payload' } },
+    ] } },
+    { type: 'user', uuid: 'result', parentUuid: 'a1', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: 'Tests passed' }, { type: 'image', data: 'private-result-image' }] }] } },
+    { type: 'assistant', uuid: 'a2', parentUuid: 'result', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fixed the parser' }] } },
+    { type: 'assistant', uuid: 'other', session_id: 'another-session', message: { stop_reason: 'end_turn', content: 'wrong session' } },
+    { type: 'assistant', uuid: 'nested', parent_tool_use_id: 'nested-tool', message: { stop_reason: 'end_turn', content: 'nested answer' } },
+  ];
+  const normal = parseClaudeHistory('h', 'id', jsonl(rows), 1);
+  assert.equal(normal.timeline, undefined);
+  const detail = parseClaudeHistory('h', 'id', jsonl(rows), 1, { includeActivity: true });
+  assert.deepEqual(detail.items.map(item => item.text), ['', 'Checking the files', 'Fixed the parser']);
+  assert.equal(detail.items[0].imageCount, 1);
+  assert.ok(detail.items.every(item => item.turnId === 'claude-user:q' && item.turnStatus === 'completed'));
+  assert.deepEqual(detail.timeline!.map(item => item.kind), ['user', 'assistant', 'command', 'tool', 'assistant']);
+  assert.equal(detail.items[1].phase, 'commentary');
+  assert.equal(detail.items[2].phase, 'final_answer');
+  assert.ok(!/private-|wrong session|nested answer/.test(JSON.stringify(detail)));
+});
+
+test('Claude null stop reasons, idle durations, interrupted and failed messages do not certify completion', () => {
+  const detail = parseClaudeHistory('h', 'id', jsonl([
+    { type: 'user', uuid: 'q', message: { content: 'First task' } },
+    { type: 'assistant', uuid: 'a', message: { content: 'An answer-shaped block', stop_reason: null } },
+    { type: 'system', subtype: 'turn_duration', durationMs: 1234 },
+    { type: 'user', uuid: 'q2', message: { content: 'Second task' } },
+    { type: 'assistant', uuid: 'b', aborted: true, message: { content: 'Partial', stop_reason: 'end_turn' } },
+    { type: 'user', uuid: 'q3', message: { content: 'Third task' } },
+    { type: 'assistant', uuid: 'c', isApiErrorMessage: true, message: { content: 'Error', stop_reason: 'end_turn' } },
+  ]), 1, { includeActivity: true });
+  assert.deepEqual(detail.items.filter(item => item.kind === 'assistant').map(item => item.turnStatus), ['unknown', 'interrupted', 'failed']);
+  assert.ok(detail.items.every(item => item.phase !== 'final_answer'));
+});
+
+test('matching SDK end-turn results prove streamed final text but cannot complete another session', () => {
+  const rows = [
+    { type: 'user', uuid: 'q', message: { content: 'Task' } },
+    { type: 'assistant', uuid: 'a', user_message_uuid: 'q', message: { content: 'Completed text', stop_reason: null } },
+    { type: 'result', session_id: 'another', subtype: 'success', is_error: false, stop_reason: 'end_turn', user_message_uuid: 'q' },
+  ];
+  assert.equal(parseClaudeHistory('h', 'id', jsonl(rows), 1).items[1].turnStatus, 'unknown');
+  rows.push({ type: 'result', session_id: 'id', subtype: 'success', is_error: false, stop_reason: 'end_turn', user_message_uuid: 'q' });
+  const completed = parseClaudeHistory('h', 'id', jsonl(rows), 1);
+  assert.equal(completed.items[1].turnStatus, 'completed');
+  assert.equal(completed.items[1].phase, 'final_answer');
+  rows.push({ type: 'assistant', uuid: 'continues', message: { content: 'More work', stop_reason: null } } as any);
+  assert.ok(parseClaudeHistory('h', 'id', jsonl(rows), 1).items.every(item => item.turnStatus === 'unknown'));
+});
+
+test('Claude partial pages do not invent an earlier prompt or merge across a later real prompt', () => {
+  const detail = parseClaudeHistory('h', 'id', jsonl([
+    { type: 'assistant', uuid: 'prefix', message: { content: 'Earlier prompt is outside this page' } },
+    { type: 'assistant', uuid: 'prefix-final', message: { content: 'Its answer', stop_reason: 'end_turn' } },
+    { type: 'user', uuid: 'new', message: { content: 'New task' } },
+    { type: 'assistant', uuid: 'new-answer', message: { content: 'Working', stop_reason: null } },
+  ]), 1, { includeActivity: true });
+  assert.equal(detail.items[0].turnId, undefined);
+  assert.equal(detail.items[1].turnId, undefined);
+  assert.equal(detail.items[0].turnStatus, 'unknown');
+  assert.equal(detail.items[1].turnStatus, 'completed');
+  assert.equal(detail.items[3].turnId, 'claude-user:new');
+  assert.equal(detail.items[3].turnStatus, 'unknown');
+});

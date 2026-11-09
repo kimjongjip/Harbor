@@ -165,6 +165,15 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
     {},
   );
   assert.equal(requests.list().length, count);
+  // Stop's documented last-assistant text can exceed 128 KiB in UTF-8 even
+  // while its character count remains bounded; preserve native state updates.
+  const finalText = "검증된 답변 ".repeat(10000);
+  assert.ok(Buffer.byteLength(finalText) > 128 * 1024);
+  assert.equal((await post({ hook_event_name: "Stop", session_id: "synthetic", last_assistant_message: finalText })).status, 200);
+  assert.equal(events.at(-1).event.last_assistant_message, finalText);
+  const beforeStale = events.length;
+  await post({ hook_event_name: "Stop", session_id: "stale-native", last_assistant_message: "Wrong session answer" });
+  assert.equal(events.length, beforeStale);
   bridge.revoke("a");
   assert.equal((await post(start)).status, 401);
 });

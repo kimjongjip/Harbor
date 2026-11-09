@@ -469,7 +469,9 @@ export class AgentBridge {
     );
     this.permissionHandle.use(errors);
     this.claudeHandle.use(authenticate(true));
-    this.claudeHandle.use(express.json({ limit: "128kb" }));
+    // A bounded native Stop answer can be multibyte UTF-8. Permission/MCP limits
+    // remain separate, and the answer is reduced to a hash in terminal state.
+    this.claudeHandle.use(express.json({ limit: "512kb" }));
     this.claudeHandle.use((req, res) => {
       const event = claudeHookSchema.safeParse(req.body);
       if (!event.success) {

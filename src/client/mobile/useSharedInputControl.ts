@@ -32,6 +32,15 @@ export function useSharedInputControl({
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now);
   const lease = useRef<Lease | undefined>(undefined);
+  const generation = useRef(0);
+  const claiming = useRef<
+    | {
+        key: string | undefined;
+        generation: number;
+        promise: Promise<Credentials>;
+      }
+    | undefined
+  >(undefined);
   const target: Target | undefined =
     terminal && state
       ? {
@@ -61,10 +70,20 @@ export function useSharedInputControl({
           ...identity(value),
           action: "release",
           clientId,
+          token: value.token,
         }),
         keepalive,
       },
     ).catch(() => {});
+  }
+
+  function relinquish(keepalive = false) {
+    // Invalidates claims still in flight when Safari backgrounds/navigates.
+    // Their eventual responses must not reclaim a terminal from the PC.
+    generation.current++;
+    claiming.current = undefined;
+    setBusy(false);
+    release(lease.current, keepalive);
   }
 
   useEffect(() => {
@@ -76,6 +95,7 @@ export function useSharedInputControl({
       const value = lease.current;
       if (!value || renewing || document.visibilityState !== "visible") return;
       const current = latest.current;
+      if (!current.ready) return;
       const holder = current.state?.controls?.[value.terminalId];
       if (holder && holder.clientId !== clientId) {
         lease.current = undefined;
@@ -89,6 +109,7 @@ export function useSharedInputControl({
             ...identity(value),
             action: "renew",
             clientId,
+            token: value.token,
           },
         );
         if (!disposed && lease.current === value) {
@@ -103,10 +124,10 @@ export function useSharedInputControl({
     };
     const timer = setInterval(() => void tick(), 10000);
     const hide = () => {
-      if (document.visibilityState !== "visible") release(lease.current, true);
+      if (document.visibilityState !== "visible") relinquish(true);
       else setClock(Date.now());
     };
-    const pagehide = () => release(lease.current, true);
+    const pagehide = () => relinquish(true);
     document.addEventListener("visibilitychange", hide);
     window.addEventListener("pagehide", pagehide);
     return () => {
@@ -114,15 +135,26 @@ export function useSharedInputControl({
       clearInterval(timer);
       document.removeEventListener("visibilitychange", hide);
       window.removeEventListener("pagehide", pagehide);
-      release(lease.current);
+      relinquish();
     };
   }, [enabled, active, key]);
 
   async function authorize(takeover = false): Promise<Credentials> {
     const current = latest.current;
-    if (!current.active || !current.ready || !current.target)
+    if (
+      !current.active ||
+      !current.ready ||
+      !current.target ||
+      document.visibilityState !== "visible"
+    )
       throw new Error("실시간 연결을 확인한 뒤 다시 시도하세요.");
     if (!current.enabled) return {};
+    const pending = claiming.current;
+    if (
+      pending?.key === current.key &&
+      pending.generation === generation.current
+    )
+      return pending.promise;
     const holder = current.state?.controls?.[current.target.terminalId];
     if (
       holder &&
@@ -136,41 +168,60 @@ export function useSharedInputControl({
     const existing = lease.current;
     if (
       existing &&
+      existing.terminalId === current.target.terminalId &&
+      existing.runtimeId === current.target.runtimeId &&
+      existing.sessionId === current.target.sessionId &&
       holder?.clientId === clientId &&
       holder.expiresAt > Date.now()
     )
       return { clientId, controlToken: existing.token };
     setBusy(true);
-    try {
-      const result = await api(
-        `/terminals/${encodeURIComponent(current.target.terminalId)}/control`,
-        {
-          ...identity(current.target),
-          action: "claim",
-          clientId,
-          ...(takeover ? { takeover: true } : {}),
-        },
-      );
-      if (!result.token || result.control?.clientId !== clientId)
-        throw new Error("입력 제어권을 확인하지 못했습니다.");
-      const acquired = { ...current.target, token: result.token };
-      if (
-        latest.current.key !== current.key ||
-        !latest.current.active ||
-        !latest.current.ready
-      ) {
-        release(acquired);
-        throw new Error(
-          "세션이 변경되었습니다. 현재 화면에서 다시 시도하세요.",
+    const request = {
+      key: current.key,
+      generation: generation.current,
+      promise: Promise.resolve<Credentials>({}),
+    };
+    const destination = current.target;
+    claiming.current = request;
+    request.promise = (async () => {
+      try {
+        const result = await api(
+          `/terminals/${encodeURIComponent(destination.terminalId)}/control`,
+          {
+            ...identity(destination),
+            action: "claim",
+            clientId,
+            fresh: true,
+            ...(takeover ? { takeover: true } : {}),
+          },
         );
+        if (!result.token || result.control?.clientId !== clientId)
+          throw new Error("입력 제어권을 확인하지 못했습니다.");
+        const acquired = { ...destination, token: result.token };
+        if (
+          latest.current.key !== current.key ||
+          generation.current !== request.generation ||
+          !latest.current.active ||
+          !latest.current.ready ||
+          document.visibilityState !== "visible"
+        ) {
+          release(acquired);
+          throw new Error(
+            "세션이 변경되었습니다. 현재 화면에서 다시 시도하세요.",
+          );
+        }
+        lease.current = acquired;
+        current.update(destination.terminalId, result.control);
+        setClock(Date.now());
+        return { clientId, controlToken: acquired.token };
+      } finally {
+        if (claiming.current === request) {
+          claiming.current = undefined;
+          setBusy(false);
+        }
       }
-      lease.current = acquired;
-      current.update(current.target.terminalId, result.control);
-      setClock(Date.now());
-      return { clientId, controlToken: acquired.token };
-    } finally {
-      setBusy(false);
-    }
+    })();
+    return request.promise;
   }
 
   return { busy, owner, otherOwner, authorize };

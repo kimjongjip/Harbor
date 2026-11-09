@@ -50,6 +50,7 @@ export interface MobileOperations {
     id: string,
     sessionId: string,
     cursor?: string,
+    options?: { includeActivity?: boolean },
   ): Promise<MobileConversationPage>;
 }
 type View = {
@@ -488,6 +489,8 @@ export class MobileGateway {
         .object({
           action: z.enum(["claim", "renew", "release"]),
           clientId: uuid,
+          token: uuid.optional(),
+          fresh: z.boolean().optional(),
           runtimeId: uuid,
           sessionId: z.string().optional(),
           takeover: z.boolean().optional(),
@@ -815,10 +818,11 @@ export class MobileGateway {
         res.sendStatus(404);
         return;
       }
-      const { sessionId, cursor } = z
+      const { sessionId, cursor, includeActivity } = z
         .object({
           sessionId: z.string().min(1).max(150),
           cursor: z.string().min(1).max(4096).optional(),
+          includeActivity: z.enum(["0", "1"]).optional(),
         })
         .strict()
         .parse(req.query);
@@ -831,7 +835,7 @@ export class MobileGateway {
         throw Object.assign(new Error("현재 열린 대화만 조회할 수 있습니다."), {
           status: 409,
         });
-      const result = await this.operations.conversation(id, sessionId, cursor);
+      const result = await this.operations.conversation(id, sessionId, cursor, { includeActivity: includeActivity === "1" });
       this.authenticated(req, res.locals.deviceId);
       if (this.readerBinding(id) !== binding)
         throw Object.assign(new Error("조회 중 세션이 변경되었습니다."), {

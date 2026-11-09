@@ -206,3 +206,31 @@ test('malformed cursors fail before opening a connection and cancellation interr
     assert.ok(f.closes() >= 2);
   } finally { f.history.shutdown(); }
 });
+
+test('activity pages remain bounded, preserve partial turns and never serialize large image/tool payloads', async () => {
+  const rows = [
+    { type: 'user', uuid: 'question', sessionId: 'large', message: { content: 'Inspect the build' } },
+    ...Array.from({ length: 320 }, (_, i) => ({ type: 'assistant', uuid: `tool-${i}`, sessionId: 'large', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: `/fixture/${i}.ts`, ignoredImage: 'image-base64-that-is-not-text' } }], stop_reason: 'tool_use' } })),
+    { type: 'user', uuid: 'tool-output', sessionId: 'large', message: { content: [{ type: 'tool_result', content: 'x'.repeat(2 * MiB) }] } },
+    { type: 'assistant', uuid: 'final', sessionId: 'large', message: { content: 'Build inspected', stop_reason: 'end_turn' } },
+  ];
+  const f = fixture(Buffer.from(rows.map(line).join('')));
+  try {
+    const first = await f.history.read(remote, 'synthetic-password', 'large', undefined, { includeActivity: true });
+    assert.ok(first.nextCursor);
+    assert.deepEqual(first.items.map(item => item.id), ['final']);
+    assert.equal(first.items[0].turnId, undefined, 'the absent user prompt must not be invented');
+    assert.equal(first.items[0].turnStatus, 'completed');
+    assert.ok(first.timeline!.filter(item => item.kind === 'tool').length <= 200);
+    assert.ok(JSON.stringify(first).length < 100000);
+    assert.ok(!JSON.stringify(first).includes('image-base64-that-is-not-text'));
+    assert.ok(f.reads.every(read => read.length <= 256 * 1024));
+    const older = await f.history.read(remote, 'synthetic-password', 'large', first.nextCursor!, { includeActivity: true });
+    assert.equal(older.items[0].id, 'question');
+    assert.ok(older.timeline!.every(item => item.turnId === 'claude-user:question'));
+    assert.ok(older.timeline!.every(item => item.turnStatus === 'unknown'), 'a later-page completion must not be guessed');
+    assert.equal(older.nextCursor, null);
+    const allIds = [...older.timeline!, ...first.timeline!].map(item => item.id);
+    assert.equal(new Set(allIds).size, allIds.length);
+  } finally { f.history.shutdown(); }
+});

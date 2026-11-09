@@ -63,6 +63,8 @@ export interface MessageItem {
   detail?: string;
   phase?: string;
   status?: string;
+  /** Native turn outcome. Unknown/absent is never evidence that work finished. */
+  turnStatus?: "completed" | "inProgress" | "failed" | "interrupted" | "unknown";
   imageCount?: number;
 }
 
@@ -169,6 +171,8 @@ export interface TerminalInfo {
   agentKind?: "codex" | "claude";
   agentState?: "working" | "idle" | "waiting";
   agentSessionId?: string;
+  /** Exact native Stop answer proof; contains no answer text and is not persisted. */
+  agentCompletion?: { sessionId: string; textHash: string };
   integration?: "ready" | "unavailable";
   agentConnected?: boolean;
   peerDelivery?: "automatic" | "hook" | "poll" | "unavailable";

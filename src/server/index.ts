@@ -32,6 +32,7 @@ import { Terminals } from "./terminals.js";
 import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
 import { History } from "./history.js";
+import { serializeHistoryDetailForRead } from "./history-response.js";
 import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
@@ -413,12 +414,13 @@ const state = () => {
 const mobileRuntimeId = randomUUID();
 const mobileConversations = new MobileConversations(
   (id) => terminals.list().find((item) => item.id === id),
-  async (hostId, provider, sessionId, cursor) =>
+  async (hostId, provider, sessionId, cursor, options) =>
     historyReader(provider).read(
       hub.host(hostId),
       await passwordFor(hostId),
       sessionId,
       cursor,
+      options,
     ),
 );
 const liveIdeChats = new IdeLiveChats({
@@ -572,8 +574,8 @@ const mobile = new MobileGateway(new MobileAccess(store.directory), {
   write: (id, data) => terminals.write(id, data),
   answer: (id, answer) => requests.respond(id, answer),
   answers: (id) => richTerminals.list(id),
-  conversation: (id, sessionId, cursor) =>
-    mobileConversations.read(id, sessionId, cursor),
+  conversation: (id, sessionId, cursor, options) =>
+    mobileConversations.read(id, sessionId, cursor, options),
   upload: async (id, name, input) => {
     const target = await attachmentTarget(id);
     return files.upload(target.host, target.path, name, input, 0o600);
@@ -954,7 +956,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.15.4" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.16.0" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1684,12 +1686,13 @@ app.get("/api/hosts/:id/history", async (req, res) => {
 app.get("/api/hosts/:id/history/:threadId", async (req, res) => {
   const host = hub.host(String(req.params.id));
   res.json(
-    await historyReader(historyProvider.parse(req.query.provider)).read(
+    serializeHistoryDetailForRead(await historyReader(historyProvider.parse(req.query.provider)).read(
       host,
       await passwordFor(host.id),
       historyThreadId.parse(req.params.threadId),
       z.string().max(4000).optional().parse(req.query.cursor),
-    ),
+      { includeActivity: z.enum(["0", "1"]).optional().parse(req.query.includeActivity) === "1" },
+    )),
   );
 });
 const historyResumer = new HistoryResumer(

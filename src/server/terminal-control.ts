@@ -51,6 +51,7 @@ export class TerminalControl {
       action: "claim" | "renew" | "release";
       takeover?: boolean;
       token?: string;
+      fresh?: boolean;
     },
   ) {
     const binding = this.binding(id);
@@ -61,14 +62,17 @@ export class TerminalControl {
     let lease = this.current(id);
     const mine =
       lease?.deviceId === deviceId && lease.clientId === input.clientId;
+    // A backgrounded browser can deliver its keepalive release after the same
+    // tab has returned and claimed again. It may only release/renew that lease.
+    const sameLease = mine && (!input.token || input.token === lease?.token);
     if (input.action === "release") {
-      if (mine) {
+      if (sameLease) {
         this.leases.delete(id);
         this.changed();
       }
       return { control: this.view(id) };
     }
-    if (input.action === "renew" && !mine)
+    if (input.action === "renew" && !sameLease)
       throw Object.assign(new Error("제어권이 다른 기기로 이동했습니다."), {
         status: 409,
       });
@@ -79,7 +83,9 @@ export class TerminalControl {
         ),
         { status: 409 },
       );
-    if (!mine)
+    // Returning mobile tabs explicitly start a generation. Ordinary claims
+    // keep compatibility with desktop IDE + terminal clients sharing a lease.
+    if (!mine || (input.action === "claim" && input.fresh))
       lease = {
         deviceId,
         deviceName,

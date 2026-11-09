@@ -1,5 +1,19 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.16.0 세션 연속성과 대화 읽기
+
+모바일 lease의 renew/release에는 획득한 token을 함께 보낸다. 모바일의 `fresh: true` claim만 새 세대를 만들며, 늦게 도착한 예전 release가 복귀 후 lease를 해제하지 못한다. 동일 대상으로 동시 claim은 합치고, 숨김·세션 변경 중 완료된 claim은 해당 token으로 반환한다. 기존 PC IDE/터미널의 claim 캐시 호환은 유지한다. Safari `pageshow.persisted` 및 온라인 복귀는 현재 snapshot을 받은 뒤 입력을 허용한다. 전송·첨부 완료는 원래 terminal/runtime/native binding과 초안을 확인하며 다른 세션 초안을 바꾸지 않는다. 전송 실패/불확실 입력을 재생하지 않는다.
+
+`TerminalConversation`은 같은 CLI의 읽기 전용 기록을 하나의 DOM에 표시한다. 기본 자동 모드는 완료가 증명된 마지막 턴이고 실제 native 상태가 작업/승인 대기가 아닐 때만 표시한다. 같은 xterm과 PTY 입력을 유지하고 원문 표시를 선택할 수 있다. 네이티브 상태·rich 이벤트로 즉시 갱신하고 활성 화면에서만 30초 fallback을 사용한다. 읽기 전용 RPC idle lease는 60초이며 기존 close/shutdown 정리를 유지한다. 뷰 전환을 이유로 CLI를 재개하거나 writer lock을 건드리지 않는다.
+
+기록 API의 `includeActivity=1`은 선택적인 작업 순서를 반환한다. 기존 `items`는 Q/A 계약을 유지한다. `turnStatus`와 `phase`는 Codex native turn 상태 또는 Claude의 명시적 end_turn/result로만 완료를 증명한다. Claude의 stop_reason=null이나 rich 답변 블록을 턴 완료로 추측하지 않는다. Claude native Stop의 `last_assistant_message`는 SHA-256만 AppState에 전달하고 현재 세션 마지막 답변의 정확한 UTF-8 해시와 일치할 때 보조 증거로 사용한다. 새 입력·도구·실패·세션 전환·continuation은 증거를 무효화하며 디스크에 지속하지 않는다. 클라이언트는 확인한 기존 메시지를 해당 세션 안에서만 기억하고 본문이 변경되면 재사용하지 않는다. 알 수 없는 페이지 접두부를 임의 턴에 합치지 않는다. 도구 기록은 개별 4k, 페이지 200개/96k 문자로 제한하고 이미지 바이트·내부 thinking을 보내지 않는다. 원문 파일은 수정하지 않는다.
+
+`conversation-selection.ts`는 연속 문서 전체의 드래그·휠·경계 스크롤을 처리한다. `TerminalConversation`은 선택 중 최신 응답 갱신과 완료로 인한 접기를 미루되 이전 페이지는 앞에 붙여 읽을 수 있다. `conversation-selection-snapshot.ts`는 기존 DOM 노드를 보존하고 부분 턴 재결합으로 노드가 바뀔 때 메시지 ID·동일한 원문·문자 오프셋으로만 선택을 복원한다. 원문이 다르면 복원하지 않는다. 페이지 커서 반복을 차단하며 새 기록 대기열과 이전 페이지 병합을 분리한다. `richSelectedText`는 중간 질문/답변·작성자 표시를 포함하고 닫힌 작업 details 및 중복 조판 조각을 제외한다. native canvas와 DOM 사이를 좌표로 이어 붙이지 않는다. `TerminalTypeset`은 `onWriteParsed`도 구독하여 화면 이동 없이 조판 위치를 갱신한다.
+
+HTTP 응답은 `serializeHistoryDetailForRead`가 Q/A를 `items`에 한 번만 담고 `activity`와 `${kind}:${id}` 순서의 `timelineIds`로 작업 순서를 전달한다. 내부 reader의 timeline 배열을 그대로 JSON 직렬화하면 큰 답변을 두 번 보내게 되므로 새 경로도 이 serializer를 사용한다. 클라이언트 `expandTimeline`은 compact 응답과 이전 full timeline 응답을 모두 읽는다.
+
+회귀 테스트: `history-preview.browser.test.ts`, `history-turns.test.ts`, `conversation-turns.test.ts`, `conversation-selection.browser.test.ts`, `terminal-conversation.browser.test.ts`, `mobile-control.browser.test.ts`, `mobile.browser.test.ts`, `terminal-control.test.ts`, `history.test.ts`, `claude-history.test.ts`, `claude-history-large.test.ts`, `mobile-conversation.test.ts`. 합성 파일·자체 HTTP 서버·숨긴 Electron 프로필만 사용한다. 실제 PC/iPhone 야간 네트워크 지속 검증과 격리 테스트 통과를 구분해 보고한다. 백엔드와 모바일 클라이언트 변경은 함께 배포하고 실제 사용자 프로세스는 강제 종료하지 않는다.
+
 ## 현재 기준
 
 - 저장소: https://github.com/kimjongjip/Harbor.git

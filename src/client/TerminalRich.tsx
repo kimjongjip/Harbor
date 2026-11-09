@@ -14,6 +14,7 @@ export function richSelectedText(root: HTMLElement): string | null {
   if (!start || !end || !root.contains(start) || !root.contains(end))
     return null;
   const content = (article: Element) =>
+    (article.closest(".terminal-conversation") ? article : null) ||
     article.querySelector(".terminal-rich-source") ||
     article.querySelector(".terminal-rich-content") ||
     article;
@@ -46,6 +47,7 @@ export function richSelectedText(root: HTMLElement): string | null {
     if (
       !unique.has(id) &&
       (article.dataset.terminalRich === "true" ||
+        article.closest(".terminal-conversation") ||
         article === start ||
         article === end)
     )
@@ -53,6 +55,8 @@ export function richSelectedText(root: HTMLElement): string | null {
   }
   const chunks: string[] = [];
   for (const [id, article] of unique) {
+    // Closed work details are not part of the visible selected transcript.
+    if (article.closest("details:not([open])")) continue;
     // Every clipped fragment contains the same DOM. Map the two endpoints into
     // one copy of the answer instead of copying hidden duplicate fragments.
     const target = content(article),
@@ -96,6 +100,8 @@ function selectedRichRange(root: HTMLElement, node: Element, range: Range) {
   }
   const container = root.ownerDocument.createElement("div");
   container.append(fragment);
+  if (node.classList.contains("history-message"))
+    for (const label of container.querySelectorAll(":scope > b")) label.append("\n");
   // Preserve meaningful paragraph/row breaks without reading unrelated blocks.
   for (const br of container.querySelectorAll("br")) br.replaceWith("\n");
   for (const cell of container.querySelectorAll("th,td")) cell.append("\t");

@@ -20,6 +20,11 @@ export const claudeHookSchema = z.object({
   message: z.string().max(8000).optional(),
   tool_name: z.string().max(200).optional(),
   prompt: z.string().max(128000).optional(),
+  // Older CLIs omit this. Oversized text must not prevent the Stop status event.
+  last_assistant_message: z.preprocess(
+    value => typeof value === "string" && value.length > 128000 ? undefined : value,
+    z.string().max(128000).optional(),
+  ),
 });
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 

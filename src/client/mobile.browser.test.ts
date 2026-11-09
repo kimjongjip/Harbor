@@ -60,6 +60,21 @@ test(
     f.screen.append(reservedScreen);
     let app: Awaited<ReturnType<typeof _electron.launch>> | undefined;
     let loseAck = false;
+    let holdAck = false;
+    let holdAttachment = false;
+    let releaseResponse: (() => void) | undefined;
+    const pendingResponses = new Set<() => void>();
+    async function heldResponse() {
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (releaseResponse) {
+          const respond = releaseResponse;
+          releaseResponse = undefined;
+          return respond;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Expected delayed fixture response");
+    }
     const messages: any[] = [];
     // Isolated loopback proxy models Serve's Host/Origin forwarding, never the user's listener.
     const proxy = createServer((req, res) => {
@@ -74,6 +89,20 @@ test(
           },
         },
         (response) => {
+          if (
+            (holdAck && req.url === "/mobile-api/input") ||
+            (holdAttachment && req.url?.includes("/attachment?"))
+          ) {
+            holdAck = holdAttachment = false;
+            const forward = () => {
+              pendingResponses.delete(forward);
+              res.writeHead(response.statusCode!, response.headers);
+              response.pipe(res);
+            };
+            pendingResponses.add(forward);
+            releaseResponse = forward;
+            return;
+          }
           if (loseAck && req.url === "/mobile-api/input") {
             loseAck = false;
             response.resume();
@@ -998,6 +1027,172 @@ test(
           (await page.locator(".terminal-scroll").isVisible()),
         true,
       );
+      // Notifications received during a delayed send/upload switch sessions
+      // after the receipt without carrying the old composer into that session.
+      const composer = page.getByLabel("터미널에 보낼 입력");
+      const waitReady = () =>
+        page.waitForFunction(
+          () =>
+            document.querySelector("[role=status]")?.textContent === "연결됨",
+        );
+      const openNotification = (id: string) =>
+        page.evaluate(
+          (terminalId) =>
+            navigator.serviceWorker.dispatchEvent(
+              new MessageEvent("message", {
+                data: {
+                  type: "harbor-open",
+                  url: `${location.origin}/mobile/?terminal=${terminalId}`,
+                },
+              }),
+            ),
+          id,
+        );
+      await waitReady();
+      await composer.fill("둘째 세션에서 계속 쓸 초안");
+      await page.getByLabel("세션 전환").selectOption(f.id);
+      await waitReady();
+      await composer.fill("첫 세션에 한 번만 전송");
+      holdAck = true;
+      await page.getByRole("button", { name: "보내기 ↵", exact: true }).click();
+      const releaseInput = await heldResponse();
+      await openNotification(secondId);
+      assert.equal(await page.getByLabel("세션 전환").inputValue(), f.id);
+      releaseInput();
+      await page.waitForFunction(
+        (id) =>
+          (
+            document.querySelector(
+              '[aria-label="세션 전환"]',
+            ) as HTMLSelectElement
+          ).value === id,
+        secondId,
+      );
+      await page.waitForFunction(
+        () =>
+          !(
+            document.querySelector(
+              'textarea[aria-label="터미널에 보낼 입력"]',
+            ) as HTMLTextAreaElement
+          ).readOnly,
+      );
+      assert.equal(await composer.inputValue(), "둘째 세션에서 계속 쓸 초안");
+      await page.getByLabel("세션 전환").selectOption(f.id);
+      await waitReady();
+      assert.equal(await composer.inputValue(), "");
+
+      holdAttachment = true;
+      await page.locator('.file-button input[type="file"]').setInputFiles({
+        name: "handoff.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("isolated fixture"),
+      });
+      const releaseUpload = await heldResponse();
+      await openNotification(secondId);
+      assert.equal(await page.getByLabel("세션 전환").inputValue(), f.id);
+      releaseUpload();
+      await page.waitForFunction(
+        (id) =>
+          (
+            document.querySelector(
+              '[aria-label="세션 전환"]',
+            ) as HTMLSelectElement
+          ).value === id,
+        secondId,
+      );
+      await page.waitForFunction(
+        () =>
+          !(
+            document.querySelector(
+              'textarea[aria-label="터미널에 보낼 입력"]',
+            ) as HTMLTextAreaElement
+          ).readOnly,
+      );
+      assert.equal(await composer.inputValue(), "둘째 세션에서 계속 쓸 초안");
+      await page.getByLabel("세션 전환").selectOption(f.id);
+      await waitReady();
+      assert.match(await composer.inputValue(), /handoff\.txt/);
+
+      const writesBeforeRestore = [...f.writes];
+      const beforeRestore = connectionCount;
+      const restoredSocket = page.waitForEvent("websocket");
+      await page.evaluate(() =>
+        window.dispatchEvent(
+          new PageTransitionEvent("pageshow", { persisted: true }),
+        ),
+      );
+      await restoredSocket;
+      await waitReady();
+      assert.equal(
+        connectionCount,
+        beforeRestore + 1,
+        "cached iOS page obtains a fresh live snapshot",
+      );
+      assert.deepEqual(
+        f.writes,
+        writesBeforeRestore,
+        "foreground restoration never replays input",
+      );
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, "onLine", {
+          configurable: true,
+          value: false,
+        });
+        window.dispatchEvent(new Event("offline"));
+      });
+      await page
+        .getByRole("status")
+        .filter({ hasText: "네트워크 연결 대기 중" })
+        .waitFor();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "보내기 ↵", exact: true })
+          .isDisabled(),
+        true,
+      );
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, "onLine", {
+          configurable: true,
+          value: true,
+        });
+        window.dispatchEvent(new Event("online"));
+      });
+      await waitReady();
+      assert.deepEqual(
+        f.writes,
+        writesBeforeRestore,
+        "network restoration never resends the attachment draft",
+      );
+      await composer.fill("새 대화가 덮어쓰면 안 되는 초안");
+      holdAttachment = true;
+      await page.locator('.file-button input[type="file"]').setInputFiles({
+        name: "old-session.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("old native fixture"),
+      });
+      const oldNativeUpload = await heldResponse();
+      const subscriptionsBeforeChange = messages.length;
+      f.state.terminals[0].agentSessionId = "replacement-native";
+      f.gateway.changed();
+      for (
+        let attempt = 0;
+        attempt < 500 && messages.length === subscriptionsBeforeChange;
+        attempt++
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.ok(
+        messages.length > subscriptionsBeforeChange,
+        "native change resubscribes before applying upload result",
+      );
+      oldNativeUpload();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "첨부 중 대화가 변경" })
+        .waitFor();
+      assert.equal(
+        await composer.inputValue(),
+        "새 대화가 덮어쓰면 안 되는 초안",
+      );
       // Live updates / reconnect are presentation-only: no layout ACK, resize,
       // marker rewriting or extra input was sent to the shared terminal.
       assert.ok(messages.length >= 2);
@@ -1018,6 +1213,7 @@ test(
       }
       throw error;
     } finally {
+      for (const respond of pendingResponses) respond();
       await app?.close();
       for (const s of sockets.clients) s.terminate();
       sockets.close();

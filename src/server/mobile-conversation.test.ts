@@ -93,7 +93,32 @@ test("mobile conversation endpoint requires pairing, validates queries and is re
     ).json();
     assert.ok(older.items[0].id !== page.items[0].id);
     assert.equal(f.writes.length, 0);
+    assert.equal((await f.http(route + "&includeActivity=1", undefined, { cookie })).status, 200);
+    assert.equal((await f.http(route + "&includeActivity=yes", undefined, { cookie })).status, 400);
   } finally {
     await f.close();
   }
+});
+
+test("mobile activity reads are opt-in, preserve native outcome metadata and do not coalesce with Q/A reads", async () => {
+  const terminal = { id: "terminal", hostId: "host", agentKind: "claude", agentSessionId: "session" } as TerminalInfo;
+  const item = { id: "answer", kind: "assistant" as const, text: "Done", turnId: "turn", phase: "final_answer", turnStatus: "completed" as const };
+  const activity = { id: "tool", kind: "command" as const, text: "npm test", detail: "Tests passed", turnId: "turn", turnStatus: "completed" as const };
+  const calls: boolean[] = [];
+  let mismatch = false;
+  const service = new MobileConversations(() => terminal, async (_host, _provider, _session, _cursor, options) => {
+    calls.push(!!options?.includeActivity);
+    await new Promise(resolve => setImmediate(resolve));
+    return { thread: { id: "session", hostId: mismatch ? "other-host" : "host" } as HistoryDetail["thread"], items: [item], timeline: [activity, item], nextCursor: null };
+  });
+  const [qa, detailed] = await Promise.all([service.read("terminal", "session"), service.read("terminal", "session", undefined, { includeActivity: true })]);
+  assert.deepEqual(calls, [false, true]);
+  assert.equal(qa.timeline, undefined);
+  assert.equal(qa.items[0].phase, "final_answer");
+  assert.equal(qa.items[0].turnStatus, "completed");
+  assert.equal(detailed.timeline, undefined);
+  assert.deepEqual(detailed.activity, [activity]);
+  assert.deepEqual(detailed.timelineIds, ["command:tool", "assistant:answer"]);
+  mismatch = true;
+  await assert.rejects(service.read("terminal", "session"), /조회 중 대화가 변경/);
 });

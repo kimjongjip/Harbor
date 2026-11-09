@@ -9,6 +9,7 @@ import type {
   HistoryThread,
   HistoryPage,
   HistoryDetail,
+  HistoryReadOptions,
 } from "../shared/history.js";
 
 interface Reader {
@@ -73,7 +74,7 @@ export class History {
   private stopped = false;
   constructor(
     private readonly create: Connect = connect,
-    private readonly idleMs = 15_000,
+    private readonly idleMs = 60_000,
   ) {}
   private async using<T>(
     host: HostConfig,
@@ -221,6 +222,7 @@ export class History {
     password: string | undefined,
     threadId: string,
     cursor?: string,
+    options: HistoryReadOptions = {},
   ): Promise<HistoryDetail> {
     return this.using(host, password, async (client) => {
       const summary = await client.call(
@@ -229,6 +231,7 @@ export class History {
         20000,
       );
       const thread = historyThread(host.id, summary.thread);
+      if (thread.id !== threadId) throw new Error("조회 중 Codex 대화가 변경됐습니다. 다시 선택하세요.");
       let turns: any[],
         nextCursor: string | null = null;
       const legacyOffset = cursor?.match(/^harbor-read:(\d{1,9})$/);
@@ -273,15 +276,31 @@ export class History {
           throw error;
         turns = await readLegacy(0);
       }
-      const items = turns
-        .flatMap((turn) =>
-          (turn.items || []).map((item: any) => normalizeItem(item, turn.id)),
-        )
-        .filter(
-          (item): item is MessageItem =>
-            !!item && ["user", "assistant", "notice"].includes(item.kind),
-        );
-      return { thread, items, nextCursor };
+      const items: MessageItem[] = [], timeline: MessageItem[] = [];
+      let activityBytes = 0, activityCount = 0, omitted = false;
+      for (const turn of turns) {
+        const turnStatus: MessageItem["turnStatus"] = ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
+          ? turn.status : "unknown";
+        for (const raw of turn.items || []) {
+          const item = normalizeItem(raw, turn.id);
+          if (!item) continue;
+          item.turnStatus = turnStatus;
+          if (["user", "assistant", "notice"].includes(item.kind)) {
+            items.push(item);
+            if (options.includeActivity) timeline.push(item);
+          } else if (options.includeActivity) {
+            const activity = { ...item, text: item.text.slice(0, 4000), detail: item.detail?.slice(0, 4000) };
+            const size = activity.text.length + (activity.detail?.length || 0);
+            if (activityCount >= 200 || activityBytes + size > 96000) { omitted = true; continue; }
+            activityCount++; activityBytes += size;
+            timeline.push(activity);
+          }
+        }
+      }
+      return { thread, items, nextCursor,
+        ...(options.includeActivity ? { timeline } : {}),
+        ...(omitted ? { notice: "작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다." } : {}),
+      };
     });
   }
   async summary(

@@ -93,6 +93,92 @@ test("legacy input is opt-in and passive local sizing never claims or renews own
   assert.throws(() => c.local("terminal"));
 });
 
+test("a delayed background release or renewal cannot invalidate the same phone's new claim", () => {
+  const c = new TerminalControl(() => "runtime/native-session");
+  const identity = { clientId: "phone-tab" };
+  const first = c.change("terminal", "phone", "iPhone", {
+    ...identity,
+    action: "claim",
+  });
+  // Safari resumes before the old pagehide keepalive reaches Harbor.
+  const resumed = c.change("terminal", "phone", "iPhone", {
+    ...identity,
+    action: "claim",
+    fresh: true,
+  });
+  assert.notEqual(resumed.token, first.token);
+  c.change("terminal", "phone", "iPhone", {
+    ...identity,
+    action: "release",
+    token: first.token,
+  });
+  assert.throws(
+    () =>
+      c.change("terminal", "phone", "iPhone", {
+        ...identity,
+        action: "renew",
+        token: first.token,
+      }),
+    { status: 409 },
+  );
+  c.assert("terminal", "phone", identity.clientId, resumed.token);
+  const renewed = c.change("terminal", "phone", "iPhone", {
+    ...identity,
+    action: "renew",
+    token: resumed.token,
+  });
+  assert.equal(renewed.token, resumed.token);
+  assert.equal(
+    c.change("terminal", "phone", "iPhone", {
+      ...identity,
+      action: "claim",
+    }).token,
+    resumed.token,
+    "ordinary desktop/legacy claims keep their token",
+  );
+  c.change("terminal", "phone", "iPhone", {
+    ...identity,
+    action: "release",
+    token: renewed.token,
+  });
+  assert.equal(c.view("terminal"), null);
+  c.local("terminal");
+  assert.equal(c.view("terminal")?.clientId, "local");
+});
+
+test("mobile control API pins release and renewal to the acquired lease token", async () => {
+  const f = await mobileFixture();
+  try {
+    const paired = await f.pair();
+    const identity = {
+      clientId: randomUUID(),
+      runtimeId: f.state.runtimeId,
+      sessionId: f.state.terminals[0].agentSessionId,
+    };
+    const headers = { cookie: paired };
+    const route = `/mobile-api/terminals/${f.id}/control`;
+    const change = (action: string, token?: string) =>
+      f.http(
+        route,
+        { ...identity, action, token, fresh: action === "claim" },
+        headers,
+      );
+    const first = await (await change("claim")).json();
+    const resumed = await (await change("claim")).json();
+    assert.ok(resumed.token);
+    assert.notEqual(resumed.token, first.token);
+    assert.equal((await change("release", first.token)).status, 200);
+    assert.equal((await change("renew", first.token)).status, 409);
+    const current = await change("renew", resumed.token);
+    assert.equal(current.status, 200);
+    assert.equal((await current.json()).token, resumed.token);
+    assert.equal((await change("release", resumed.token)).status, 200);
+    assert.equal(f.gateway.controls.view(f.id), null);
+  } finally {
+    await f.close();
+  }
+});
+
 function pairDevice(
   f: Awaited<ReturnType<typeof mobileFixture>>,
   kind: "mobile" | "desktop",

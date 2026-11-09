@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronRight,
@@ -19,6 +19,12 @@ import type {
 import { api } from "./api";
 import { Markdown } from "./RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
+import {
+  historySnippet,
+  newestHistoryTurns,
+  prependOlderHistory,
+  recentHistoryQuestion,
+} from "./history-turns";
 import { Modal } from "./Dialogs";
 import { useTheme, terminalColors } from "./Theme";
 import "./history.css";
@@ -78,6 +84,15 @@ export default function CodexHistory({
   const [historyPaused, setHistoryPaused] = useState(false);
   const [reading, setReading] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const transcript = useRef<HTMLDivElement>(null);
+  const [recentQuestions, setRecentQuestions] = useState<
+    Record<string, string>
+  >({});
+  const turns = useMemo(
+    () => newestHistoryTurns(detail?.items || []),
+    [detail],
+  );
+  const recentQuestion = recentHistoryQuestion(detail?.items || []);
   const generation = useRef(0),
     readingGeneration = useRef(0),
     loadLock = useRef(false);
@@ -91,6 +106,7 @@ export default function CodexHistory({
     .sort()
     .join(",");
   const queryKey = JSON.stringify([
+    provider,
     hostId,
     query,
     automation,
@@ -170,10 +186,10 @@ export default function CodexHistory({
     return () => {
       generation.current++;
     };
-  }, [hostId, query, automation, archived, hostKey]);
+  }, [provider, hostId, query, automation, archived, hostKey]);
   useEffect(() => {
     if (expanded && loadedKey.current !== queryKey) void load();
-  }, [expanded, hostId, query, automation, archived, hostKey]);
+  }, [expanded, provider, hostId, query, automation, archived, hostKey]);
   useEffect(
     () => () => {
       readingGeneration.current++;
@@ -181,6 +197,7 @@ export default function CodexHistory({
     [],
   );
   async function read(thread: HistoryThread, more = false) {
+    if (more && (reading || !detail?.nextCursor)) return;
     const current = ++readingGeneration.current;
     setSelected(thread);
     setReading(true);
@@ -192,28 +209,48 @@ export default function CodexHistory({
     )
       setDetail(null);
     try {
-      const result = await api<HistoryDetail>(
-        `/hosts/${thread.hostId}/history/${thread.id}?${new URLSearchParams({ provider, ...(more && detail?.nextCursor ? { cursor: detail.nextCursor } : {}) })}`,
-        undefined,
-        "GET",
-      );
+      let cursor = more ? detail?.nextCursor : undefined;
+      let result: HistoryDetail | undefined;
+      const visited = new Set<string>();
+      // Some bounded pages contain only tool output or a skipped huge record.
+      // Read a small number of those pages to reach the latest actual message.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const page = await api<HistoryDetail>(
+          `/hosts/${thread.hostId}/history/${thread.id}?${new URLSearchParams({ provider, ...(cursor ? { cursor } : {}) })}`,
+          undefined,
+          "GET",
+        );
+        if (readingGeneration.current !== current) return;
+        result = { ...page, notice: page.notice || result?.notice };
+        if (
+          page.items.length ||
+          !page.nextCursor ||
+          visited.has(page.nextCursor)
+        )
+          break;
+        visited.add(page.nextCursor);
+        cursor = page.nextCursor;
+      }
       if (readingGeneration.current !== current) return;
+      if (!result) return;
+      const question = recentHistoryQuestion(result.items);
+      if (!more && question) {
+        setRecentQuestions((previous) => ({
+          ...previous,
+          [`${provider}:${thread.hostId}:${thread.id}`]: question,
+        }));
+      }
+      const nextDetail = result;
       setDetail((prev) =>
         more && prev
           ? {
-              ...result,
-              notice: result.notice || prev.notice,
-              items: [
-                ...new Map(
-                  [...result.items, ...prev.items].map((item) => [
-                    item.id,
-                    item,
-                  ]),
-                ).values(),
-              ],
+              ...nextDetail,
+              notice: nextDetail.notice || prev.notice,
+              items: prependOlderHistory(prev.items, nextDetail.items),
             }
-          : result,
+          : nextDetail,
       );
+      if (!more && transcript.current) transcript.current.scrollTop = 0;
     } catch (error) {
       if (readingGeneration.current === current) {
         if (isLegacyClaudeHistoryLimit(error)) setHistoryPaused(true);
@@ -387,9 +424,22 @@ export default function CodexHistory({
             >
               <button
                 className="history-row-main"
+                title="최근 질문과 답변 미리보기"
                 onClick={() => void read(thread)}
               >
                 <b>{thread.title}</b>
+                {(recentQuestions[
+                  `${provider}:${thread.hostId}:${thread.id}`
+                ] ||
+                  (thread.preview && thread.preview !== thread.title)) && (
+                  <span className="history-row-preview">
+                    {recentQuestions[
+                      `${provider}:${thread.hostId}:${thread.id}`
+                    ]
+                      ? `최근 질문 · ${historySnippet(recentQuestions[`${provider}:${thread.hostId}:${thread.id}`])}`
+                      : historySnippet(thread.preview)}
+                  </span>
+                )}
                 <span className="history-row-folder" title={thread.cwd}>
                   <Folder size={12} />
                   <span>{thread.cwd || "폴더 정보 없음"}</span>
@@ -397,7 +447,12 @@ export default function CodexHistory({
                 <span className="history-row-meta">
                   <span>{hosts.find((h) => h.id === thread.hostId)?.name}</span>
                   <time>
-                    {new Date(thread.updatedAt).toLocaleDateString("ko-KR")}
+                    {new Date(thread.updatedAt).toLocaleString("ko-KR", {
+                      month: "numeric",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
                   </time>
                 </span>
               </button>
@@ -454,8 +509,8 @@ export default function CodexHistory({
         createPortal(
           <div className="history-modal-root">
             <Modal
-              title={selected.title}
-              subtitle={`${selectedHost?.name || "서버"} · ${selected.cwd}`}
+              title={detail?.thread.title || selected.title}
+              subtitle={`${selectedHost?.name || "서버"} · ${label} · ${detail?.thread.cwd || selected.cwd}`}
               onClose={closePreview}
               backdropClassName="history-modal-root"
               wide
@@ -463,7 +518,7 @@ export default function CodexHistory({
               <div className="history-preview">
                 {selectedHost?.kind === "ssh" && modeSelector(true)}
                 <div className="history-preview-actions">
-                  <span>기록 미리보기</span>
+                  <span>최근 대화부터</span>
                   <button
                     className="button secondary"
                     disabled={reading || resuming || archived}
@@ -522,7 +577,20 @@ export default function CodexHistory({
                     터미널에서 이어가기
                   </button>
                 </div>
-                <div className="history-transcript">
+                {recentQuestion && (
+                  <div
+                    className="history-recent-question"
+                    title={historySnippet(recentQuestion, 500)}
+                  >
+                    <span>최근 질문</span>
+                    <p>{historySnippet(recentQuestion)}</p>
+                  </div>
+                )}
+                <div
+                  className="history-transcript"
+                  ref={transcript}
+                  aria-label="최근 질문과 답변"
+                >
                   {detail?.notice && (
                     <p role="status" className="muted">
                       {detail.notice}
@@ -542,55 +610,77 @@ export default function CodexHistory({
                       기록 다시 불러오기
                     </button>
                   )}
+                  {reading && !detail && (
+                    <div className="history-loading">
+                      <LoaderCircle size={18} className="spin" />
+                      대화를 읽는 중…
+                    </div>
+                  )}
+                  {turns.map((turn, turnIndex) => (
+                    <section
+                      className="history-turn"
+                      key={turn.id}
+                      data-history-turn={turn.id}
+                    >
+                      <div className="history-turn-label">
+                        {turnIndex === 0 ? "가장 최근 대화" : "이전 대화"}
+                      </div>
+                      {turn.items.map((item) => (
+                        <article
+                          key={item.id}
+                          className={`history-message ${item.kind}`}
+                          data-history-message={item.id}
+                        >
+                          <b>
+                            {item.kind === "user"
+                              ? "나"
+                              : item.kind === "assistant"
+                                ? label
+                                : "기록"}
+                          </b>
+                          {item.imageCount && (
+                            <small>이미지 {item.imageCount}개</small>
+                          )}
+                          <Markdown
+                            text={item.text}
+                            location={{
+                              hostId: selected.hostId,
+                              cwd: detail?.thread.cwd || selected.cwd,
+                            }}
+                          />
+                        </article>
+                      ))}
+                    </section>
+                  ))}
                   {detail?.nextCursor && (
                     <button
                       className="button secondary history-more"
                       disabled={reading}
                       onClick={() => void read(selected, true)}
                     >
-                      이전 메시지 더 보기
+                      {reading ? (
+                        <>
+                          <LoaderCircle size={15} className="spin" /> 이전
+                          대화를 읽는 중…
+                        </>
+                      ) : (
+                        "이전 대화 더 읽기"
+                      )}
                     </button>
                   )}
-                  {reading && (
-                    <div className="history-loading">
-                      <LoaderCircle size={18} className="spin" />
-                      대화를 읽는 중…
-                    </div>
-                  )}
-                  {detail?.items.map((item, index) => (
-                    <article
-                      key={`${item.id}-${index}`}
-                      className={`history-message ${item.kind}`}
-                    >
-                      <b>
-                        {item.kind === "user"
-                          ? "나"
-                          : item.kind === "assistant"
-                            ? label
-                            : "기록"}
-                      </b>
-                      {item.imageCount && (
-                        <small>이미지 {item.imageCount}개</small>
-                      )}
-                      <Markdown
-                        text={item.text}
-                        location={{
-                          hostId: selected.hostId,
-                          cwd: selected.cwd,
-                        }}
-                      />
-                    </article>
-                  ))}
-                  {detail && !detail.items.length && !reading && (
-                    <p className="history-no-messages">
-                      표시할 대화 메시지가 없습니다.
-                    </p>
-                  )}
+                  {detail &&
+                    !detail.items.length &&
+                    !detail.nextCursor &&
+                    !reading && (
+                      <p className="history-no-messages">
+                        표시할 대화 메시지가 없습니다.
+                      </p>
+                    )}
                 </div>
                 <footer>
                   {archived
                     ? "보관된 대화입니다. Codex에서 보관을 해제하면 이어갈 수 있습니다."
-                    : "이어가기를 누르면 원래 프로젝트 폴더에서 이 대화를 엽니다."}
+                    : "기록을 읽는 동안 실행 중인 세션은 그대로 유지됩니다. 이어가기를 누르면 이 대화를 엽니다."}
                 </footer>
               </div>
             </Modal>

@@ -240,3 +240,64 @@ test("history supports old Codex read methods and disposes only its own reader a
   await Promise.resolve();
   assert.equal(stops, 2);
 });
+
+test("opt-in Codex timeline preserves native completion and bounded work without exposing reasoning", async () => {
+  const turns = [
+    { id: "done", status: "completed", items: [
+      { id: "q", type: "userMessage", content: [{ type: "text", text: "Fix the parser" }] },
+      { id: "progress", type: "agentMessage", phase: "commentary", text: "Checking the parser" },
+      { id: "work", type: "commandExecution", command: "npm test", aggregatedOutput: "x".repeat(20000), status: "completed" },
+      { id: "private", type: "reasoning", text: "must never appear" },
+      { id: "answer", type: "agentMessage", phase: "final_answer", text: "Fixed" },
+    ] },
+    { id: "live", status: "inProgress", items: [{ id: "live-text", type: "agentMessage", text: "Still working" }] },
+    { id: "failed", status: "failed", items: [{ id: "failed-text", type: "agentMessage", phase: "final_answer", text: "An incomplete result" }] },
+    { id: "legacy", items: [{ id: "unknown-text", type: "agentMessage", text: "Unverified" }] },
+  ];
+  const history = new History(async () => ({ alive: true, stop() {}, async call(method) {
+    return method === "thread/read" ? { thread: { id: threadId, status: { type: "idle" } } } : { data: [...turns].reverse() };
+  } }));
+  try {
+    const normal = await history.read(host, undefined, threadId);
+    assert.equal(normal.timeline, undefined);
+    assert.ok(normal.items.every(item => item.kind !== "command"));
+    const detail = await history.read(host, undefined, threadId, undefined, { includeActivity: true });
+    assert.deepEqual(detail.timeline!.map(item => item.id), ["q", "progress", "work", "answer", "live-text", "failed-text", "unknown-text"]);
+    assert.equal(detail.timeline![2].detail!.length, 4000);
+    assert.equal(detail.items.find(item => item.id === "answer")!.turnStatus, "completed");
+    assert.equal(detail.items.find(item => item.id === "progress")!.phase, "commentary");
+    assert.equal(detail.items.find(item => item.id === "live-text")!.turnStatus, "inProgress");
+    assert.equal(detail.items.find(item => item.id === "failed-text")!.turnStatus, "failed");
+    assert.equal(detail.items.find(item => item.id === "unknown-text")!.turnStatus, "unknown");
+    assert.ok(!JSON.stringify(detail).includes("must never appear"));
+  } finally { history.shutdown(); }
+});
+
+test("Codex history rejects a mismatched native conversation instead of displaying another session", async () => {
+  const history = new History(async () => ({ alive: true, stop() {}, async call() { return { thread: { id: "another-thread" } }; } }));
+  try { await assert.rejects(history.read(host, undefined, threadId), /대화가 변경/); }
+  finally { history.shutdown(); }
+});
+
+test("read-only history leases reuse one host reader and explicit close disposes it before reconnecting", async () => {
+  let starts = 0, stops = 0;
+  const history = new History(async () => {
+    starts++;
+    return { alive: true, stop() { stops++; }, async call(method) {
+      assert.equal(method, "thread/read");
+      return { thread: { id: threadId } };
+    } };
+  });
+  try {
+    await history.summary(host, undefined, threadId);
+    await history.summary(host, undefined, threadId);
+    assert.equal(starts, 1);
+    history.close(host.id);
+    await Promise.resolve();
+    assert.equal(stops, 1);
+    await history.summary(host, undefined, threadId);
+    assert.equal(starts, 2);
+  } finally { history.shutdown(); }
+  await Promise.resolve();
+  assert.equal(stops, 2);
+});

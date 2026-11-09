@@ -2,10 +2,11 @@
 import path from 'node:path';
 import { homedir } from 'node:os';
 import type { SFTPWrapper, Client } from 'ssh2';
-import type { HostConfig, MessageItem } from '../shared/types.js';
-import type { HistoryThread, HistoryPage, HistoryDetail } from '../shared/history.js';
+import type { HostConfig } from '../shared/types.js';
+import type { HistoryThread, HistoryPage, HistoryDetail, HistoryReadOptions } from '../shared/history.js';
 import { passwordConnection } from './ssh-connect.js';
 import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCursor, readClaudeRecordsBackwards } from './claude-history-pages.js';
+import { assembleClaudeHistory, belongsToClaudeSession, projectClaudeRecord, type ClaudeHistoryRecord } from './claude-history-items.js';
 
 const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
@@ -79,11 +80,14 @@ function titlePrompt(row: any): { text: string; command: boolean } {
   }
   return { text, command: false };
 }
-export function parseClaudeHistory(hostId: string, id: string, text: string, modified: number): HistoryDetail {
-  const rows = records(text).filter(r => !r.sessionId || r.sessionId === id);
+export function parseClaudeHistory(hostId: string, id: string, text: string, modified: number, options: HistoryReadOptions = {}): HistoryDetail {
+  const rows = records(text).filter(r => belongsToClaudeSession(r, id));
   const deduplicated = new Map<string, any>();
   let anonymous = 0;
-  for (const row of rows) deduplicated.set(typeof row.uuid === 'string' ? row.uuid : `anonymous-${anonymous++}`, row);
+  for (const row of rows) {
+    const key = typeof row.uuid === 'string' ? row.uuid : `anonymous-${anonymous++}`;
+    deduplicated.delete(key); deduplicated.set(key, row);
+  }
   const visible = [...deduplicated.values()].filter(r => !r.isSidechain && (!r.isMeta || ideUserInput(r)) && ['user', 'assistant'].includes(r.type) && messageText(r));
   const metadata = (type: string, field: string) => {
     const value = rows.filter(r => !r.isSidechain && r.type === type && typeof r[field] === 'string').at(-1)?.[field];
@@ -93,12 +97,15 @@ export function parseClaudeHistory(hostId: string, id: string, text: string, mod
   const preview = (prompts.find(p => p.text && !p.command)?.text || prompts.find(p => p.text)?.text || '').slice(0, 300);
   // Claude 2.1.258's resume picker prefers agent name, custom name, AI title, summary, then a prompt.
   const title = metadata('agent-name', 'agentName') || metadata('custom-title', 'customTitle') || metadata('ai-title', 'aiTitle') || metadata('summary', 'summary') || preview || 'Claude 대화';
+  const projected = [...deduplicated.values()].flatMap((row, index) => {
+    const record = projectClaudeRecord(row, typeof row.uuid === 'string' ? row.uuid : `${id}-${index}`, messageText(row), ideUserInput(row), !!options.includeActivity);
+    return record ? [record] : [];
+  });
+  const { activityOmitted, ...messages } = assembleClaudeHistory(projected, !!options.includeActivity);
   return {
     thread: { id, hostId, provider: 'claude', title: title.slice(0, 180), cwd: rows.find(r => typeof r.cwd === 'string')?.cwd || '', preview, updatedAt: modified, source: 'claude', active: false },
-    items: visible.map((r, i) => {
-      const input = ideUserInput(r);
-      return { id: input ? `harbor-ide-user:${input.requestId}` : String(r.uuid || `${id}-${i}`), kind: r.type, text: input?.text || messageText(r), imageCount: Array.isArray(r.message?.content) ? r.message.content.filter((p: any) => p?.type === 'image').length : 0 } as MessageItem;
-    }), nextCursor: null,
+    ...messages, nextCursor: null,
+    ...(activityOmitted ? { notice: '작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다.' } : {}),
   };
 }
 const titleFields = { 'agent-name': 'agentName', 'custom-title': 'customTitle', 'ai-title': 'aiTitle', summary: 'summary' } as const;
@@ -106,7 +113,7 @@ type Titles = Partial<Record<keyof typeof titleFields, string>>;
 function titleValues(text: string, id: string): Titles {
   const titles: Titles = {};
   for (const row of records(text)) {
-    if (row.isSidechain || (row.sessionId && row.sessionId !== id)) continue;
+    if (!belongsToClaudeSession(row, id)) continue;
     const field = titleFields[row.type as keyof Titles];
     if (field && typeof row[field] === 'string') titles[row.type as keyof Titles] = row[field].replace(/\s+/g, ' ').trim().slice(0, 180);
   }
@@ -162,7 +169,7 @@ export class ClaudeHistory {
     return this.using(host, password, async r => { const search = options.search?.toLocaleLowerCase(); const all = (await this.catalog(r, host.id)).filter(e => !search || [e.thread.title, e.thread.cwd, e.thread.preview].some(t => t.toLocaleLowerCase().includes(search))); const offset = this.offset(options.cursor); return { data: all.slice(offset, offset + 50).map(e => e.thread), nextCursor: offset + 50 < all.length ? String(offset + 50) : null }; });
   }
   private offset(cursor?: string) { if (cursor && !/^\d{1,8}$/.test(cursor)) throw new Error('잘못된 Claude 기록 페이지입니다.'); return Number(cursor || 0); }
-  async read(host: HostConfig, password: string | undefined, id: string, cursor?: string): Promise<HistoryDetail> {
+  async read(host: HostConfig, password: string | undefined, id: string, cursor?: string, options: HistoryReadOptions = {}): Promise<HistoryDetail> {
     if (!validId(id)) throw new Error('잘못된 Claude 세션 ID입니다.');
     const page = decodeClaudePageCursor(cursor);
     return this.using(host, password, async r => {
@@ -191,11 +198,11 @@ export class ClaudeHistory {
         thread = parseClaudeHistory(host.id, id, sample, current.modified).thread;
         titles = titleValues(sample, id);
       }
-      const items: MessageItem[] = [], seen = new Set<string>(), latestTitles: Titles = {};
-      let remaining = snapshot.remaining, fallbackCwd = '';
+      const projected: ClaudeHistoryRecord[] = [], seen = new Set<string>(), latestTitles: Titles = {};
+      let remaining = snapshot.remaining, fallbackCwd = '', visibleCount = 0;
       const scanned = await readClaudeRecordsBackwards(read, snapshot.at, snapshot.skip, alive, (line, start) => {
         let row: any; try { row = JSON.parse(line.toString('utf8')); } catch { return false; }
-        if (!row || typeof row !== 'object' || Array.isArray(row) || (row.sessionId && row.sessionId !== id)) return false;
+        if (!belongsToClaudeSession(row, id)) return false;
         if (!row.isSidechain) {
           const field = titleFields[row.type as keyof Titles];
           if (field && latestTitles[row.type as keyof Titles] === undefined && typeof row[field] === 'string') latestTitles[row.type as keyof Titles] = row[field].replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -203,19 +210,27 @@ export class ClaudeHistory {
         }
         if (typeof row.uuid === 'string') { if (seen.has(row.uuid)) return false; seen.add(row.uuid); }
         const input = ideUserInput(row);
-        if (row.isSidechain || (row.isMeta && !input) || !['user', 'assistant'].includes(row.type) || !messageText(row)) return false;
-        if (remaining > 0) { remaining--; return false; }
-        items.push({ id: input ? `harbor-ide-user:${input.requestId}` : typeof row.uuid === 'string' ? row.uuid : `${id}-byte-${start}`, kind: row.type, text: input?.text || messageText(row), imageCount: Array.isArray(row.message?.content) ? row.message.content.filter((part: any) => part?.type === 'image').length : 0 });
-        return items.length >= 50;
+        const record = projectClaudeRecord(row, typeof row.uuid === 'string' ? row.uuid : `${id}-byte-${start}`, messageText(row), input, !!options.includeActivity);
+        if (!record) return false;
+        const visible = record.items.some(item => item.kind === 'user' || item.kind === 'assistant');
+        if (remaining > 0) { if (visible) remaining--; return false; }
+        projected.push(record);
+        if (visible) visibleCount++;
+        return visibleCount >= 50 || (options.includeActivity === true && projected.length >= 250);
       });
       const after = r.stat ? await r.stat(entry.file) : current;
       if (after.directory || after.size < snapshot.size || (after.size === snapshot.size && after.modified !== snapshot.modified) || await claudeHistoryFingerprint(read, snapshot.size, `${host.id}\0${id}\0${entry.file}`) !== fingerprint) throw changed();
       const combined = snapshot.at === snapshot.size ? { ...titles, ...latestTitles } : { ...latestTitles, ...titles };
+      const { activityOmitted, ...messages } = assembleClaudeHistory(projected.reverse(), !!options.includeActivity);
+      const notice = [
+        scanned.oversized ? '8 MB를 넘는 개별 기록 항목은 표시하지 않았습니다. 원본 파일은 유지되며 이전 대화를 계속 불러올 수 있습니다.' : '',
+        activityOmitted ? '작업 기록은 페이지당 최대 200개, 96,000자까지 표시합니다. 질문과 답변은 유지됩니다.' : '',
+      ].filter(Boolean).join(' ');
       return {
         thread: { ...thread, updatedAt: current.modified, cwd: thread.cwd || fallbackCwd, title: Object.keys(titleFields).map(type => combined[type as keyof Titles]).find(Boolean) || thread.title },
-        items: items.reverse(),
+        ...messages,
         nextCursor: scanned.at > 0 ? encodeClaudePageCursor({ at: scanned.at, size: snapshot.size, modified: snapshot.modified, fingerprint, skip: scanned.skip, remaining }) : null,
-        ...(scanned.oversized ? { notice: '8 MB를 넘는 개별 기록 항목은 표시하지 않았습니다. 원본 파일은 유지되며 이전 대화를 계속 불러올 수 있습니다.' } : {}),
+        ...(notice ? { notice } : {}),
       };
     });
   }

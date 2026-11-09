@@ -259,7 +259,11 @@ function App() {
     screenCache = useRef(new MobileScreenCache()),
     drafts = useRef(new Map<string, string>()),
     draftSessions = useRef(new Map<string, string | undefined>()),
+    selectedRef = useRef(selected),
+    inputStateRef = useRef(state),
     readyRef = useRef(false);
+  selectedRef.current = selected;
+  inputStateRef.current = state;
   const openTerminals = state?.terminals.filter((t) => !t.exited) || [];
   const terminal = openTerminals.find((t) => t.id === selected);
   const control = useSharedInputControl({
@@ -429,6 +433,7 @@ function App() {
     }
     drafts.current.set(selected, draft);
     setDraft(drafts.current.get(id) || "");
+    selectedRef.current = id;
     setSelected(id);
     setTab("terminal");
     setViewOptions(false);
@@ -595,6 +600,11 @@ function App() {
     const connect = () => {
       if (disposed) return;
       clearTimeout(retry);
+      if (!navigator.onLine) {
+        markReady(false);
+        setStatus("네트워크 연결 대기 중");
+        return;
+      }
       const current = ++generation;
       markReady(false);
       setStatus(
@@ -721,12 +731,25 @@ function App() {
       if (socket.readyState === WebSocket.OPEN) opened();
     };
     const wake = () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && navigator.onLine) {
         socketRef.current?.close();
         connect();
       }
     };
+    const restored = (event: PageTransitionEvent) => {
+      // iOS can restore a cached page without a visibilitychange. Obtain a
+      // current snapshot before enabling input; never replay a pending send.
+      if (event.persisted) wake();
+    };
+    const offline = () => {
+      clearTimeout(retry);
+      generation++;
+      markReady(false);
+      setStatus("네트워크 연결 대기 중");
+      socketRef.current?.close();
+    };
     const watchdog = setInterval(() => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
       if (
         Date.now() - lastMessage > 45000 ||
         (!readyRef.current && selected && Date.now() - openedAt > 30000)
@@ -737,6 +760,8 @@ function App() {
     }, 5000);
     document.addEventListener("visibilitychange", wake);
     window.addEventListener("online", wake);
+    window.addEventListener("offline", offline);
+    window.addEventListener("pageshow", restored);
     connect();
     return () => {
       disposed = true;
@@ -745,6 +770,8 @@ function App() {
       clearTimeout(retry);
       document.removeEventListener("visibilitychange", wake);
       window.removeEventListener("online", wake);
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("pageshow", restored);
       if (!reuseSocket.current) socketRef.current?.close();
       viewport.dispose();
       viewportRef.current = undefined;
@@ -828,7 +855,8 @@ function App() {
     setBusy(true);
     setError("");
     const text = draft,
-      target = selected;
+      target = selected,
+      draftSession = draftSessions.current.get(selected);
     try {
       const credentials = await control.authorize();
       await api("/input", {
@@ -838,16 +866,24 @@ function App() {
         terminalId: target,
         sessionId: key
           ? terminal.agentSessionId
-          : draftSessions.current.get(target),
+          : draftSession,
         bracketed: termRef.current?.modes.bracketedPasteMode || false,
         ...(key ? { key } : { text }),
         submit,
       });
-      if (!key) {
+      if (
+        !key &&
+        drafts.current.get(target) === text &&
+        draftSessions.current.get(target) === draftSession
+      ) {
         drafts.current.set(target, "");
         draftSessions.current.delete(target);
-        setDraft("");
-        viewportRef.current?.latest();
+        // A receipt can arrive after switching sessions. Clear only the sent
+        // session's draft, never the new session's composer or scroll position.
+        if (selectedRef.current === target) {
+          setDraft("");
+          viewportRef.current?.latest();
+        }
       }
     } catch (e) {
       setError(
@@ -889,10 +925,20 @@ function App() {
       );
       const value = await res.json();
       if (!res.ok) throw new Error(value.error);
+      const latestState = inputStateRef.current;
+      const destination = latestState?.terminals.find((item) => item.id === target);
+      if (
+        latestState?.runtimeId !== state?.runtimeId ||
+        !destination ||
+        destination.exited ||
+        destination.hostId !== terminal.hostId ||
+        destination.agentSessionId !== terminal.agentSessionId
+      )
+        throw new Error("첨부 중 대화가 변경되었습니다. 현재 세션에서 다시 첨부하세요.");
       const previous = drafts.current.get(target) || "";
       const next = `${previous}${previous ? "\n" : ""}${terminalPathForPaste(value.path, false)} `;
       drafts.current.set(target, next);
-      setDraft(next);
+      if (selectedRef.current === target) setDraft(next);
     } catch (e) {
       setError((e as Error).message);
     } finally {

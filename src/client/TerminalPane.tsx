@@ -42,7 +42,10 @@ import { terminalTheme, terminalColors, useTheme } from "./Theme";
 import { useTypography } from "./Typography";
 import { terminalFontFamily } from "./typography-settings";
 import { TerminalRich, richSelectedText } from "./TerminalRich";
-import { TerminalConversation } from "./TerminalConversation";
+import {
+  TerminalConversation,
+  type ConversationMode,
+} from "./TerminalConversation";
 import { TerminalControlStatus } from "./TerminalControlStatus";
 import { ReconnectTerminalDialog } from "./ReconnectTerminalDialog";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
@@ -122,7 +125,8 @@ export default function TerminalPane({
   const [nativeTerminal, setNativeTerminal] = useState<Terminal | null>(null);
   const [richBlocks, setRichBlocks] = useState<RichTerminalBlock[]>([]);
   const [reconnectDialog, setReconnectDialog] = useState(false);
-  const [conversationOpen, setConversationOpen] = useState(false);
+  const [conversationMode, setConversationMode] =
+    useState<ConversationMode>("auto");
   const { push, isServerNoticeEnabled } = useNotifications();
   const openRef = useRef(open);
   openRef.current = open;
@@ -1511,16 +1515,39 @@ export default function TerminalPane({
                       : "")}
         </span>
         {(info.agentSessionId || info.resumeThreadId) && (
-          <button
-            type="button"
-            className="terminal-footer-button"
-            aria-label="현재 대화 기록 보기"
-            aria-expanded={conversationOpen}
-            onClick={() => setConversationOpen((value) => !value)}
-            title="현재 대화의 저장된 메시지를 읽습니다. 실행 중인 CLI와 입력은 유지합니다."
+          <div
+            className="terminal-view-modes"
+            role="group"
+            aria-label="터미널 표시 방식"
           >
-            <History size={13} /> 대화 기록
-          </button>
+            <button
+              type="button"
+              className="terminal-footer-button"
+              aria-pressed={conversationMode === "auto"}
+              onClick={() => setConversationMode("auto")}
+              title="작업 중에는 터미널, 완료하면 질문과 답변을 보여줍니다."
+            >
+              자동
+            </button>
+            <button
+              type="button"
+              className="terminal-footer-button"
+              aria-label="현재 대화 기록 보기"
+              aria-pressed={conversationMode === "conversation"}
+              onClick={() => setConversationMode("conversation")}
+              title="질문과 여러 답변을 이어서 읽고 복사합니다."
+            >
+              <History size={13} /> 대화
+            </button>
+            <button
+              type="button"
+              className="terminal-footer-button"
+              aria-pressed={conversationMode === "terminal"}
+              onClick={() => setConversationMode("terminal")}
+            >
+              터미널
+            </button>
+          </div>
         )}
         {hasSelection && (
           <button
@@ -1765,13 +1792,16 @@ export default function TerminalPane({
       {nativeTerminal && (
         <TerminalRich term={nativeTerminal} info={info} blocks={richBlocks} />
       )}
-      {nativeTerminal && conversationOpen && (
+      {nativeTerminal && (info.agentSessionId || info.resumeThreadId) && (
         <TerminalConversation
-          key={`${info.id}:${info.agentSessionId || info.resumeThreadId}`}
+          key={`${info.id}:${info.hostId}:${info.agentKind || info.program}:${info.agentSessionId || info.resumeThreadId}`}
           term={nativeTerminal}
           info={info}
+          mode={conversationMode}
+          blocks={richBlocks}
+          active={active}
           onClose={() => {
-            setConversationOpen(false);
+            setConversationMode("terminal");
             nativeTerminal.focus();
           }}
         />

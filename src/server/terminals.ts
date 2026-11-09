@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { researchSettings } from "./research-settings.js";
 import { cliApprovalArgs } from "./cli-approval.js";
 import { statSync } from "node:fs";
@@ -142,6 +142,7 @@ export class Terminals extends EventEmitter {
   markAgentConnected(id: string, kind: "codex" | "claude" = "codex") {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
+      if (entry.info.agentKind !== kind) delete entry.info.agentCompletion;
       entry.info.agentConnected = true;
       entry.info.agentKind = kind;
       this.persist(entry);
@@ -151,6 +152,8 @@ export class Terminals extends EventEmitter {
   markPeerRuntime(id: string, runtime: PeerRuntime) {
     const entry = this.entries.get(id);
     if (!entry || entry.info.exited) return;
+    if (runtime.kind !== "claude" || runtime.state === "working" || runtime.state === "offline" ||
+      (runtime.sessionId && runtime.sessionId !== entry.info.agentSessionId)) delete entry.info.agentCompletion;
     if (
       entry.durable &&
       runtime.kind === "claude" &&
@@ -242,6 +245,7 @@ export class Terminals extends EventEmitter {
   markAgentState(id: string, state: "shell" | "codex") {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
+      delete entry.info.agentCompletion;
       entry.info.agentConnected = state === "codex";
       // Once Codex exits, this shell no longer owns the resumed conversation.
       if (state === "shell") {
@@ -268,6 +272,9 @@ export class Terminals extends EventEmitter {
     const entry = this.entries.get(id);
     if (!entry || entry.info.exited) return;
     const info = entry.info;
+    if (event.hook_event_name !== "SessionStart" && info.agentSessionId && info.agentSessionId !== event.session_id) return;
+    if (["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event.hook_event_name))
+      delete info.agentCompletion;
     if (event.hook_event_name === "SessionEnd") {
       if (info.agentSessionId !== event.session_id) return;
       if (entry.durable?.peerRuntime?.kind === "claude")
@@ -302,6 +309,9 @@ export class Terminals extends EventEmitter {
         ["SessionStart", "Stop", "StopFailure"].includes(event.hook_event_name)
       )
         info.agentState = "idle";
+      if (event.hook_event_name === "Stop" && typeof event.last_assistant_message === "string" &&
+        event.last_assistant_message.trim() && event.last_assistant_message.length <= 128000)
+        info.agentCompletion = { sessionId: event.session_id, textHash: createHash("sha256").update(event.last_assistant_message, "utf8").digest("hex") };
     }
     this.persist(entry);
     this.emit("change");
@@ -316,6 +326,7 @@ export class Terminals extends EventEmitter {
     )
       return;
     // A successful Stop response requested more native work, rather than input.
+    delete entry.info.agentCompletion;
     entry.info.agentState = "working";
     this.persist(entry);
     this.emit("change");
@@ -614,7 +625,8 @@ export class Terminals extends EventEmitter {
   }
   private persist(entry: Entry) {
     if (entry.durable && !entry.info.exited) {
-      entry.durable.record.info = { ...entry.info };
+      const { agentCompletion: _completion, ...savedInfo } = entry.info;
+      entry.durable.record.info = savedInfo;
       this.registry?.put(entry.durable.record);
     }
   }

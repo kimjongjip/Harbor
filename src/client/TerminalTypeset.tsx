@@ -389,6 +389,7 @@ export function TerminalRich({
         });
     };
     const subscriptions = [
+      term.onWriteParsed(update),
       term.onRender(update),
       term.onScroll(update),
       term.onResize(update),
