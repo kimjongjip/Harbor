@@ -1,7 +1,9 @@
 import {
+  memo,
   useLayoutEffect,
   useRef,
   useState,
+  type ComponentProps,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -23,6 +25,11 @@ import {
 } from "./terminal-native-flow";
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
+import { projectNativeComposition } from "./terminal-native-ime";
+import {
+  projectNativeRow,
+  type NativePanelRectangle,
+} from "./mobile/claude-mod-panels";
 export type { NativeFlowFrame } from "./terminal-native-flow";
 
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -30,6 +37,9 @@ const emptyBlocks: RichTerminalBlock[] = [];
 export interface NativeFlowRange {
   start: number;
   split?: number;
+  /** Native widgets and their composer remain visible in xterm outside the reader. */
+  end?: number;
+  panels?: readonly NativePanelRectangle[];
 }
 interface View {
   frame: NativeFlowFrame;
@@ -47,6 +57,56 @@ interface View {
 // output) are coalesced so other sessions and typing keep the main thread.
 const typingWindowMs = 250;
 const outputCoalesceMs = 40;
+
+type RowView = ComponentProps<typeof NativeRow>;
+// Keep every row in the DOM for continuous selection, but don't ask React to
+// reconcile thousands of unchanged row components for a single echoed key.
+const NativeRows = memo(
+  function NativeRows({ rows }: { rows: RowView[] }) {
+    return rows.map((row) => <NativeRow key={row.row} {...row} />);
+  },
+  (previous, next) =>
+    previous.rows.length === next.rows.length &&
+    previous.rows.every((row, index) => {
+      const other = next.rows[index];
+      return (
+        row.row === other.row &&
+        row.runs === other.runs &&
+        row.cursorOffset === other.cursorOffset &&
+        row.lineHeight === other.lineHeight &&
+        row.separator === other.separator &&
+        row.backgroundColor === other.backgroundColor
+      );
+    }),
+);
+
+// The native tail also contains completed answers whose row reservations are
+// still on screen. Typing changes the cursor, not those Markdown documents.
+const NativeAnswer = memo(function NativeAnswer({
+  id,
+  text,
+  renderAnswer,
+}: {
+  id: string;
+  text?: string;
+  renderAnswer?: (text: string) => ReactNode;
+}) {
+  return (
+    <section
+      data-rich-block={`native-answer:${id}`}
+      data-terminal-rich="true"
+      className="terminal-native-answer"
+    >
+      {text !== undefined ? (
+        (renderAnswer?.(text) ?? (
+          <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{text}</pre>
+        ))
+      ) : (
+        <span className="muted">답변을 불러오는 중…</span>
+      )}
+    </section>
+  );
+});
 
 /** A selectable native buffer projection. It never writes, resizes or replays PTY input. */
 export function TerminalNativeFlow({
@@ -105,6 +165,11 @@ export function TerminalNativeFlow({
       lastInput = 0,
       lastCapture = 0;
     let disposed = false;
+    const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+    // Read geometry once, then consume ResizeObserver's already-computed size.
+    // Reading clientHeight after every parsed echo flushes pending DOM layout
+    // for both xterm and the entire conversation before React can paint it.
+    let screenHeight = screen?.clientHeight || 0;
     const inside = (node: Node | null | undefined) =>
       !!node &&
       (!!root.current?.contains(node) ||
@@ -148,15 +213,33 @@ export function TerminalNativeFlow({
           : latest.current.startRow;
       const range =
         typeof requested === "number" ? { start: requested } : requested;
-      const start = Math.min(frame.end, Math.max(0, Math.floor(range.start)));
-      const split = Math.min(
+      const end = Math.min(
         frame.end,
+        Math.max(0, Math.floor(range.end ?? frame.end)),
+      );
+      const start = Math.min(end, Math.max(0, Math.floor(range.start)));
+      const split = Math.min(
+        end,
         Math.max(start, Math.floor(range.split ?? start)),
       );
-      const rows = reader.rows(frame, start);
+      const displayFrame = end === frame.end ? frame : { ...frame, end };
+      const rows = reader.rows(displayFrame, start).map((runs, index) => {
+        const row = start + index;
+        return range.panels?.some(
+          (panel) => row >= panel.top && row < panel.bottom,
+        )
+          ? projectNativeRow(
+              term.buffer.active.getLine(row),
+              frame.columns,
+              row,
+              range.panels,
+              term.options.theme || {},
+            ).runs
+          : runs;
+      });
       const old = previous.current;
       const next: View = {
-        frame,
+        frame: displayFrame,
         start,
         split,
         rows,
@@ -168,8 +251,7 @@ export function TerminalNativeFlow({
         fontFamily: term.options.fontFamily || "monospace",
         lineHeight: Math.max(
           term.options.fontSize || 14,
-          (term.element?.querySelector<HTMLElement>(".xterm-screen")
-            ?.clientHeight || 0) / term.rows ||
+          screenHeight / term.rows ||
             (term.options.fontSize || 14) * (term.options.lineHeight || 1.2),
         ),
         blocks: latest.current.blocks,
@@ -186,8 +268,10 @@ export function TerminalNativeFlow({
         old.frame.columns !== frame.columns ||
         old.frame.baseY !== frame.baseY ||
         old.frame.bufferType !== frame.bufferType ||
+        old.frame.bracketedPasteMode !== frame.bracketedPasteMode ||
         old.frame.lines.length !== frame.lines.length ||
-        old.frame.lines.some((line, row) => line !== frame.lines[row])
+        old.frame.lines.some((line, row) => line !== frame.lines[row]) ||
+        old.frame.wrapped.some((wrapped, row) => wrapped !== frame.wrapped[row])
       )
         latest.current.onFrame?.(frame);
     };
@@ -213,10 +297,16 @@ export function TerminalNativeFlow({
       clearTimeout(timer);
       timer = undefined;
       if (urgent) queueMicrotask(capture);
-      else
-        timer = setTimeout(capture, outputCoalesceMs - (now - lastCapture));
+      else timer = setTimeout(capture, outputCoalesceMs - (now - lastCapture));
     }
     refresh.current = schedule;
+    const geometry = new ResizeObserver((entries) => {
+      const height = entries[0]?.contentRect.height || 0;
+      if (height === screenHeight) return;
+      screenHeight = height;
+      schedule();
+    });
+    if (screen) geometry.observe(screen);
     const listeners = [
       term.onWriteParsed(schedule),
       term.onResize(schedule),
@@ -239,6 +329,7 @@ export function TerminalNativeFlow({
       disposed = true;
       clearTimeout(timer);
       reader.dispose();
+      geometry.disconnect();
       listeners.forEach((listener) => listener.dispose());
       document.removeEventListener("selectionchange", selectionChanged);
     };
@@ -246,6 +337,15 @@ export function TerminalNativeFlow({
   useLayoutEffect(() => {
     refresh.current();
   }, [active, frozen, codexComposer, startRow, blocks]);
+  const hasView = !!view;
+  useLayoutEffect(() => {
+    if (!active || frozen || !root.current) return;
+    return projectNativeComposition(
+      term,
+      () => root.current?.querySelector<HTMLElement>("[data-native-cursor]"),
+      root.current,
+    );
+  }, [term, active, frozen, hasView]);
   if (!view || !active) return null;
   const partsFor = (from: number, to: number) => {
     const lines = view.frame.lines.slice(from, to);
@@ -253,52 +353,55 @@ export function TerminalNativeFlow({
       mobileFlowParts(lines, view.blocks) ||
       lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }))
     ).map((part) =>
-      part.kind === "row" ? { ...part, row: part.row + from - view.start } : part,
+      part.kind === "row"
+        ? { ...part, row: part.row + from - view.start }
+        : part,
     );
   };
-  const renderPart = (part: FlowPart) =>
-    part.kind === "answer" ? (
-      <section
-        key={`rich:${part.id}`}
-        data-rich-block={`native-answer:${part.id}`}
-        data-terminal-rich="true"
-        className="terminal-native-answer"
-      >
-        {part.block ? (
-          (renderAnswer?.(part.block.text) ?? (
-            <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
-              {part.block.text}
-            </pre>
-          ))
-        ) : (
-          <span className="muted">답변을 불러오는 중…</span>
-        )}
-      </section>
-    ) : (
-      <NativeRow
-        key={`row:${view.start + part.row}`}
-        row={view.start + part.row}
-        runs={
-          part.start
-            ? clipNativeRuns(view.rows[part.row] || [], part.start)
-            : view.rows[part.row] || []
-        }
-        cursorOffset={
-          view.start + part.row === view.frame.cursorRow
-            ? view.cursorOffset
-            : undefined
-        }
-        lineHeight={view.lineHeight}
-        separator={nativeSeparator(view.frame.lines[view.start + part.row] || "")}
-        backgroundColor={
+  const renderParts = (parts: FlowPart[]) => {
+    const nodes: ReactNode[] = [];
+    let rows: RowView[] = [];
+    const flush = () => {
+      if (!rows.length) return;
+      nodes.push(<NativeRows key={`rows:${rows[0].row}`} rows={rows} />);
+      rows = [];
+    };
+    for (const part of parts) {
+      if (part.kind === "answer") {
+        flush();
+        nodes.push(
+          <NativeAnswer
+            key={`rich:${part.id}`}
+            id={part.id}
+            text={part.block?.text}
+            renderAnswer={renderAnswer}
+          />,
+        );
+        continue;
+      }
+      const row = view.start + part.row;
+      if (rows.length && Math.floor(row / 64) !== Math.floor(rows[0].row / 64))
+        flush();
+      rows.push({
+        row,
+        runs: part.start
+          ? clipNativeRuns(view.rows[part.row] || [], part.start)
+          : view.rows[part.row] || [],
+        cursorOffset:
+          row === view.frame.cursorRow ? view.cursorOffset : undefined,
+        lineHeight: view.lineHeight,
+        separator: nativeSeparator(view.frame.lines[row] || ""),
+        backgroundColor:
           view.composerFill &&
-          view.start + part.row >= view.composerFill.first &&
-          view.start + part.row <= view.composerFill.last
+          row >= view.composerFill.first &&
+          row <= view.composerFill.last
             ? view.composerFill.color
-            : undefined
-        }
-      />
-    );
+            : undefined,
+      });
+    }
+    flush();
+    return nodes;
+  };
   const style = {
     fontFamily: view.fontFamily,
     fontSize: view.fontSize,
@@ -343,8 +446,10 @@ export function TerminalNativeFlow({
     term.focus();
   };
   const work =
-    view.split > view.start ? partsFor(view.start, view.split).map(renderPart) : null;
-  const live = partsFor(view.split, view.frame.end).map(renderPart);
+    view.split > view.start
+      ? renderParts(partsFor(view.start, view.split))
+      : null;
+  const live = renderParts(partsFor(view.split, view.frame.end));
   return (
     <>
       {work && workTarget

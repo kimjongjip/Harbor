@@ -16,7 +16,7 @@ export interface NativeCellSpan {
 
 /**
  * Recognize Claude's native Mods chrome in the current viewport only. A box or
- * a column of ordinary output is insufficient: the single-line prompt frame
+ * a column of ordinary output is insufficient: the complete prompt frame
  * and the native close/collapse controls must also be intact.
  */
 export function claudeModPanels(
@@ -43,10 +43,18 @@ export function claudeModPanels(
     if (
       horizontal(row, 0, columns) &&
       cell(row + 1, 0) === "❯" &&
-      /^[ \u00a0]$/.test(cell(row + 1, 1)) &&
-      horizontal(row + 2, 0, columns)
-    )
-      prompts.push(row);
+      /^[ \u00a0]$/.test(cell(row + 1, 1))
+    ) {
+      // Wrapped/multiline drafts keep the same native two-cell prompt indent.
+      // A growing draft must not make an otherwise intact dock disappear.
+      for (let bottom = row + 2; bottom < rows; bottom++) {
+        if (horizontal(bottom, 0, columns)) {
+          prompts.push(row);
+          break;
+        }
+        if (cell(bottom, 0) !== " " || cell(bottom, 1) !== " ") break;
+      }
+    }
   if (prompts.length !== 1) return [];
   const prompt = prompts[0];
   const panels: NativePanelRectangle[] = [];

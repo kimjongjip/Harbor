@@ -12,6 +12,15 @@ export interface NativeChrome {
   framed: boolean;
 }
 
+/** Actual cursor/parser evidence, never inferred from saved conversation text. */
+export interface NativeChromeFrame {
+  cursorRow: number;
+  cursorColumn?: number;
+  baseY: number;
+  wrapped?: readonly boolean[];
+  bracketedPasteMode?: boolean;
+}
+
 const solidRule = /^\s*[─━]{12,}\s*$/;
 const promptRow = /^\s{0,2}[❯›>»](?:\s|$)/;
 // Claude's activity line: a glyph in column 0, then a verb/elapsed status.
@@ -19,14 +28,109 @@ const spinnerRow =
   /^[·✢✳✶✻✽✦✧*∗]\s+\S.*(?:…|\.\.\.|\bfor \d|\(\d+(?:m \d+)?s|esc to interrupt)/;
 const codexStatusRow =
   /^\s{0,2}•\s+(?:Working|Waiting|Running|Thinking|Exploring|Planning)\b|esc to interrupt|^\s{0,2}(?:•\s+)?(?:Worked|Waited) for\b/;
+const codexPromptRow = /^ {0,2}[›»](?: |$)/;
+// Codex may append its warning counter after the shortcuts, separated by
+// spaces or a middle dot. Accept that known UI suffix, not arbitrary output.
+const codexFooterRow =
+  /^ {2,}(?:.*(?:\? for shortcuts|← for agents|tab to queue(?: message)?|\d+% context left)(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?|gpt-[\w.-]+\b.*)$/i;
+
+/** A long composer can extend above the small footer search window. Follow the
+ * live cursor's genuine wraps first. Cursor-positioned TUI rows have no wrap
+ * flags, so those additionally need the Codex footer and input parser mode.
+ * Never walk into scrollback, across unindented output, or from a footer cursor.
+ */
+function cursorComposer(
+  lines: readonly string[],
+  last: number,
+  frame: NativeChromeFrame | undefined,
+) {
+  if (
+    !frame?.bracketedPasteMode ||
+    frame.cursorRow < frame.baseY ||
+    frame.cursorRow > last ||
+    codexFooterRow.test(lines[frame.cursorRow] || "")
+  )
+    return;
+  const floor = Math.max(0, frame.baseY);
+  let first = frame.cursorRow,
+    final = frame.cursorRow;
+  while (first > floor && frame.wrapped?.[first]) first--;
+  while (final < last && frame.wrapped?.[final + 1]) final++;
+  if (codexPromptRow.test(lines[first] || "") && last - final <= 6) {
+    for (let row = final + 1; row <= last; row++)
+      if (lines[row].trim() && !/^ {2,}\S/.test(lines[row])) return;
+  } else {
+    // Explicitly positioned multiline drafts use two-space continuation rows.
+    // A generic indented answer is insufficient evidence: require a recognized
+    // footer below the cursor, confined to the same six-row footer region.
+    let footer = last + 1,
+      recognized = false;
+    for (let row = last; row >= Math.max(floor, last - 5); row--) {
+      if (row <= frame.cursorRow) break;
+      if (codexFooterRow.test(lines[row])) recognized = true;
+      else if (lines[row].trim()) break;
+      footer = row;
+    }
+    if (!recognized || frame.cursorRow >= footer) return;
+    first = frame.cursorRow;
+    while (first >= floor && !codexPromptRow.test(lines[first] || "")) {
+      if (
+        lines[first]?.trim() &&
+        !frame.wrapped?.[first] &&
+        !/^ {2,}\S/.test(lines[first])
+      )
+        return;
+      first--;
+    }
+    if (first < floor) return;
+    for (let row = first + 1; row < footer; row++)
+      if (
+        lines[row].trim() &&
+        !frame.wrapped?.[row] &&
+        (!/^ {2,}\S/.test(lines[row]) || codexFooterRow.test(lines[row]))
+      )
+        return;
+  }
+  const prefix = codexPromptRow.exec(lines[first]);
+  if (
+    !prefix ||
+    (first === frame.cursorRow &&
+      frame.cursorColumn !== undefined &&
+      frame.cursorColumn < prefix[0].length)
+  )
+    return;
+  return first;
+}
+
+function codexStart(lines: readonly string[], row: number, floor: number) {
+  let start = row,
+    blanks = 0;
+  for (let up = row - 1; up >= Math.max(floor, row - 6); up--) {
+    const line = lines[up];
+    if (!line.trim()) {
+      if (++blanks > 2) break;
+      continue;
+    }
+    if (codexStatusRow.test(line)) start = up;
+    break;
+  }
+  return start;
+}
 
 export function nativeChrome(
   lines: readonly string[],
   end = lines.length,
+  frame?: NativeChromeFrame,
 ): NativeChrome | undefined {
   let last = Math.min(end, lines.length) - 1;
   while (last >= 0 && !lines[last]?.trim()) last--;
   if (last < 0) return;
+  const composer = cursorComposer(lines, last, frame);
+  if (composer !== undefined)
+    return {
+      start: codexStart(lines, composer, Math.max(0, frame!.baseY)),
+      framed: false,
+    };
   const floor = Math.max(0, last - 45);
   let rule = -1;
   for (let row = last; row >= Math.max(floor, last - 30); row--)
@@ -68,18 +172,7 @@ export function nativeChrome(
       if (lines[row].trim() && !/^\s{2,}\S/.test(lines[row])) return;
       continue;
     }
-    let start = row,
-      blanks = 0;
-    for (let up = row - 1; up >= Math.max(floor, row - 6); up--) {
-      const line = lines[up];
-      if (!line.trim()) {
-        if (++blanks > 2) break;
-        continue;
-      }
-      if (codexStatusRow.test(line)) start = up;
-      break;
-    }
-    return { start, framed: false };
+    return { start: codexStart(lines, row, floor), framed: false };
   }
 }
 

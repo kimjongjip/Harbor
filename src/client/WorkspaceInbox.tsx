@@ -7,6 +7,7 @@ import {
   Inbox,
   LoaderCircle,
   MessageSquare,
+  RefreshCw,
   Send,
   X,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import type { HarborRequest } from "../shared/requests";
 import { api } from "./api";
 import SessionMessages from "./SessionMessages";
 import { useNotifications } from "./Notifications";
+import { ReportNoticeDialog } from "./ReportNotifications";
 
 export type InboxTab = "requests" | "messages" | "notifications";
 function RequestCard({
@@ -179,6 +181,9 @@ export default function WorkspaceInbox({
   onClose: () => void;
 }) {
   const { notices, read } = useNotifications();
+  const [report, setReport] = useState<{ hostId: string; id: string } | null>(
+    null,
+  );
   const [showDone, setShowDone] = useState(false);
   const requests = state.requests || [];
   const pending = requests.filter((r) => r.status === "pending");
@@ -277,7 +282,15 @@ export default function WorkspaceInbox({
       {tab === "notifications" && (
         <>
           <div className="inbox-notice-toolbar">
-            <span>터미널에서 보낸 알림</span>
+            <span>조사 보고서와 터미널 알림</span>
+            <button
+              aria-label="조사 알림 새로고침"
+              onClick={() =>
+                window.dispatchEvent(new Event("harbor-reports-refresh"))
+              }
+            >
+              <RefreshCw size={13} />
+            </button>
             <button onClick={() => read()}>
               <CheckCheck size={13} />
               모두 읽음
@@ -290,20 +303,30 @@ export default function WorkspaceInbox({
                 key={notice.id}
                 onClick={() => {
                   read(notice.targetId);
-                  onOpen(notice.targetId);
+                  if (notice.target === "report" && notice.report)
+                    setReport(notice.report);
+                  else onOpen(notice.targetId);
                 }}
               >
                 <b>{notice.title}</b>
                 <p>{notice.body}</p>
                 <footer>
                   <time>
-                    {new Date(notice.at).toLocaleTimeString("ko-KR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {new Date(notice.at).toLocaleString(
+                      "ko-KR",
+                      notice.target === "report"
+                        ? { year: "numeric", month: "numeric", day: "numeric" }
+                        : {
+                            month: "numeric",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          },
+                    )}
                   </time>
                   <span>
-                    터미널 열기 <ArrowUpRight size={12} />
+                    {notice.target === "report" ? "보고서 읽기" : "터미널 열기"}{" "}
+                    <ArrowUpRight size={12} />
                   </span>
                 </footer>
               </button>
@@ -312,11 +335,14 @@ export default function WorkspaceInbox({
               <div className="inbox-empty">
                 <Bell size={27} />
                 <b>아직 알림이 없습니다</b>
-                <p>입력 요청과 작업 완료 등 터미널 알림을 이곳에 모읍니다.</p>
+                <p>조사 보고서, 입력 요청, 작업 완료 알림을 이곳에 모읍니다.</p>
               </div>
             )}
           </div>
         </>
+      )}
+      {report && (
+        <ReportNoticeDialog target={report} onClose={() => setReport(null)} />
       )}
     </section>
   );

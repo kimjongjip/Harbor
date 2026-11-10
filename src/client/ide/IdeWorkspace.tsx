@@ -260,7 +260,7 @@ function EditorPane({
           <FileCode2 size={30} />
           <strong>파일을 선택하세요</strong>
           <span>
-            같은 서버의 파일을 편집하고, 아래 터미널에서 작업을 이어갑니다.
+            같은 서버의 파일을 편집하고, 열린 세션에서 작업을 이어갑니다.
           </span>
         </div>
       )}

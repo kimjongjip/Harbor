@@ -24,6 +24,7 @@ import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import { AutoApproval } from "./auto-approval.js";
+import { ClaudeMods } from "./claude-mods.js";
 import { Store } from "./store.js";
 import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
 import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
@@ -356,6 +357,7 @@ bridge.peers.on("change", () => {
       void flushPeerMessages(terminal.id);
 });
 const files = new Files((id) => hub.passwords.get(id));
+const claudeMods = new ClaudeMods();
 const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
@@ -957,7 +959,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.17.0" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.0" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1036,6 +1038,26 @@ app.patch("/api/hosts/:id/cli-approval", (req, res) => {
     .strict()
     .parse(req.body);
   res.json(hub.setCliApprovalMode(String(req.params.id), mode));
+});
+app.use("/api/hosts/:id/claude-mods", (req, res, next) => {
+  if (!validToken(req.headers["x-harbor-token"], token)) {
+    res.status(403).json({ error: "화면을 새로고침한 뒤 Mods를 다시 열어 주세요." });
+    return;
+  }
+  next();
+});
+app.get("/api/hosts/:id/claude-mods", async (req, res) => {
+  const host = hub.host(String(req.params.id));
+  res.json(await claudeMods.status(host, await passwordFor(host.id)));
+});
+app.get("/api/hosts/:id/claude-mods/job", (req, res) => {
+  const host = hub.host(String(req.params.id));
+  res.json({ job: claudeMods.job(host.id) || null });
+});
+app.post("/api/hosts/:id/claude-mods/install", async (req, res) => {
+  z.object({ mod: z.literal("agent-crew") }).strict().parse(req.body);
+  const host = hub.host(String(req.params.id));
+  res.status(202).json(claudeMods.install(host, await passwordFor(host.id)));
 });
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));

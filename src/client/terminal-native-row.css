@@ -1,6 +1,7 @@
 .terminal-native-row-fill {
   position: absolute;
   inset: 0;
+  display: flex;
   overflow: hidden;
   pointer-events: none;
   user-select: none;
@@ -10,8 +11,17 @@
 
 .terminal-native-row-fill > span {
   display: inline-block;
+  flex-shrink: 0;
   height: 1lh;
   vertical-align: top;
+}
+
+/* Terminal columns have fixed advances; browser fallback glyphs (especially
+   Korean and emoji) may be narrower. Keep each color boundary aligned with the
+   selectable glyphs, then carry the final cell's color to the row edge instead
+   of leaving a different-sized gap on every prompt line. */
+.terminal-native-row-fill > span:last-child {
+  flex-grow: 1;
 }
 
 /* Generated text measures the original glyphs, including wide/combined ones,

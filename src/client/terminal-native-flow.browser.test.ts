@@ -20,8 +20,8 @@ test(
         contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{Terminal}from'@xterm/xterm';import{TerminalNativeFlow}from'./src/client/TerminalNativeFlow';import{richSelectedText}from'./src/client/TerminalRich';import'@xterm/xterm/css/xterm.css';
 const term=window.term=new Terminal({cols:85,rows:20,allowProposedApi:true,fontSize:16});term.open(document.querySelector('#native'));window.sent=[];window.frames=0;window.writes=0;window.resizes=0;
 term.onData(value=>window.sent.push(value));const write=term.write.bind(term),resize=term.resize.bind(term);term.write=(...args)=>{window.writes++;return write(...args)};term.resize=(...args)=>{window.resizes++;return resize(...args)};
-window.push=text=>new Promise(resolve=>term.write(text,resolve));window.copy=()=>richSelectedText(document.querySelector('#surface'));
-function App(){const[blocks,setBlocks]=useState([]);const[start,setStart]=useState(0);const[composer,setComposer]=useState(true);window.setComposer=setComposer;window.setStart=setStart;window.setBlocks=setBlocks;return <section id="surface"><article data-rich-block="old-question" data-terminal-rich="true"><p>Previous question before native output</p></article><article data-rich-block="old-answer" data-terminal-rich="true"><p>Previous answer before native output</p></article><TerminalNativeFlow term={term} codexComposer={composer} blocks={blocks} startRow={()=>start} onFrame={()=>window.frames++} renderAnswer={text=><p>{text}</p>}/></section>;}
+window.push=text=>new Promise(resolve=>term.write(text,resolve));window.copy=()=>richSelectedText(document.querySelector('#surface'));window.answerRenders=0;const renderAnswer=text=>{window.answerRenders++;return <p>{text}</p>};
+function App(){const[blocks,setBlocks]=useState([]);const[start,setStart]=useState(0);const[composer,setComposer]=useState(true);window.setComposer=setComposer;window.setStart=setStart;window.setBlocks=setBlocks;return <section id="surface"><article data-rich-block="old-question" data-terminal-rich="true"><p>Previous question before native output</p></article><article data-rich-block="old-answer" data-terminal-rich="true"><p>Previous answer before native output</p></article><TerminalNativeFlow term={term} codexComposer={composer} blocks={blocks} startRow={()=>start} onFrame={()=>window.frames++} renderAnswer={renderAnswer}/></section>;}
 createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2004h\\x1b[31;1mRan exact command\\x1b[0m\\r\\n  ORIGINAL RESULT\\r\\n› 미전송🙂');`,
         resolveDir: process.cwd(),
         sourcefile: "native-flow-fixture.tsx",
@@ -229,6 +229,20 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
           "NEXT INPUT",
         ),
       );
+      const answerRenders = await page.evaluate(
+        () => (window as any).answerRenders,
+      );
+      await page.evaluate(() => (window as any).push(" echo"));
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".terminal-native-flow")
+          ?.textContent?.includes("NEXT INPUT echo"),
+      );
+      assert.equal(
+        await page.evaluate(() => (window as any).answerRenders),
+        answerRenders,
+        "editing the native prompt must not render an unchanged completed answer",
+      );
       // A synchronized TUI frame must appear atomically, without a mouse move.
       await page.evaluate(() =>
         (window as any).push("\x1b[?2026h\r\nPARTIAL ATOMIC FRAME"),
@@ -277,7 +291,20 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
           historyCells: 0,
           liveCells: 0,
           echoDelays: [],
+          geometryReads: 0,
         };
+        const screen = term.element.querySelector(".xterm-screen");
+        const clientHeight = Object.getOwnPropertyDescriptor(
+          Element.prototype,
+          "clientHeight",
+        )!;
+        Object.defineProperty(screen, "clientHeight", {
+          configurable: true,
+          get() {
+            state.probe.geometryReads++;
+            return clientHeight.get!.call(this);
+          },
+        });
         const buffer = term.buffer.active,
           originalGetLine = buffer.getLine.bind(buffer);
         buffer.getLine = (row: number) => {
@@ -330,6 +357,7 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
           parsed.dispose();
           buffer.getLine = originalGetLine;
           window.setTimeout = originalTimeout;
+          delete screen.clientHeight;
         };
         term.focus();
       });
@@ -378,6 +406,11 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
         0,
         "echo must not restyle 5,000 historical rows",
       );
+      assert.equal(
+        timing.geometryReads,
+        0,
+        "echo projection must not synchronously measure the terminal layout",
+      );
       assert.ok(
         timing.liveCells <=
           typed.length * (timing.columns * timing.rows + timing.columns),
@@ -401,6 +434,12 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
         `5,000-row parsed-to-DOM latency ms: ${timing.samples.map((ms: number) => ms.toFixed(1)).join(", ")}; historical cell reads: ${timing.historyCells}; live cell reads: ${timing.liveCells}; per key: ${timing.perKeyCells.join(", ")}`,
       );
       assert.equal(await page.evaluate(() => (window as any).resizes), 0);
+      const publishedFrames = await page.evaluate(() => (window as any).frames);
+      await page.evaluate(() => (window as any).push("\x1b[?2004h"));
+      await page.waitForFunction(
+        (before) => (window as any).frames > before,
+        publishedFrames,
+      );
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

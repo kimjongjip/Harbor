@@ -9,6 +9,19 @@
 .harbor-workbench[hidden] {
   display: none;
 }
+.harbor-workbench.has-native-ide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.harbor-workbench.has-native-ide[hidden] { display: none; }
+.harbor-ide-divider.is-vertical {
+  width: 5px;
+  height: auto;
+  cursor: col-resize;
+  border-bottom: 0;
+  border-left: 1px solid var(--border);
+}
 .harbor-ide-region {
   flex: 1;
   overflow: hidden;

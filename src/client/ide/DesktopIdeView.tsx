@@ -1,10 +1,11 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { TerminalInfo } from "../../shared/types";
 import { getToken } from "../api";
 import { usePreview } from "../ResourcePreview";
 import IdeWorkspace from "./IdeWorkspace";
 import { createIdeApi, type IdeSelection } from "./types";
 import type { IdeChatAttachment } from "./IdeChatPanel";
+import { quoteIdeSelection } from "./annotationBridge";
 
 const IdeChatPanel = lazy(() => import("./IdeChatPanel"));
 
@@ -21,6 +22,8 @@ export default function DesktopIdeView({
   onShowChat,
   terminal,
   chatOpen,
+  nativeTerminal = false,
+  newConversation = false,
   ...props
 }: {
   terminalId: string;
@@ -31,6 +34,8 @@ export default function DesktopIdeView({
   theme: "light" | "dark" | "paper";
   visible: boolean;
   chatOpen: boolean;
+  nativeTerminal?: boolean;
+  newConversation?: boolean;
   onFocusTerminal: (id: string) => void;
   onShowTerminal: () => void;
   onShowChat?: () => void;
@@ -39,11 +44,22 @@ export default function DesktopIdeView({
   const workspace = useRef<HTMLDivElement>(null);
   const [chatWidth, setChatWidth] = useState(32);
   const [attachment, setAttachment] = useState<IdeChatAttachment>();
+  const [chatLoaded, setChatLoaded] = useState(!nativeTerminal);
+  useEffect(() => {
+    if (!nativeTerminal) setChatLoaded(true);
+  }, [nativeTerminal]);
   async function quote(selection: IdeSelection) {
     if (selection.hostId !== props.hostId)
       throw new Error(
         "파일을 연 서버와 AI 대화 서버가 다릅니다. 서버를 다시 선택해 주세요.",
       );
+    if (nativeTerminal) {
+      if (selection.terminalId !== terminal?.id)
+        throw new Error("파일을 연 세션을 선택한 뒤 인용해 주세요.");
+      onShowChat?.();
+      await quoteIdeSelection(selection);
+      return;
+    }
     setAttachment({ id: crypto.randomUUID(), selection });
     onShowChat?.();
   }
@@ -57,7 +73,7 @@ export default function DesktopIdeView({
           preview(file.path, { hostId: file.hostId, cwd: file.root })
         }
       />
-      {chatOpen && (
+      {chatOpen && !nativeTerminal && (
         <div
           className="harbor-ide-chat-divider"
           role="separator"
@@ -105,29 +121,33 @@ export default function DesktopIdeView({
       <aside
         className="harbor-ide-chat-region"
         aria-label="AI 채팅"
-        hidden={!chatOpen}
+        hidden={!chatOpen || nativeTerminal}
         style={{ width: `${chatWidth}%` }}
       >
-        <Suspense
-          fallback={
-            <div className="harbor-ide-loading">AI 채팅을 불러오는 중…</div>
-          }
-        >
-          <IdeChatPanel
-            hostId={props.hostId}
-            terminal={terminal}
-            hostName={props.hostLabel}
-            active={props.visible && chatOpen}
-            onFocusTerminal={onFocusTerminal}
-            onShowTerminal={onShowTerminal}
-            attachment={attachment}
-            onAttachmentConsumed={(id) =>
-              setAttachment((current) =>
-                current?.id === id ? undefined : current,
-              )
+        {chatLoaded && (
+          <Suspense
+            fallback={
+              <div className="harbor-ide-loading">AI 채팅을 불러오는 중…</div>
             }
-          />
-        </Suspense>
+          >
+            <IdeChatPanel
+              hostId={props.hostId}
+              terminal={
+                newConversation || nativeTerminal ? undefined : terminal
+              }
+              hostName={props.hostLabel}
+              active={props.visible && chatOpen && !nativeTerminal}
+              onFocusTerminal={onFocusTerminal}
+              onShowTerminal={onShowTerminal}
+              attachment={attachment}
+              onAttachmentConsumed={(id) =>
+                setAttachment((current) =>
+                  current?.id === id ? undefined : current,
+                )
+              }
+            />
+          </Suspense>
+        )}
       </aside>
     </div>
   );

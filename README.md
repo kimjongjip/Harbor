@@ -1,4 +1,4 @@
-# Harbor 1.15
+# Harbor 1.18
 
 - [사용자 설치·업데이트 안내](docs/user-guide.md)
 - [개발자 Git 게시·배포 절차](docs/maintainer-guide.md)
@@ -9,9 +9,9 @@
 - [PC IDE·다른 PC 연결·Tailscale 설치와 로그인](docs/desktop-ide-guide.md)
 - [모바일·Orca 참고 개발 계획](docs/mobile-and-orca-plan.md)
 
-Windows에서 로컬·SSH 터미널과 Codex·Claude Code 세션을 관리하는 데스크톱 앱입니다. 기본 터미널 보기에서는 평소처럼 CLI를 실행하고, PC IDE 보기에서는 파일 편집기와 AI 대화를 나란히 사용합니다. 새 대화를 시작하거나 **현재 터미널 대화**로 이미 실행 중인 CLI의 질문·답변을 종료 없이 표시합니다. 기존 CLI의 입력은 지원되는 연결을 사용하며, 실행 승인은 원래 터미널에서 처리합니다.
+Windows에서 로컬·SSH 터미널과 Codex·Claude Code 세션을 관리하는 데스크톱 앱입니다. 기본 터미널 보기에서는 평소처럼 CLI를 실행하고, PC IDE로 전환하면 현재 터미널이 편집기 오른쪽으로 이동합니다. 작성 중인 입력·작업 출력·실행 승인·Claude Mods를 같은 세션에서 이어 쓰고, 별도 새 AI 대화도 선택할 수 있습니다.
 
-1.15에서는 PC **IDE** 보기를 파일 탐색기·편집기·오른쪽 AI 대화·접을 수 있는 아래 터미널로 구성합니다. Markdown은 읽기·원문·나란히 보기로 열고, AI 패널에서는 새 대화를 시작하거나 기록에서 이어갑니다. 질문·코드 인용·실행 승인을 패널 안에서 처리합니다. 서버 홈 폴더에서 시작하며 UTF-8·UTF-16·한글 Windows 파일을 편집합니다. 다른 PC에서도 열린 세션을 이어 쓸 수 있습니다. 모바일은 **세션·터미널·설정**만 제공하며 질문·승인은 해당 터미널 안에서 처리합니다. 상단 연결 아이콘에서 Tailscale 설치·로그인·기기 등록까지 진행합니다. **VPN 없이 연결(Funnel)**은 접속 기기에 VPN이 필요 없으며, 개인망 연결(Serve)도 선택할 수 있습니다. 호스트 PC Harbor와 Tailscale은 켜둡니다. [설정과 사용법](docs/desktop-ide-guide.md)
+1.18에서는 PC **IDE** 전환 시 터미널 연결과 입력을 유지하고, 서버별 **Claude Mods** 버튼에서 Agent Crew를 설치할 수 있습니다. Markdown은 읽기·원문·나란히 보기로 열고 UTF-8·UTF-16·한글 Windows 파일을 편집합니다. 다른 PC에서도 열린 세션을 이어 쓸 수 있습니다. 모바일은 **세션·터미널·설정**을 제공하며 질문·승인은 해당 터미널 안에서 처리합니다. 상단 연결 아이콘에서 Tailscale 설치·로그인·기기 등록까지 진행합니다. **VPN 없이 연결(Funnel)**은 접속 기기에 VPN이 필요 없으며, 개인망 연결(Serve)도 선택할 수 있습니다. 호스트 PC Harbor와 Tailscale은 켜둡니다. [설정과 사용법](docs/desktop-ide-guide.md)
 
 관리자 역할의 AI에게 새 Claude·Codex를 띄워 공동 작업을 맡기고 진행·결과를 관리하도록 요청할 수도 있습니다. 두 참여자는 별도 대화로 실행되며 **연구실** 탭에서 확인합니다. [관리자 AI 사용법](docs/user-guide.md#ai에게-새-연구실-맡기기)을 참고하세요.
 

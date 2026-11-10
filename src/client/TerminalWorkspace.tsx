@@ -320,6 +320,7 @@ export default function TerminalWorkspace({
   popoutId,
   ready,
   terminalColorsSupported = false,
+  singleTerminalId,
   onFocus,
   onCloseTerminal,
   onNew,
@@ -334,6 +335,8 @@ export default function TerminalWorkspace({
   popoutId: string | null;
   ready: boolean;
   terminalColorsSupported?: boolean;
+  /** IDE presents one existing pane without changing the saved split layout. */
+  singleTerminalId?: string;
   onFocus: (id: string) => void;
   onCloseTerminal: (terminal: TerminalInfo) => void;
   onNew: (hostId?: string, cwd?: string) => void;
@@ -381,7 +384,7 @@ export default function TerminalWorkspace({
     : reconcileTree(
         panes,
         attachedTerminals.map((t) => t.id),
-        activeId,
+        singleTerminalId ? panes.focusedId : activeId,
       );
   const paneKey = JSON.stringify(resolvedPanes);
   useLayoutEffect(() => {
@@ -395,7 +398,15 @@ export default function TerminalWorkspace({
       } catch {}
     }
   }, [paneKey, popoutId, ready]);
-  const shownIds = paneIds(resolvedPanes.tree);
+  const displayedTree = singleTerminalId
+    ? presetTree(
+        attachedTerminals.some((t) => t.id === singleTerminalId)
+          ? [singleTerminalId]
+          : [],
+        singleTerminalId,
+      )
+    : resolvedPanes;
+  const shownIds = paneIds(displayedTree.tree);
   const focusId = current?.id || resolvedPanes.focusedId || shownIds[0];
   const shown = terminals.filter((t) => shownIds.includes(t.id));
   const displayTerminals = popoutId
@@ -415,7 +426,7 @@ export default function TerminalWorkspace({
     return () => observer.disconnect();
   }, [hasGrid]);
   const geometry = treeRects(
-    resolvedPanes.tree,
+    displayedTree.tree,
     gridSize.width,
     gridSize.height,
   );
@@ -545,6 +556,7 @@ export default function TerminalWorkspace({
     return { edge, scope, targetTerminalId, rect: preview };
   }
   function dragOver(event: DragEvent, id?: string) {
+    if (singleTerminalId) return;
     if (!acceptsDrop(event)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -556,6 +568,7 @@ export default function TerminalWorkspace({
     setDropTarget(dropLocation(event, id));
   }
   function drop(event: DragEvent, id?: string) {
+    if (singleTerminalId) return;
     if (!acceptsDrop(event)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -757,7 +770,7 @@ export default function TerminalWorkspace({
             {renderActions(shown[0])}
           </div>
         )}
-        {!popoutId && (
+        {!popoutId && !singleTerminalId && (
           <div
             className="segmented layout-options"
             aria-label="터미널 화면 배치"

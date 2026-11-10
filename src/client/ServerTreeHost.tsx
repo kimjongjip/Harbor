@@ -2,6 +2,7 @@ import { Globe2, GripVertical, HardDrive, Plus } from "lucide-react";
 import type { HostView } from "../shared/types";
 import { useHostReorderDrag, type MoveHost } from "./server-order";
 import "./server-order.css";
+import { ClaudeModsButton } from "./ClaudeMods";
 
 export default function ServerTreeHost({
   host,
@@ -33,6 +34,7 @@ export default function ServerTreeHost({
         <span>{host.name}</span>
         {host.terminalConnected && <i className="harbor-online" />}
       </button>
+      <ClaudeModsButton host={host} />
       <button
         className="host-reorder-grip"
         draggable

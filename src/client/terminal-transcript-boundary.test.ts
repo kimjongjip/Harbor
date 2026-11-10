@@ -733,3 +733,59 @@ test("nothing saved on screen keeps the newest native block, and unknown screens
   );
   assert.equal(codexApproval.live, false);
 });
+
+test("typing a long Korean draft never expands the live tail to thousands of saved rows", () => {
+  const turns = conversationTurns(records());
+  const prefix = Array.from(
+    { length: 5000 },
+    (_, i) => `unmatched old screen ${i}`,
+  );
+  for (const positioned of [false, true]) {
+    for (let count = 1; count <= 16; count++) {
+      const draft = [
+        "› 프로젝트의 입력 지연을 확인해 주세요.",
+        ...Array.from(
+          { length: count - 1 },
+          (_, i) =>
+            `${positioned ? "  " : ""}한국어 입력이 계속 이어지는 줄 ${i}`,
+        ),
+      ];
+      const lines = [...prefix, ...draft, "", "  ? for shortcuts"];
+      const frame: TranscriptFrame = {
+        lines,
+        cursorRow: prefix.length + draft.length - 1,
+        cursorColumn: 12,
+        baseY: 4990,
+        end: lines.length,
+        bracketedPasteMode: true,
+        wrapped: lines.map(
+          (_, row) =>
+            !positioned &&
+            row > prefix.length &&
+            row < prefix.length + draft.length,
+        ),
+      };
+      assert.deepEqual(
+        liveTranscriptLayout(turns, frame, [], { waiting: false }),
+        {
+          historyCount: 2,
+          nativeStart: prefix.length,
+          chromeStart: prefix.length,
+          live: true,
+        },
+        `${positioned ? "positioned" : "wrapped"} draft with ${count} rows`,
+      );
+      if (count > 6) {
+        const approval = liveTranscriptLayout(turns, frame, [], {
+          waiting: true,
+        });
+        assert.equal(
+          approval.live,
+          false,
+          "approval state still keeps the full native tail",
+        );
+        assert.equal(approval.nativeStart, 0);
+      }
+    }
+  }
+});

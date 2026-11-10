@@ -39,7 +39,9 @@ import CloseTerminalDialog from "./CloseTerminalDialog";
 import DirectoryTree from "./DirectoryTree";
 import FilesBrowser from "./FilesBrowser";
 import HostManager from "./HostManager";
+import { ClaudeModsButton } from "./ClaudeMods";
 import WorkspaceInbox, { type InboxTab } from "./WorkspaceInbox";
+import { ReportNotificationsSync } from "./ReportNotifications";
 import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
 import CodexHistory from "./CodexHistory";
 import ServerTreeHost from "./ServerTreeHost";
@@ -108,6 +110,8 @@ export default function App() {
   const [ideHeight, setIdeHeight] = useState(72);
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
   const [ideChatOpen, setIdeChatOpen] = useState(true);
+  const [ideNewChat, setIdeNewChat] = useState(false);
+  const [ideEditorWidth, setIdeEditorWidth] = useState(52);
   const workbenchRef = useRef<HTMLDivElement>(null);
   const { notices, push, read, sync } = useNotifications();
   const [page, setPage] = useState<"hosts" | "terminals" | "files">(
@@ -422,6 +426,7 @@ export default function App() {
       }
     }
     setActiveId(id);
+    setIdeNewChat(false);
     setPage("terminals");
     if (terminal) {
       setHostId(terminal.hostId);
@@ -481,6 +486,7 @@ export default function App() {
       if (request !== focusRequest.current || moved) return;
     }
     setActiveId(terminal.id);
+    setIdeNewChat(false);
     setHostId(terminal.hostId);
     setFilePath(terminal.cwd);
     setPage("terminals");
@@ -566,11 +572,19 @@ export default function App() {
     notices.filter((n) => n.targetId === id && !n.read).length;
   const ideMode = page === "terminals" && workspaceView === "ide";
   const ideTerminal = active?.hostId === host?.id ? active : undefined;
+  const ideNativeTerminal = !!ideTerminal && !ideNewChat;
   return (
     <PreviewProvider
       hosts={orderedHosts}
       onFolder={(id, cwd) => files(id, cwd, true)}
     >
+      <ReportNotificationsSync
+        hostId={
+          ready
+            ? state.hosts.find((item) => item.kind === "local")?.id
+            : undefined
+        }
+      />
       <div
         className={`harbor-app ${popoutId ? "is-popout" : ""} ${page === "terminals" ? "terminal-view" : ""} ${ideMode ? "ide-view" : ""}`}
       >
@@ -850,6 +864,7 @@ export default function App() {
                   </select>
                 </label>
                 <span className="harbor-ide-context-separator">/</span>
+                {host && <ClaudeModsButton host={host} />}
                 <select
                   className="harbor-ide-session"
                   aria-label="IDE 세션"
@@ -955,6 +970,7 @@ export default function App() {
                     onClick={() => {
                       setIdeLoaded(true);
                       setWorkspaceView("ide");
+                      setIdeChatOpen(true);
                     }}
                   >
                     <Code2 size={14} />
@@ -971,11 +987,16 @@ export default function App() {
                   <button
                     className="icon-button"
                     aria-label={
-                      ideTerminalOpen ? "터미널 패널 접기" : "터미널 패널 열기"
+                      ideNativeTerminal
+                        ? "새 AI 대화 열기"
+                        : "현재 터미널로 돌아가기"
                     }
-                    title="터미널 패널"
-                    aria-pressed={ideTerminalOpen}
-                    onClick={() => setIdeTerminalOpen((value) => !value)}
+                    title={ideNativeTerminal ? "새 AI 대화" : "현재 터미널"}
+                    aria-pressed={ideNativeTerminal}
+                    onClick={() => {
+                      setIdeNewChat((value) => !value);
+                      setIdeChatOpen(true);
+                    }}
                   >
                     <Terminal size={16} />
                   </button>
@@ -1098,15 +1119,22 @@ export default function App() {
                 />
               )}
               <div
-                className={`harbor-workbench ${ideMode ? "has-ide" : ""}`}
+                className={`harbor-workbench ${ideMode ? "has-ide" : ""} ${ideMode && ideNativeTerminal ? "has-native-ide" : ""}`}
                 ref={workbenchRef}
                 hidden={page !== "terminals"}
+                style={
+                  ideMode && ideNativeTerminal && ideChatOpen
+                    ? {
+                        gridTemplateColumns: `minmax(0, ${ideEditorWidth}fr) 5px minmax(0, ${100 - ideEditorWidth}fr)`,
+                      }
+                    : undefined
+                }
               >
                 <div
                   className="harbor-ide-region"
                   hidden={workspaceView !== "ide"}
                   style={
-                    ideMode && ideTerminalOpen
+                    ideMode && !ideNativeTerminal && ideTerminalOpen
                       ? { flex: `0 0 ${ideHeight}%` }
                       : undefined
                   }
@@ -1128,6 +1156,8 @@ export default function App() {
                           workspaceCwd={ideTerminal?.cwd}
                           theme={theme}
                           chatOpen={ideChatOpen}
+                          nativeTerminal={ideNativeTerminal}
+                          newConversation={ideNewChat}
                           onShowTerminal={() => setIdeTerminalOpen(true)}
                           onShowChat={() => setIdeChatOpen(true)}
                           visible={
@@ -1141,67 +1171,108 @@ export default function App() {
                     </IdeBoundary>
                   )}
                 </div>
-                {ideMode && ideTerminalOpen && (
-                  <div
-                    className="harbor-ide-divider"
-                    role="separator"
-                    aria-label="편집기와 터미널 크기 조절"
-                    aria-orientation="horizontal"
-                    aria-valuemin={35}
-                    aria-valuemax={85}
-                    aria-valuenow={Math.round(ideHeight)}
-                    tabIndex={0}
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerMove={(event) => {
-                      if (
-                        !event.currentTarget.hasPointerCapture(event.pointerId)
-                      )
-                        return;
-                      const bounds =
-                        workbenchRef.current?.getBoundingClientRect();
-                      if (bounds?.height)
-                        setIdeHeight(
-                          Math.max(
-                            35,
-                            Math.min(
-                              85,
-                              ((event.clientY - bounds.top) / bounds.height) *
-                                100,
-                            ),
-                          ),
-                        );
-                    }}
-                    onPointerUp={(event) => {
-                      if (
-                        event.currentTarget.hasPointerCapture(event.pointerId)
-                      )
-                        event.currentTarget.releasePointerCapture(
-                          event.pointerId,
-                        );
-                    }}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "ArrowUp" ||
-                        event.key === "ArrowDown"
-                      ) {
-                        event.preventDefault();
-                        setIdeHeight((height) =>
-                          Math.max(
-                            35,
-                            Math.min(
-                              85,
-                              height + (event.key === "ArrowUp" ? -5 : 5),
-                            ),
-                          ),
-                        );
+                {ideMode &&
+                  ((ideNativeTerminal && ideChatOpen) ||
+                    (!ideNativeTerminal && ideTerminalOpen)) && (
+                    <div
+                      className={`harbor-ide-divider ${ideNativeTerminal ? "is-vertical" : ""}`}
+                      role="separator"
+                      aria-label="편집기와 터미널 크기 조절"
+                      aria-orientation={
+                        ideNativeTerminal ? "vertical" : "horizontal"
                       }
-                    }}
-                  />
-                )}
-                {ideMode && (
+                      aria-valuemin={35}
+                      aria-valuemax={ideNativeTerminal ? 70 : 85}
+                      aria-valuenow={Math.round(
+                        ideNativeTerminal ? ideEditorWidth : ideHeight,
+                      )}
+                      tabIndex={0}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      }}
+                      onPointerMove={(event) => {
+                        if (
+                          !event.currentTarget.hasPointerCapture(
+                            event.pointerId,
+                          )
+                        )
+                          return;
+                        const bounds =
+                          workbenchRef.current?.getBoundingClientRect();
+                        if (ideNativeTerminal) {
+                          if (bounds?.width)
+                            setIdeEditorWidth(
+                              Math.max(
+                                35,
+                                Math.min(
+                                  70,
+                                  ((event.clientX - bounds.left) /
+                                    bounds.width) *
+                                    100,
+                                ),
+                              ),
+                            );
+                          return;
+                        }
+                        if (bounds?.height)
+                          setIdeHeight(
+                            Math.max(
+                              35,
+                              Math.min(
+                                85,
+                                ((event.clientY - bounds.top) / bounds.height) *
+                                  100,
+                              ),
+                            ),
+                          );
+                      }}
+                      onPointerUp={(event) => {
+                        if (
+                          event.currentTarget.hasPointerCapture(event.pointerId)
+                        )
+                          event.currentTarget.releasePointerCapture(
+                            event.pointerId,
+                          );
+                      }}
+                      onKeyDown={(event) => {
+                        if (ideNativeTerminal) {
+                          if (
+                            event.key === "ArrowLeft" ||
+                            event.key === "ArrowRight"
+                          ) {
+                            event.preventDefault();
+                            setIdeEditorWidth((width) =>
+                              Math.max(
+                                35,
+                                Math.min(
+                                  70,
+                                  width + (event.key === "ArrowLeft" ? -3 : 3),
+                                ),
+                              ),
+                            );
+                          }
+                          return;
+                        }
+                        if (
+                          event.key === "ArrowUp" ||
+                          event.key === "ArrowDown"
+                        ) {
+                          event.preventDefault();
+                          setIdeHeight((height) =>
+                            Math.max(
+                              35,
+                              Math.min(
+                                85,
+                                height + (event.key === "ArrowUp" ? -5 : 5),
+                              ),
+                            ),
+                          );
+                        }
+                      }}
+                    />
+                  )}
+                {ideMode && !ideNativeTerminal && (
                   <div className="harbor-ide-dock-heading">
                     <button
                       aria-expanded={ideTerminalOpen}
@@ -1235,15 +1306,23 @@ export default function App() {
                 <div
                   id="harbor-terminal-dock"
                   className="harbor-terminal-dock"
-                  hidden={ideMode && !ideTerminalOpen}
+                  hidden={
+                    ideMode &&
+                    !(ideNativeTerminal ? ideChatOpen : ideTerminalOpen)
+                  }
                 >
                   <TerminalWorkspace
                     key="mounted-terminal-workspace"
                     terminals={state.terminals}
                     hosts={orderedHosts}
                     activeId={activeId}
+                    singleTerminalId={
+                      ideMode && ideNativeTerminal ? ideTerminal?.id : undefined
+                    }
                     visible={
-                      page === "terminals" && (!ideMode || ideTerminalOpen)
+                      page === "terminals" &&
+                      (!ideMode ||
+                        (ideNativeTerminal ? ideChatOpen : ideTerminalOpen))
                     }
                     popoutId={popoutId}
                     ready={ready}

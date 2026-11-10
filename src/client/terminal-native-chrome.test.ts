@@ -155,3 +155,129 @@ test("a Codex transcript prompt above unindented output is not the composer", ()
     { start: 2, framed: false },
   );
 });
+
+test("the live cursor identifies a long genuinely wrapped Korean composer", () => {
+  const prefix = Array.from({ length: 5000 }, (_, i) => `saved output ${i}`);
+  const draft = [
+    "› 긴 한국어 프롬프트를 입력하면",
+    ...Array.from(
+      { length: 12 },
+      (_, i) => `다음 줄 ${i}도 같은 입력에 속합니다.`,
+    ),
+  ];
+  const lines = [...prefix, ...draft, "", "  ? for shortcuts"];
+  const wrapped = lines.map(
+    (_, row) => row > prefix.length && row < prefix.length + draft.length,
+  );
+  for (const cursorRow of [prefix.length + 2, prefix.length + draft.length - 1])
+    assert.deepEqual(
+      nativeChrome(lines, lines.length, {
+        cursorRow,
+        cursorColumn: 12,
+        baseY: 4990,
+        wrapped,
+        bracketedPasteMode: true,
+      }),
+      { start: prefix.length, framed: false },
+      "editing in the middle or at the end keeps the same composer boundary",
+    );
+});
+
+test("cursor-positioned multiline drafts require input mode and a real footer", () => {
+  const draft = [
+    "› 여러 줄 입력",
+    ...Array.from({ length: 10 }, (_, i) => `  한국어 줄 ${i}`),
+  ];
+  const lines = [
+    "• Previous output",
+    "",
+    ...draft,
+    "",
+    "  gpt-5.4 default · ~/workspace",
+    "  ← for agents · ? for shortcuts",
+  ];
+  const frame = {
+    cursorRow: 5,
+    cursorColumn: 8,
+    baseY: 0,
+    wrapped: lines.map(() => false),
+    bracketedPasteMode: true,
+  };
+  assert.deepEqual(nativeChrome(lines, lines.length, frame), {
+    start: 2,
+    framed: false,
+  });
+  assert.equal(
+    nativeChrome(lines, lines.length, { ...frame, bracketedPasteMode: false }),
+    undefined,
+  );
+  assert.equal(
+    nativeChrome(lines.slice(0, -3), lines.length - 3, frame),
+    undefined,
+  );
+  assert.equal(
+    nativeChrome(lines, lines.length, {
+      ...frame,
+      cursorRow: lines.length - 1,
+    }),
+    undefined,
+  );
+  assert.equal(
+    nativeChrome(lines, lines.length, { ...frame, baseY: 3 }),
+    undefined,
+    "a prompt in scrollback cannot own the live cursor",
+  );
+  const blank = [...lines];
+  blank[frame.cursorRow] = "";
+  assert.deepEqual(
+    nativeChrome(blank, blank.length, frame),
+    { start: 2, framed: false },
+    "an explicit empty draft line does not switch to the full-output fallback",
+  );
+});
+
+test("cursor evidence never crosses ordinary output to an old transcript prompt", () => {
+  const lines = [
+    "› Earlier question",
+    "• Unsaved answer must remain visible",
+    ...Array.from({ length: 10 }, (_, i) => `  unsaved continuation ${i}`),
+    "",
+    "  ? for shortcuts",
+  ];
+  assert.equal(
+    nativeChrome(lines, lines.length, {
+      cursorRow: 10,
+      cursorColumn: 8,
+      baseY: 0,
+      wrapped: lines.map(() => false),
+      bracketedPasteMode: true,
+    }),
+    undefined,
+  );
+});
+
+test("long positioned drafts recognize the native warning suffix without accepting arbitrary output", () => {
+  for (const [suffix, recognized] of [
+    ["   ⚠ 1 warning · f2 to view", true],
+    [" · ⚠ 2 warnings", true],
+    [" · Unsaved answer text", false],
+  ] as const) {
+    const lines = [
+      "› 여러 줄 입력",
+      ...Array.from({ length: 10 }, (_, i) => `  한국어 줄 ${i}`),
+      "",
+      `  ← for agents · ? for shortcuts${suffix}`,
+    ];
+    assert.deepEqual(
+      nativeChrome(lines, lines.length, {
+        cursorRow: 10,
+        cursorColumn: 8,
+        baseY: 0,
+        wrapped: lines.map(() => false),
+        bracketedPasteMode: true,
+      }),
+      recognized ? { start: 0, framed: false } : undefined,
+      suffix,
+    );
+  }
+});

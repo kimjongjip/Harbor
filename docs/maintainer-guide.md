@@ -1,5 +1,41 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.0 IDE 터미널 유지와 Mods 설치
+
+PC IDE의 기존 세션은 같은 `TerminalWorkspace` DOM·xterm·WebSocket을 CSS grid로 오른쪽에 배치한다. `singleTerminalId`는 표시만 한 세션으로 제한하고 저장된 분할 tree는 유지한다. 새 AI 대화는 명시적 선택이며 숨길 때 작성 중 초안을 언마운트하지 않는다. `ide-terminal-switch.browser.test.ts`는 전체 앱에서 입력·DOM·연결·분할·새 대화 초안 보존과 불필요한 대화 생성 방지를 검증한다.
+
+Mods는 고정된 공개 Agent Crew 카탈로그를 설치한다. HTTP에서 임의 명령·저장소 주소를 받지 않는다. 기존 CLI에 문자열을 보내지 않고 로컬 별도 프로세스 또는 전용 SSH exec 연결을 사용한다. 사용자 설정·로그인은 대상 서버의 Claude가 관리하며 다른 서버로 복사하지 않는다. 동일 호스트 설치 중복을 합치고 종료 코드 후 실제 설치·활성 목록을 다시 확인한다. 추가 marketplace 명령 승인은 자동 수락하지 않는다. `claude-mods.test.ts`와 위 전체 앱 테스트로 검증하며 실제 설치 시험은 별도 `CLAUDE_CONFIG_DIR`에서만 수행한다.
+
+사용자 요청에 따라 업데이트는 검증·스테이징 검토·감사 후 main 게시까지 완료한다. 개인 수집 자동화·설정·보고서는 소스 저장소 밖에 유지한다. 실행 중 설치본의 화면 반영과 신규 패키지의 다음 실행 준비는 현재 앱·백엔드 종료 없이 진행하고 각각 구분해 보고한다.
+
+## 세션과 독립적인 보고서 알림
+
+`ReportNotificationsSync`는 로컬 호스트의 인증된 파일 미리보기 API로 `~/.harbor/reports/index.json`을 읽는다. 목록은 최근 200건 이하의 제목·요약·시각·고정 형식 ID만 포함하며 본문은 해당 ID의 JSON 파일을 선택할 때 읽는다. 원본 수집 작업이나 사용자 보고서는 제품 소스·패키지에 포함하지 않는다. 화면이 보일 때 60초 간격과 사용자의 새로고침으로 조회하고, 동일 목록은 상태를 다시 설정하지 않는다. 파일 없음·깨진 JSON·잘린 응답은 마지막 정상 목록을 지우지 않는다.
+
+`report-notices` 스키마는 임의 경로·중복 ID를 거부한다. 보고서를 눌러도 세션 포커스나 입력 API를 호출하지 않으며 `Modal` 안의 Markdown으로 연다. 읽음 상태는 기기별 localStorage에 저장하고 같은 기기의 다른 창에 반영한다. `report-notifications.browser.test.ts`는 격리 Electron에서 새 보고서·본문·표·읽음 복원·불완전 목록·기존 터미널 알림을 검증한다. 실행 중 서버의 기존 파일 API를 사용하므로 프런트엔드 교체로 제공할 수 있으며 앱·백엔드 재시작은 필요 없다.
+
+## 기본 대화 보기의 Claude Mods 보존
+
+`useClaudeModSurface`는 완전한 Claude 입력창과 표준 Mods 경계가 확인되면 대화 표시층의 폭·높이를 본문 영역으로 제한한다. 오른쪽 dock, 좁은 창의 inline pane, AbovePrompt band와 입력창은 원래 xterm에 남으므로 Client 이미지·애니메이션·마우스 좌표를 다시 구현하지 않는다. `terminal-mod-surface`는 저장 기록과 네이티브 출력의 연결을 판정할 때 패널 텍스트를 제외한다. `TerminalNativeFlow`의 `end`·`panels`는 읽기용 투영만 제한하며 원본 버퍼·PTY 크기·입력은 변경하지 않는다. 여러 줄 입력에서도 패널을 유지하며, 패널을 닫거나 승인 화면으로 바뀌면 기존 대화 배치로 복귀한다.
+
+화면 크기는 초기화·resize 때만 측정하고 패널 내용만 갱신될 때는 React의 배치 상태를 다시 설정하지 않는다. `terminal-conversation-mods.browser.test.ts`는 격리 Electron과 합성 기록으로 오른쪽/하단/입력창 위 패널, 클릭의 실제 터미널 셀 좌표, 입력 한 번 전달, 원문 전환, 승인 화면, 애니메이션 중 저장 답변 재렌더 0회를 확인한다. `terminal-mod-surface.test.ts`는 한글과 여러 줄 입력, 원본 버퍼 보존을 검증한다. 별도의 Claude Code 2.1.319에서도 72열·18행을 요청하는 합성 Pane을 열어 100/130/144/160/200열 화면의 실제 경계 인식을 확인했다(격리 설정, 가상 API, 모델 요청 0회). 기존 모바일 패널 숨김 정책은 유지한다. 실제 사용자 세션에 테스트 명령을 입력하거나 실행 중 앱을 재시작하지 않는다.
+
+## 프롬프트 입력 지연 회귀 방지
+
+`terminal-native-ime`는 대화 표시층(z-index 7) 뒤에 있던 xterm 조합 UI(z-index 5)를 조합 중에만 앞에 놓고 실제 투영 커서의 글자 위치에 맞춘다. 원래 textarea와 composition-view를 함께 이동하므로 OS 후보창 위치도 같은 위치를 따른다. 확정·취소·blur·화면 해제 시 원상 복구한다. 입력 데이터를 만들거나 가짜 에코를 추가하지 않는다. 위치 관찰은 조합 중에만 수행한다. `terminal-input-performance.browser.test.ts`는 Chromium IME 이벤트로 `ㅎ → 하 → 한`의 가림·위치·확정 전 미전송·한 번 확정·취소 후 영문 입력을 검증한다. 실제 Windows IME 후보창 자체의 외관은 이 자동 검증 범위에 포함하지 않는다.
+
+추가 실측(Windows, Codex CLI 0.167.0): 기존 사용자의 터미널 대신 격리 CODEX_HOME·가상 모델 서버·합성 0/500턴 기록을 사용했다. Harbor 화면 없이 native PTY 입력→글자 출력은 약 32ms, 실제 TerminalPane/WebSocket/CLI를 연결한 숨김 Electron에서는 키→DOM 약 31ms(그중 마지막 출력→DOM 약 1ms)였다. 대화 길이에 따른 차이는 거의 없었다. 합성 WebSocket 에코의 약 2ms를 실제 CLI 전체 지연으로 보고하지 않는다. [Codex의 paste-burst 설정](https://learn.chatgpt.com/docs/config-file/config-reference)은 끄면 이 실험에서 약 15ms까지 줄지만, Windows 콘솔에서는 bracketed paste가 키 이벤트로 전달될 수 있어 여러 줄 붙여넣기 중 의도치 않은 전송을 확인했다. 따라서 이 설정을 기본값이나 사용자 설정에 적용하지 않았다. 남은 native CLI 지연과 한글 조합 UI의 가림은 별개의 문제다.
+
+`desktop/input-scheduling.cjs`는 앱 초기화 전에 기존 `disable-features` 옵션을 보존하며 `DeferRendererTasksAfterInput`만 추가한다. Chromium의 이 스케줄러 정책은 입력 직후 일부 renderer task를 다음 프레임까지 최대 50ms 미룬다. [Chromium 구현](https://chromium.googlesource.com/chromium/src/+/29ff47d3f212fae17310a613844f36d214cd9400%5E%21/). 격리 Electron에서 키→xterm 입력은 즉시, 서버의 합성 에코도 즉시였지만 WebSocket 메시지 콜백이 약 50ms 늦었다. 동일한 화면에서 해당 기능만 비활성화하면 이 대기가 사라진다. 브라우저 전체 보안·샌드박스·GPU 옵션을 끄는 수정은 아니다. 실행 중인 앱에는 새로고침만으로 적용되지 않는다.
+
+`TerminalNativeFlow`는 `.xterm-screen` 높이를 최초 한 번 읽고 이후 `ResizeObserver` 크기를 사용한다. 매 입력 후 동기 geometry 조회를 하지 않는다. 완료 답변은 text와 renderer가 같으면 재사용하고, 일반 원문은 절대 행 번호 기준 64행 묶음으로 비교하여 변경된 묶음만 React가 다시 처리한다. 모든 행의 DOM은 유지하여 연속 선택·복사·이전 기록 읽기를 보존한다. `NativeFlowFrame`은 실제 bracketed-paste 모드도 전달한다. `nativeChrome`은 긴 Codex 입력의 실제 커서·wrap을 따라가며, 수동 배치된 들여쓰기 행은 알려진 하단 상태줄까지 확인한다. 입력 모드·커서 근거가 없거나 승인 대기이면 원문 보존 경로를 유지한다.
+
+`terminal-native-row.css`는 마지막 ANSI 배경색을 행 오른쪽 끝까지 확장한다. 한글·이모지가 xterm 셀 폭보다 좁은 글꼴로 표시되어도 줄마다 배경 끝이 달라지지 않는다. 배경용 생성 텍스트는 복사 문자열에 포함하지 않는다.
+
+`terminal-input-performance.browser.test.ts`는 실제 TerminalPane·WebSocket·xterm 경로에서 합성 80턴/원문 5,000줄과 완료 답변·긴 한글 입력을 검사한다. 키를 한 번씩만 전달하고 저장 기록 및 완료 답변의 Markdown 재렌더가 0회인지 확인하며, 키→출력 도착→파싱→DOM 시간을 브라우저의 같은 시계로 기록한다. 숨긴 격리 Electron의 수치를 실제 SSH 왕복 시간이나 사용자의 전경 창 측정으로 설명하지 않는다. `terminal-native-flow.browser`는 geometry 재조회 없음·긴 원문 셀 재읽기 없음·선택 보존을, `terminal-native-row.browser`는 실제 터미널 폭에서 한글 배경 끝·복사·커서를 검사한다. 추가 회귀 검사는 native-chrome/transcript-boundary, conversation-pane/conversation, conversation-pagination, completion-refresh이다.
+
+클라이언트와 desktop 시작 파일만 현재 설치에 반영할 경우 기존 index·시작 파일을 비공개 폴더에 백업하고 해시 자산을 추가한다. 실행 중 백엔드와 사용자 터미널은 유지한다. Ctrl+R은 화면·배경 수정을, 앱 완전 종료 후 재실행은 입력 후 task 지연 수정을 적용한다. 코드 수정·로컬 설치 반영·Git 게시·앱 재실행은 각각 구분해서 보고한다.
+
 ## 1.17.0 작업 중 표시와 CLI 작업 로그
 
 Claude Code 2.1.3xx와 Codex 0.16x는 기본으로 대체 화면(전체 화면)을 쓰므로 xterm에는 화면 한 장만 남는다. 1.16.x는 이 화면을 저장 기록과 문자열로 맞춰 이어 붙였고, 표로 끝나는 답변이나 긴 작업에서 맞추기에 실패하면 화면 전체가 "칸"처럼 붙고 현재 턴 앞부분이 사라졌다. `terminal-native-chrome.ts`는 하단의 CLI 영역만 찾는다. Claude는 맨 아래 실선 묶음(입력창 위·아래 줄 또는 승인 상자 윗줄)과 바로 위 진행 표시·할 일 줄, Codex는 바닥 근처 `›` 입력줄과 상태줄이다. `liveTranscriptLayout`은 진행 중 턴을 포함한 모든 턴을 기록에서 그리고, 마지막 저장 텍스트(또는 현재 질문·직전 완료 답변) 이후의 화면 행과 하단 영역만 네이티브로 남긴다. 아무것도 맞지 않으면 최신 블록부터 보여준다. 하단 영역을 찾지 못하거나 프레임 없는(Codex형) 선택지가 승인 대기 중이면 기존 `transcriptBoundary`로 화면 전체를 유지한다. 실제 녹화 화면으로 만든 `terminal-native-chrome.test.ts`를 CLI 화면이 바뀔 때 갱신한다.

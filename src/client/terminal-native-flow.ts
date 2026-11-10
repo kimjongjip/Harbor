@@ -16,6 +16,7 @@ export interface NativeFlowFrame {
   columns: number;
   end: number;
   bufferType: "normal" | "alternate";
+  bracketedPasteMode?: boolean;
 }
 
 export function nativeFlowFrame(term: Terminal): NativeFlowFrame {
@@ -37,6 +38,7 @@ export function nativeFlowFrame(term: Terminal): NativeFlowFrame {
     cursorColumn: buffer.cursorX,
     columns: term.cols,
     bufferType: buffer.type,
+    bracketedPasteMode: term.modes.bracketedPasteMode,
   };
 }
 
@@ -140,6 +142,7 @@ export class NativeFlowReader {
       cursorColumn: buffer.cursorX,
       columns: term.cols,
       bufferType: buffer.type,
+      bracketedPasteMode: term.modes.bracketedPasteMode,
     };
     const theme = JSON.stringify(term.options.theme || {});
     this.compareRows =

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -10,15 +11,17 @@ import {
 import { Bell, CheckCheck, X } from "lucide-react";
 import { api } from "./api";
 import type { TerminalNotice } from "../shared/notices";
+import type { ReportSummary } from "../shared/report-notices";
 
 export interface WorkspaceNotice {
   id: string;
-  target: "terminal" | "session";
+  target: "terminal" | "session" | "report";
   targetId: string;
   title: string;
   body: string;
   at: number;
   read: boolean;
+  report?: { hostId: string; id: string };
 }
 type Input = Omit<WorkspaceNotice, "id" | "at" | "read"> & { id?: string };
 const NoticeContext = createContext<{
@@ -26,17 +29,58 @@ const NoticeContext = createContext<{
   push: (notice: Input) => void;
   read: (targetId?: string) => void;
   sync: (notices: TerminalNotice[]) => void;
+  syncReports: (hostId: string, reports: ReportSummary[]) => void;
   isServerNoticeEnabled: () => boolean;
 }>({
   notices: [],
   push: () => {},
   read: () => {},
   sync: () => {},
+  syncReports: () => {},
   isServerNoticeEnabled: () => false,
 });
 export const useNotifications = () => useContext(NoticeContext);
+const reportReadKey = "harbor.reportNotices.read.v1";
+function loadReportReads(): Record<string, number> {
+  try {
+    const value = JSON.parse(localStorage.getItem(reportReadKey) || "{}");
+    return value && !Array.isArray(value) && typeof value === "object"
+      ? (Object.fromEntries(
+          Object.entries(value).filter(([, at]) => typeof at === "number"),
+        ) as Record<string, number>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [notices, setNotices] = useState<WorkspaceNotice[]>([]);
+  const [reports, setReports] = useState<WorkspaceNotice[]>([]);
+  const [reportReads, setReportReads] = useState(loadReportReads);
+  const reportsRef = useRef(reports);
+  reportsRef.current = reports;
+  const syncReports = useCallback((hostId: string, items: ReportSummary[]) => {
+    const next = items.map((item) => ({
+      id: `report-${hostId}-${item.id}`,
+      target: "report" as const,
+      targetId: `report-${hostId}-${item.id}`,
+      title: item.title,
+      body: item.summary,
+      at: item.at,
+      read: false,
+      report: { hostId, id: item.id },
+    }));
+    setReports((previous) =>
+      JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
+    );
+  }, []);
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === reportReadKey) setReportReads(loadReportReads());
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
   const serverNotices = useRef(false);
   const isServerNoticeEnabled = useCallback(() => serverNotices.current, []);
   const push = useCallback((notice: Input) => {
@@ -59,10 +103,26 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   const read = useCallback((targetId?: string) => {
-    if (serverNotices.current)
+    if (serverNotices.current && (!targetId || !targetId.startsWith("report-")))
       void api("/notices/read", targetId ? { terminalId: targetId } : {}).catch(
         () => {},
       );
+    setReportReads((previous) => {
+      const next = { ...previous, ...loadReportReads() };
+      for (const report of reportsRef.current)
+        if (!targetId || report.targetId === targetId)
+          next[report.id] = report.at;
+      const bounded = Object.fromEntries(
+        Object.entries(next)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 1000),
+      );
+      if (JSON.stringify(bounded) === JSON.stringify(previous)) return previous;
+      try {
+        localStorage.setItem(reportReadKey, JSON.stringify(bounded));
+      } catch {}
+      return bounded;
+    });
     setNotices((prev) =>
       !prev.some((n) => !n.read && (!targetId || n.targetId === targetId))
         ? prev
@@ -90,13 +150,31 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         .slice(0, 100),
     );
   }, []);
+  const combined = useMemo(
+    () =>
+      [
+        ...notices,
+        ...reports.map((report) => ({
+          ...report,
+          read: reportReads[report.id] === report.at,
+        })),
+      ].sort((a, b) => b.at - a.at),
+    [notices, reports, reportReads],
+  );
   useEffect(() => {
-    const count = notices.filter((n) => !n.read).length;
+    const count = combined.filter((n) => !n.read).length;
     document.title = `${count ? `(${count}) ` : ""}Harbor`;
-  }, [notices]);
+  }, [combined]);
   return (
     <NoticeContext.Provider
-      value={{ notices, push, read, sync, isServerNoticeEnabled }}
+      value={{
+        notices: combined,
+        push,
+        read,
+        sync,
+        syncReports,
+        isServerNoticeEnabled,
+      }}
     >
       {children}
     </NoticeContext.Provider>

@@ -1,9 +1,13 @@
 import type { ConversationTurn } from "./conversation-turns";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { typedPrompt } from "./user-origin";
-import { lastNativeBlock, nativeChrome } from "./terminal-native-chrome";
+import {
+  lastNativeBlock,
+  nativeChrome,
+  type NativeChromeFrame,
+} from "./terminal-native-chrome";
 
-export interface TranscriptFrame {
+export interface TranscriptFrame extends NativeChromeFrame {
   lines: string[];
   cursorRow: number;
   baseY: number;
@@ -315,7 +319,7 @@ export function liveTranscriptLayout(
   blocks: RichTerminalBlock[],
   state: { waiting: boolean },
 ): LiveTranscriptLayout {
-  const chrome = nativeChrome(frame.lines, frame.end);
+  const chrome = nativeChrome(frame.lines, frame.end, frame);
   // An unframed (Codex-style) prompt row can be a dialog choice whose question
   // sits above it; approvals keep the whole native tail.
   if (!chrome || (state.waiting && !chrome.framed)) {

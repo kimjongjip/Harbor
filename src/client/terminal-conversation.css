@@ -11,6 +11,17 @@
 .terminal-conversation[hidden] {
   display: none;
 }
+/* The native helper includes the composing text and the OS candidate anchor.
+   It must sit above the conversation that covers xterm's original screen. */
+.xterm .xterm-helpers.terminal-native-ime {
+  z-index: 8;
+  pointer-events: none;
+}
+.xterm .terminal-native-ime .composition-view {
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: inset 0 -1px currentColor;
+}
 .terminal-instance > .terminal-mount {
   overflow: hidden;
 }

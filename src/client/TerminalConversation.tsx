@@ -36,6 +36,8 @@ import {
   type ConversationSelectionSnapshot,
 } from "./conversation-selection-snapshot";
 import "./terminal-conversation.css";
+import { useClaudeModSurface } from "./useClaudeModSurface";
+import { frameWithoutModPanels } from "./terminal-mod-surface";
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -117,6 +119,10 @@ export function TerminalConversation({
   const sessionId = info.agentSessionId || info.resumeThreadId;
   const provider =
     info.agentKind || (info.program?.startsWith("claude") ? "claude" : "codex");
+  const modSurface = useClaudeModSurface(
+    term,
+    provider === "claude" && active && mode !== "terminal",
+  );
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [loading, setLoading] = useState(false),
     [error, setError] = useState("");
@@ -472,20 +478,27 @@ export function TerminalConversation({
     return (frame: NativeFlowFrame) => {
       if (frame !== cachedFrame) {
         cachedFrame = frame;
-        cachedLayout = liveTranscriptLayout(turns, frame, blocks, { waiting });
+        cachedLayout = liveTranscriptLayout(
+          turns,
+          frameWithoutModPanels(term, frame, modSurface?.native),
+          blocks,
+          { waiting },
+        );
       }
       return cachedLayout;
     };
-  }, [turns, blocks, waiting]);
+  }, [turns, blocks, waiting, term, modSurface]);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
       const next = layoutForFrame(frame);
       return {
         start: next.nativeStart,
         split: next.live ? next.chromeStart : next.nativeStart,
+        end: modSurface?.native.end,
+        panels: modSurface?.native.panels,
       };
     },
-    [layoutForFrame],
+    [layoutForFrame, modSurface],
   );
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   // A running CLI shows "esc to interrupt" in its live area even when no
@@ -541,7 +554,10 @@ export function TerminalConversation({
   const renderNativeAnswer = useCallback(
     (text: string) => (
       <div className="terminal-native-answer-text">
-        <Markdown text={text} location={{ hostId: info.hostId, cwd: info.cwd }} />
+        <Markdown
+          text={text}
+          location={{ hostId: info.hostId, cwd: info.cwd }}
+        />
       </div>
     ),
     [info.hostId, info.cwd],
@@ -573,8 +589,7 @@ export function TerminalConversation({
         }
       : nextLayout;
   lastLayout.current = { ...layout, turnCount: turns.length };
-  const running =
-    layout.live && turns.length > 0 && !turns.at(-1)!.complete;
+  const running = layout.live && turns.length > 0 && !turns.at(-1)!.complete;
   // Saved steps of a running turn stream in while its CLI works.
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
   const refreshing = visible && agentBusy && running;
@@ -600,6 +615,13 @@ export function TerminalConversation({
           : saved.top + node.scrollHeight - saved.height;
     anchor.current = null;
   }, [detail, visible]);
+  useLayoutEffect(() => {
+    const node = body.current;
+    // Opening/closing a native panel changes the reader's viewport, even when
+    // its document height is unchanged. Keep an existing bottom follow pinned.
+    if (node && visible && followingRef.current && !hasSelection())
+      node.scrollTop = node.scrollHeight;
+  }, [modSurface, visible]);
   useEffect(() => {
     const node = body.current;
     if (!node) return;
@@ -623,6 +645,17 @@ export function TerminalConversation({
       data-following={following}
       data-selected={selected}
       hidden={!visible}
+      data-native-mods={modSurface ? "preserved" : undefined}
+      style={
+        modSurface
+          ? {
+              right: "auto",
+              bottom: "auto",
+              width: modSurface.width,
+              height: modSurface.height,
+            }
+          : undefined
+      }
     >
       <div
         className="terminal-conversation-body"
@@ -703,7 +736,11 @@ export function TerminalConversation({
             const workKey = `${turn.id}:${state}`;
             return (
               <section
-                key={turn.items.some((item) => item.turnId) ? turn.id : turnKey(turn)}
+                key={
+                  turn.items.some((item) => item.turnId)
+                    ? turn.id
+                    : turnKey(turn)
+                }
                 className={`conversation-turn${live ? " running" : ""}`}
                 data-turn-id={turn.id}
               >
@@ -715,14 +752,18 @@ export function TerminalConversation({
                     />
                     {(!!work.length ||
                       (live &&
-                        (agentBusy || layout.nativeStart < layout.chromeStart))) && (
+                        (agentBusy ||
+                          layout.nativeStart < layout.chromeStart))) && (
                       <WorkGroup
                         items={work}
                         state={state}
                         busy={live && agentBusy}
                         open={workOpen[workKey] ?? live}
                         onToggle={(open) =>
-                          setWorkOpen((value) => ({ ...value, [workKey]: open }))
+                          setWorkOpen((value) => ({
+                            ...value,
+                            [workKey]: open,
+                          }))
                         }
                         target={live ? setWorkTarget : undefined}
                         props={props}

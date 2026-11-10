@@ -17,7 +17,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { backendVersionError } = require("./backend-version.cjs");
 const { BackendSupervisor } = require("./backend-supervisor.cjs");
+const { configureInputScheduling } = require("./input-scheduling.cjs");
 
+configureInputScheduling(app.commandLine);
 app.setName("Harbor");
 if (process.platform === "win32") app.setAppUserModelId("org.harbor.workspace");
 if (process.env.HARBOR_DESKTOP_PROFILE)

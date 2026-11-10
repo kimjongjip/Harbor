@@ -19,8 +19,8 @@ test(
       stdin: {
         contents: `import React from'react';import{createRoot}from'react-dom/client';import{Terminal}from'@xterm/xterm';import{NativeRow}from'./src/client/TerminalNativeRow';import{nativeRow}from'./src/client/mobile/terminal-flow';import{nativeFlowCursorOffset}from'./src/client/terminal-native-flow';import{richSelectedText}from'./src/client/TerminalRich';import'@xterm/xterm/css/xterm.css';
 const term=window.term=new Terminal({cols:100,rows:8,allowProposedApi:true,fontSize:20,fontFamily:'Consolas,monospace',theme:{foreground:'#123456',background:'#fffdf7'}});term.open(document.querySelector('#native'));
-term.write('Regular output\\r\\n\\x1b[48;2;238;238;238m\\x1b[2K\\r\\n› 질문🙂 é\\x1b[K\\r\\n\\x1b[0m한🙂\\x1b[48;2;200;220;240m  MIXED\\x1b[K\\r\\n\\x1b[48;2;238;238;238m        \\x1b[0m\\x1b[K\\x1b[3;7H',()=>{
-const rows=[0,1,2,3,4].map(row=>nativeRow(term.buffer.active.getLine(row),term.cols,0,term.options.theme));window.rows=rows;
+term.write('Regular output\\r\\n\\x1b[48;2;238;238;238m\\x1b[2K\\r\\n› 질문🙂 é\\x1b[K\\r\\n\\x1b[0m한🙂\\x1b[48;2;200;220;240m  MIXED\\x1b[K\\r\\n\\x1b[48;2;238;238;238m        \\x1b[0m\\x1b[K\\r\\n\\x1b[48;2;238;238;238m› '+ '한글'.repeat(20)+'\\x1b[K\\x1b[3;7H',()=>{
+const rows=[0,1,2,3,4,5].map(row=>nativeRow(term.buffer.active.getLine(row),term.cols,0,term.options.theme));window.rows=rows;
 const cursor=nativeFlowCursorOffset(term.buffer.active.getLine(2),term.buffer.active.cursorX);
 createRoot(document.querySelector('#surface')).render(<>{rows.map((runs,row)=><NativeRow key={row} row={row} runs={runs} lineHeight={28} cursorOffset={row===2?cursor:row===4?4:undefined}/>)}</>);
 });window.copy=()=>richSelectedText(document.querySelector('#surface'));`,
@@ -40,7 +40,7 @@ createRoot(document.querySelector('#surface')).render(<>{rows.map((runs,row)=><N
       res
         .type("html")
         .send(
-          '<!doctype html><html><head><link rel="stylesheet" href="/fixture.css"><style>body{margin:0;background:#fffdf7}#native{position:absolute;width:1200px;height:250px;opacity:0;pointer-events:none}#surface{position:relative;font:20px Consolas,monospace;width:600px;user-select:text;margin:20px;color:#123456}</style></head><body><div id="native"></div><section id="surface"></section><script type="module" src="/fixture.js"></script></body></html>',
+          '<!doctype html><html><head><link rel="stylesheet" href="/fixture.css"><style>body{margin:0;background:#fffdf7}#native{position:absolute;width:1200px;height:250px;opacity:0;pointer-events:none}#surface{position:relative;font:20px Consolas,monospace;width:100ch;user-select:text;margin:20px;color:#123456}</style></head><body><div id="native"></div><section id="surface"></section><script type="module" src="/fixture.js"></script></body></html>',
         ),
     );
     const server = createServer(app);
@@ -49,7 +49,7 @@ createRoot(document.querySelector('#surface')).render(<>{rows.map((runs,row)=><N
     const main = join(directory, "electron.cjs");
     await writeFile(
       main,
-      `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(directory, "profile"))});app.commandLine.appendSwitch('disable-gpu');app.whenReady().then(()=>new BrowserWindow({show:false,width:900,height:650,webPreferences:{backgroundThrottling:false,contextIsolation:true,sandbox:true}}).loadURL('http://127.0.0.1:${(server.address() as { port: number }).port}/'));app.on('window-all-closed',()=>app.quit());`,
+      `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(directory, "profile"))});app.commandLine.appendSwitch('disable-gpu');app.whenReady().then(()=>new BrowserWindow({show:false,width:1300,height:650,webPreferences:{backgroundThrottling:false,contextIsolation:true,sandbox:true}}).loadURL('http://127.0.0.1:${(server.address() as { port: number }).port}/'));app.on('window-all-closed',()=>app.quit());`,
     );
     let desktop: Awaited<ReturnType<typeof _electron.launch>> | undefined;
     try {
@@ -65,7 +65,7 @@ createRoot(document.querySelector('#surface')).render(<>{rows.map((runs,row)=><N
       page.on("pageerror", (error) => errors.push(error.message));
       await page.locator('[data-native-row="3"]').waitFor();
       const grayRows = await page.evaluate(() =>
-        [1, 2].map((index) => {
+        [1, 2, 5].map((index) => {
           const row = document.querySelector<HTMLElement>(
             `[data-native-row="${index}"]`,
           )!;
@@ -77,20 +77,24 @@ createRoot(document.querySelector('#surface')).render(<>{rows.map((runs,row)=><N
             color: getComputedStyle(fill).backgroundColor,
             height: fill.getBoundingClientRect().height,
             width: fill.getBoundingClientRect().width,
-            rowWidth: row.clientWidth,
+            rowWidth: row.getBoundingClientRect().width,
             rowHeight: row.clientHeight,
           };
         }),
       );
       assert.equal(grayRows[0].text, "");
       assert.equal(grayRows[1].text, "› 질문🙂 é");
+      assert.equal(grayRows[2].text, "› " + "한글".repeat(20));
+      // A narrow pane only tests clipping excess paint. Matching its width to
+      // the native 100 columns also detects the shorter advances of fallback
+      // Korean/emoji glyphs, which used to leave ragged gaps on the right.
       for (const row of grayRows) {
         assert.equal(row.color, "rgb(238, 238, 238)");
         assert.equal(row.height, 28);
         assert.equal(row.rowHeight, 28);
         assert.ok(
-          row.width >= row.rowWidth,
-          "native blank cells paint the whole composer",
+          row.width >= row.rowWidth - 0.5,
+          "native blank cells paint the whole composer even when Korean glyphs are narrower than two terminal cells",
         );
       }
       assert.equal(

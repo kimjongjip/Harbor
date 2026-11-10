@@ -418,6 +418,12 @@
   align-items: center;
   gap: 3px;
 }
+.report-notice-content {
+  max-height: min(70vh, 900px);
+  overflow: auto;
+  padding: 12px 24px 24px;
+  user-select: text;
+}
 .workspace-inbox .session-mailbox {
   width: 100%;
   border-left: 0;
