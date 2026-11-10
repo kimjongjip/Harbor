@@ -1,5 +1,6 @@
 import {
   memo,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -26,6 +27,7 @@ import {
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
 import { projectNativeComposition } from "./terminal-native-ime";
+import { useTheme } from "./Theme";
 import {
   projectNativeRow,
   type NativePanelRectangle,
@@ -135,6 +137,7 @@ export function TerminalNativeFlow({
   renderAnswer?(text: string): ReactNode;
   onLink?(text: string): void;
 }) {
+  const { theme } = useTheme();
   const root = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
@@ -337,6 +340,11 @@ export function TerminalNativeFlow({
   useLayoutEffect(() => {
     refresh.current();
   }, [active, frozen, codexComposer, startRow, blocks]);
+  useEffect(() => {
+    // TerminalPane applies the palette in its layout effect. Idle rows also
+    // need a capture, without waiting for output or subscribing to every paint.
+    refresh.current();
+  }, [theme]);
   const hasView = !!view;
   useLayoutEffect(() => {
     if (!active || frozen || !root.current) return;

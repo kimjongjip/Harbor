@@ -1,5 +1,11 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.4 다크 팔레트
+
+`theme-palettes.ts`가 다섯 다크 테마의 UI 변수·xterm ANSI 색·Monaco 색을 공유한다. 기존 저장값 `dark`는 차콜로 유지하고 새 ID도 저장·별도 창 동기화에서 검증한다. `data-theme`는 선택값, `data-appearance`는 명암 구분이다. 라이트·페이퍼로 돌아갈 때 다크 팔레트의 인라인 변수를 제거한다. 테마 선택은 터미널이나 편집기 모델을 다시 만들지 않는다.
+
+`TerminalPane`은 layout effect에서 xterm 팔레트를 적용하고 `TerminalNativeFlow`는 테마 변경 시에만 추가 capture를 예약한다. idle 상태에서도 이전 기본색으로 그린 행을 갱신하며 매 paint 구독·추가 키 입력·PTY 쓰기를 사용하지 않는다. `ide-terminal-switch.browser.test.ts`는 출력 없는 테마 전환의 실제 행 색·설정 저장·입력과 연결 보존을 확인한다. 별도 합성 앱에서 일곱 테마의 화면·편집 초안·Monaco 색·다시 열기와 좁은 화면을 검증한다.
+
 ## 1.18.3 중앙 PDF·이미지 탭
 
 IDE의 열린 문서는 텍스트 모델과 미디어 문서를 구분한다. PDF·이미지에는 Monaco 모델을 만들지 않고 중앙 pane에 `IdeMediaPreview`를 표시한다. 저장·비교·코드 인용은 텍스트에만 적용하며 미디어 탭별·pane별 페이지와 배율을 보존한다. 외부 미리보기는 명시적인 도구 모음 동작으로 남긴다.

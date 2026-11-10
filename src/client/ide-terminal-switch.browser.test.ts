@@ -254,6 +254,41 @@ test(
       });
       const connections = socketsOpened,
         beforeInput = input.length;
+      // An idle terminal must repaint when only the theme changes: no output,
+      // resize, reconnect or keystroke should be needed to replace old colors.
+      const themes = page.getByLabel("테마", { exact: true });
+      const themeValues = await themes
+        .locator("option")
+        .evaluateAll((options) =>
+          options.map((option) => (option as HTMLOptionElement).value),
+        );
+      for (const value of [
+        ...themeValues.filter((value) => value !== "light"),
+        "light",
+      ]) {
+        await themes.selectOption(value);
+        await page.waitForFunction(
+          () => {
+            const row = document.querySelector(
+              '[data-terminal-id="one"] [data-native-row="0"] > span',
+            );
+            return (
+              row &&
+              getComputedStyle(row).backgroundColor ===
+                getComputedStyle(document.body).backgroundColor
+            );
+          },
+          undefined,
+          { timeout: 2000 },
+        );
+        assert.ok((await pane.innerText()).includes("UNSENT one abc"));
+        assert.equal(
+          await page.evaluate(() => localStorage.getItem("harbor.theme")),
+          value,
+        );
+        assert.equal(socketsOpened, connections);
+        assert.equal(input.length, beforeInput);
+      }
       await page
         .getByRole("separator", { name: "왼쪽 패널 너비 조절", exact: true })
         .press("ArrowRight");

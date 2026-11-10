@@ -26,32 +26,8 @@
   --selection-bg: #2457b8;
   --selection-text: #ffffff;
 }
-:root[data-theme="dark"] {
+:root[data-appearance="dark"] {
   color-scheme: dark;
-  --color-scheme: dark;
-  --bg: #181b21;
-  --panel: #20242c;
-  --surface: #2b303a;
-  --text: #e6e8ee;
-  --muted: #a4abba;
-  --dim: #8d95a5;
-  --border: #373e4b;
-  --accent: #a4b9ff;
-  --accent-soft: #2b3653;
-  --accent-dark: #2b3653;
-  --on-accent: #19223b;
-  --success: #93d1a3;
-  --red: #f3a2ad;
-  --error-soft: #402631;
-  --error-border: #78515c;
-  --warning: #ecc786;
-  --warning-soft: #3b3325;
-  --warning-border: #716044;
-  --overlay: #080b1480;
-  --shadow-color: #00000044;
-  --terminal-bg: #181b21;
-  --selection-bg: #a4b9ff;
-  --selection-text: #111827;
 }
 :root[data-theme="paper"] {
   --selection-bg: #805020;
@@ -97,9 +73,9 @@ select:focus {
 }
 .button.primary,
 .button.primary:hover {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
+  background: var(--primary-bg, var(--accent));
+  color: var(--on-primary, var(--on-accent));
+  border-color: var(--primary-bg, var(--accent));
 }
 .button.secondary,
 .button.secondary:hover {
@@ -263,8 +239,97 @@ select:focus {
 }
 .theme-select {
   padding: 6px 8px;
-  max-width: 94px;
+  width: 142px;
+  max-width: 160px;
   font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
+}
+/* Dark surfaces share a quiet frame; color is reserved for selected items. */
+:root[data-appearance="dark"]
+  :is(
+    .harbor-sidebar,
+    .harbor-topbar,
+    .harbor-statusbar,
+    .ide-explorer,
+    .ide-tabs,
+    .harbor-ide-dock-heading,
+    .terminal-workspace-toolbar
+  ) {
+  background: var(--chrome);
+}
+:root[data-appearance="dark"]
+  :is(
+    .ide-toolbar,
+    .ide-markdown-modes,
+    .ide-media-controls,
+    .terminal-card-header
+  ) {
+  background: var(--panel);
+}
+:root[data-appearance="dark"] .ide-tab.active {
+  background: var(--bg);
+  color: var(--text);
+}
+:root[data-appearance="dark"] .ide-tab:not(.active) {
+  color: var(--muted);
+}
+:root[data-appearance="dark"] .harbor-side-switch {
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+:root[data-appearance="dark"] .harbor-side-switch button.active {
+  background: var(--surface);
+  box-shadow: none;
+}
+:root[data-appearance="dark"] .harbor-host-row.selected {
+  background: var(--accent-soft);
+}
+:root[data-appearance="dark"] .button.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+:root[data-appearance="dark"] .button.secondary {
+  background: var(--panel);
+  border-color: var(--border-strong);
+}
+:root[data-appearance="dark"] .button.secondary:hover:not(:disabled) {
+  background: var(--surface);
+}
+:root[data-appearance="dark"] :is(.modal, .toast) {
+  background: var(--raised);
+  border-color: var(--border-strong);
+  box-shadow: 0 16px 52px var(--shadow-color);
+}
+:root[data-appearance="dark"] :is(.modal-header, .modal-footer) {
+  background: var(--panel);
+}
+:root[data-appearance="dark"] :is(input, textarea, select)::placeholder {
+  color: var(--dim);
+  opacity: 1;
+}
+:root[data-appearance="dark"] .harbor-top-actions .theme-select {
+  background: var(--panel);
+  border-color: var(--border);
+}
+:root[data-appearance="dark"] .ide-chat-compose button[type="submit"] {
+  background: var(--primary-bg);
+  color: var(--on-primary);
+}
+:root[data-appearance="dark"] .ide-image-scroll {
+  background: repeating-conic-gradient(
+      var(--panel) 0% 25%,
+      var(--surface) 0% 50%
+    )
+    0 / 20px 20px;
+}
+:root[data-appearance="dark"] .ide-pdf-stage {
+  background: var(--chrome);
+}
+:root[data-appearance="dark"] .ide-reading-content ::selection {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+}
+:root[data-appearance="dark"] {
+  scrollbar-color: var(--border-strong) var(--chrome);
 }
 .host-card,
 .discussion-card {
@@ -301,6 +366,17 @@ select:focus {
   background: var(--error-soft);
   color: var(--red);
 }
+@media (max-width: 1100px) {
+  .harbor-top-actions {
+    gap: 6px;
+  }
+  .harbor-new-terminal > span {
+    display: none;
+  }
+  .harbor-top-actions .harbor-new-terminal {
+    padding: 7px 9px;
+  }
+}
 @media (max-width: 1000px) {
   .workspace-stats {
     display: none;
@@ -319,8 +395,9 @@ select:focus {
   .topbar-right {
     gap: 6px;
   }
-  .theme-select {
-    width: 73px;
+  .harbor-top-actions .theme-select {
+    width: 142px;
+    max-width: 142px;
   }
   .breadcrumb-root,
   .slash {

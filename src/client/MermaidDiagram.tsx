@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useTheme } from "./Theme";
+import { useTheme, isDarkTheme } from "./Theme";
 import "./mermaid-diagram.css";
 
 let queue = Promise.resolve();
@@ -50,7 +50,7 @@ export function MermaidDiagram({
     setSvg("");
     setError("");
     setZoom(1);
-    void renderDiagram(source, theme === "dark").then(
+    void renderDiagram(source, isDarkTheme(theme)).then(
       (value) => {
         if (active) {
           const element = new DOMParser().parseFromString(

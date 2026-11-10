@@ -7,6 +7,7 @@ import { createIdeApi, type IdeSelection } from "./types";
 import type { IdeChatAttachment } from "./IdeChatPanel";
 import { quoteIdeSelection } from "./annotationBridge";
 import IdeMediaPreview from "./IdeMediaPreview";
+import type { ThemeName } from "../theme-palettes";
 
 const IdeChatPanel = lazy(() => import("./IdeChatPanel"));
 
@@ -32,7 +33,7 @@ export default function DesktopIdeView({
   hostId: string;
   hostLabel?: string;
   workspaceCwd?: string;
-  theme: "light" | "dark" | "paper";
+  theme: ThemeName;
   visible: boolean;
   chatOpen: boolean;
   nativeTerminal?: boolean;

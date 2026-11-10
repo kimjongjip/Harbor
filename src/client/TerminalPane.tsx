@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
@@ -1385,7 +1385,7 @@ export default function TerminalPane({
     typography.terminalLineHeight,
     fontsReady,
   ]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (termRef.current) termRef.current.options.theme = terminalTheme(theme);
     sendColorsRef.current?.();
   }, [theme, terminalColorsSupported]);

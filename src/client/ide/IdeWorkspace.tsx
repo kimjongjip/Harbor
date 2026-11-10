@@ -16,7 +16,8 @@ import {
   X,
   ExternalLink,
 } from "lucide-react";
-import { monaco, languageFor } from "./monaco";
+import { monaco, languageFor, editorThemeName } from "./monaco";
+import type { ThemeName } from "../theme-palettes";
 import {
   dirtyFile,
   documentKey,
@@ -71,7 +72,7 @@ export interface IdeWorkspaceProps {
   hostId: string;
   hostLabel?: string;
   workspaceCwd?: string;
-  theme?: "light" | "dark" | "paper";
+  theme?: ThemeName;
   visible?: boolean;
   onQuote?: (selection: IdeSelection) => Promise<void>;
   onPreview?: (file: IdeFile) => void;
@@ -324,7 +325,7 @@ export default function IdeWorkspace({
   const generation = useRef(0);
   const opening = useRef(new Set<string>());
   const active = documents.find((doc) => doc.key === panes[focused]);
-  const monacoTheme = theme === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = editorThemeName(theme);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {

@@ -57,7 +57,7 @@ import RuntimeUpdateNotice from "./RuntimeUpdateNotice";
 import type { DropEdge, DropScope, TerminalPlacement } from "./terminal-tree";
 import { PreviewProvider } from "./ResourcePreview";
 import { useNotifications } from "./Notifications";
-import { useTheme, terminalColors, type ThemeName } from "./Theme";
+import { useTheme, terminalColors, themeOptions, type ThemeName } from "./Theme";
 import TypographySettingsDialog from "./TypographySettings";
 import MobileSettings from "./MobileSettings";
 import IdeBoundary from "./ide/IdeBoundary";
@@ -1032,12 +1032,15 @@ export default function App() {
               </span>
               <select
                 aria-label="테마"
+                className="theme-select"
                 value={theme}
                 onChange={(e) => setTheme(e.target.value as ThemeName)}
               >
-                <option value="light">라이트</option>
-                <option value="dark">다크</option>
-                <option value="paper">페이퍼</option>
+                {themeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
               <button
                 className="icon-button"
@@ -1080,11 +1083,14 @@ export default function App() {
               </button>
               {!popoutId && (
                 <button
-                  className="button primary"
+                  className="button primary harbor-new-terminal"
+                  aria-label="새 터미널"
+                  title="새 터미널"
                   disabled={!ready}
                   onClick={() => setNewTerminal({ hostId: host?.id })}
                 >
-                  <Plus size={15} />새 터미널
+                  <Plus size={15} />
+                  <span>새 터미널</span>
                 </button>
               )}
             </div>
