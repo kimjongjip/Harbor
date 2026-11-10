@@ -133,6 +133,7 @@ export class ClaudeHistory {
   // A running session is re-read every few seconds. Keep its file and the SSH
   // connection instead of rescanning every project or reconnecting each time.
   private sessions = new Map<string, Entry>();
+  private usageFiles = new Map<string, string>();
   private leases = new Map<string, Lease>();
   constructor(private readonly create = connect, private readonly idleMs = 60_000) {}
   private release(hostId: string, lease: Lease) {
@@ -232,17 +233,47 @@ export class ClaudeHistory {
     return this.using(host, password, async r => { const search = options.search?.toLocaleLowerCase(); const all = (await this.catalog(r, host.id)).filter(e => !search || [e.thread.title, e.thread.cwd, e.thread.preview].some(t => t.toLocaleLowerCase().includes(search))); const offset = this.offset(options.cursor); return { data: all.slice(offset, offset + 50).map(e => e.thread), nextCursor: offset + 50 < all.length ? String(offset + 50) : null }; });
   }
   private offset(cursor?: string) { if (cursor && !/^\d{1,8}$/.test(cursor)) throw new Error('잘못된 Claude 기록 페이지입니다.'); return Number(cursor || 0); }
-  async usage(host: HostConfig, password: string | undefined, id: string) {
+  noteTranscript(hostId: string, id: string, file: string) {
+    if (!validId(id) || !file || file.length > 4096 || /[\0\r\n]/.test(file)) return;
+    const key = sessionKey(hostId, id);
+    this.usageFiles.delete(key);
+    this.usageFiles.set(key, file);
+    if (this.usageFiles.size > 256) this.usageFiles.delete(this.usageFiles.keys().next().value!);
+  }
+  async usage(host: HostConfig, password: string | undefined, id: string, cwd?: string) {
     if (!validId(id)) throw new Error('Invalid Claude session');
-    // The conversation reader already discovers files. A status tick must never
-    // scan every project or compete with the initial transcript load.
-    const entry = this.sessions.get(sessionKey(host.id, id)) || this.cache.get(host.id)?.entries.find(e => e.thread.id === id);
-    if (!entry) return null;
+    const key = sessionKey(host.id, id);
+    const entry = this.sessions.get(key) || this.cache.get(host.id)?.entries.find(e => e.thread.id === id);
+    const hint = this.usageFiles.get(key);
+    // The first usage read must work without a history preview/catalog. Native
+    // hook paths take precedence; older sessions can try their one known cwd.
+    // Neither path performs an all-project scan on a status tick.
+    if (!entry && !hint && !cwd) return null;
     return this.using(host, password, async r => {
-      const stat = r.stat ? await r.stat(entry.file) : { directory: false, size: entry.size, modified: entry.thread.updatedAt };
+      const normalize = (value: string) => {
+        const normalized = r.join(value).replaceAll('\\', '/');
+        return host.kind === 'local' && process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+      };
+      const root = normalize(r.root).replace(/\/$/, '');
+      const permitted = (file: string) => {
+        const candidate = normalize(file);
+        const filename = host.kind === 'local' && process.platform === 'win32' ? id.toLowerCase() : id;
+        return candidate.startsWith(root + '/') && !candidate.split('/').includes('..') && candidate.endsWith('/' + filename + '.jsonl');
+      };
+      const project = cwd && cwd.length <= 4096 && !/[\0\r\n]/.test(cwd) ? cwd.replace(/[^a-zA-Z0-9]/g, '-') : undefined;
+      const file = (hint && permitted(hint) ? hint : undefined) || entry?.file || (project ? r.join(r.root, project, `${id}.jsonl`) : undefined);
+      if (!file || !permitted(file) || (!r.stat && !entry)) return null;
+      let stat;
+      try { stat = r.stat ? await r.stat(file) : { directory: false, size: entry!.size, modified: entry!.thread.updatedAt }; }
+      catch (error: any) {
+        if (error.code !== 'ENOENT' && error.code !== 2) throw error;
+        this.usageFiles.delete(key);
+        return null;
+      }
       if (stat.directory || !Number.isSafeInteger(stat.size) || stat.size < 0) return null;
+      this.noteTranscript(host.id, id, file);
       const start = Math.max(0, stat.size - 256 * 1024);
-      const text = (await r.read(entry.file, start, stat.size - start)).toString();
+      const text = (await r.read(file, start, stat.size - start)).toString();
       return claudeUsageTail(id, start ? text.slice(text.indexOf('\n') + 1) : text, stat.modified);
     });
   }
@@ -331,7 +362,8 @@ export class ClaudeHistory {
     const lease = this.leases.get(hostId);
     if (lease) this.release(hostId, lease);
     for (const key of this.sessions.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.sessions.delete(key);
+    for (const key of this.usageFiles.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.usageFiles.delete(key);
     for (const [reader, id] of this.active) if (id === hostId) { this.active.delete(reader); reader.close(); }
   }
-  shutdown() { this.stopped = true; for (const [hostId, lease] of this.leases) this.release(hostId, lease); for (const reader of this.active.keys()) reader.close(); this.active.clear(); this.cache.clear(); this.sessions.clear(); }
+  shutdown() { this.stopped = true; for (const [hostId, lease] of this.leases) this.release(hostId, lease); for (const reader of this.active.keys()) reader.close(); this.active.clear(); this.cache.clear(); this.sessions.clear(); this.usageFiles.clear(); }
 }

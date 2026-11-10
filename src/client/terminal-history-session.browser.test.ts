@@ -208,6 +208,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.waitForFunction(() => !!(window as any).term);
+      assert.ok(await page.evaluate(() => {
+        const mount = document.querySelector('.terminal-mount')!.getBoundingClientRect(), panel = document.querySelector('.terminal-usage')!.getBoundingClientRect();
+        return mount.right <= panel.left + 1 && Math.abs(mount.top - panel.top) < 1;
+      }), "real TerminalPane reserves a right column for the Harbor panel");
       for (
         let i = 0;
         i < 40 &&

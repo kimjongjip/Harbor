@@ -125,3 +125,32 @@ test("rollout tail transport has a fixed read bound on large files and preserves
     await writeFile(file, ""); assert.equal(await files.usageTail({ id: "fixture", kind: "local" } as HostConfig, file), "");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("Claude usage is available before opening history, using only the session's cwd or scoped hook path", async () => {
+  const host = { id: 'fixture', kind: 'ssh' } as HostConfig;
+  const text = Buffer.from(line({ sessionId: 'SessionA', type: 'assistant', message: { usage: { input_tokens: 42000 } } }));
+  const files = new Set(['/claude/projects/-project-a/SessionA.jsonl', '/claude/projects/한글/SessionA.jsonl']);
+  const stats: string[] = [], reads: string[] = [];
+  const reader: ClaudeHistoryReader = { root: '/claude/projects', join: (...p) => p.join('/'), close() {},
+    async entries() { throw Error('usage must never scan the catalog'); },
+    async stat(file) { stats.push(file); if (!files.has(file)) throw Object.assign(Error('missing'), { code: 'ENOENT' }); return { directory: false, size: text.length, modified: 1 }; },
+    async read(file, start, length) { reads.push(file); return text.subarray(start, start + length); },
+  };
+  const history = new ClaudeHistory(async () => reader);
+  try {
+    assert.equal((await history.usage(host, undefined, 'SessionA', '/project/a'))?.usedTokens, 42000);
+    assert.deepEqual(stats, ['/claude/projects/-project-a/SessionA.jsonl']);
+    history.noteTranscript(host.id, 'SessionA', '/claude/projects/한글/SessionA.jsonl');
+    assert.equal((await history.usage(host, undefined, 'SessionA'))?.usedTokens, 42000);
+    assert.equal(reads.at(-1), '/claude/projects/한글/SessionA.jsonl');
+    const previous = reads.length;
+    history.noteTranscript(host.id, 'SessionA', '/outside/SessionA.jsonl');
+    assert.equal(await history.usage(host, undefined, 'SessionA'), null);
+    history.noteTranscript(host.id, 'SessionA', '/claude/projects/project/other.jsonl');
+    assert.equal(await history.usage(host, undefined, 'SessionA'), null);
+    assert.equal(reads.length, previous, 'out-of-root and different-session files are never read');
+    assert.equal(await history.usage(host, undefined, 'missing', '/new-project'), null);
+    history.close(host.id);
+    assert.equal(await history.usage(host, undefined, 'SessionA'), null, 'host reset discards usage paths');
+  } finally { history.shutdown(); }
+});

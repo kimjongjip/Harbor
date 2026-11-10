@@ -252,6 +252,10 @@ const bridge = new AgentBridge(mailbox, {
   onClaudeEvent: (id, event) => {
     if (event.hook_event_name === "SessionStart" || event.hook_event_name === "SessionEnd") terminalUsage.clear(id);
     terminals.markClaudeEvent(id, event);
+    if (event.transcript_path) {
+      const terminal = terminals.list().find(t => t.id === id);
+      if (terminal) claudeHistory.noteTranscript(terminal.hostId, event.session_id, event.transcript_path);
+    }
     mobile.completions.claudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
       const title =
@@ -967,7 +971,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.9" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.10" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1783,7 +1787,7 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
   const host = hub.host(terminal.hostId);
   const usage = await terminalUsage.read(terminal.id, terminal.agentKind, sessionId, async () => {
     const password = await passwordFor(host.id);
-    if (terminal.agentKind === "claude") return claudeHistory.usage(host, password, sessionId);
+    if (terminal.agentKind === "claude") return claudeHistory.usage(host, password, sessionId, terminal.cwd);
     const file = await history.usagePath(host, password, sessionId);
     return file ? codexUsageTail(sessionId, await files.usageTail(host, file), Date.now()) : null;
   });

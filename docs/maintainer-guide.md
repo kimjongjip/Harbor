@@ -1,5 +1,13 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.10 오른쪽 상태 패널과 초기 사용량 읽기
+
+`TerminalPane`의 안정된 `terminal-surface` 안에서 기존 `terminal-mount`와 `TerminalUsageBar`를 좌우로 배치한다. 조판 portal은 기존 mount 안에 남고 상태 패널은 바깥 형제라 CLI 슬래시 메뉴·Mods 재배치에 포함되지 않는다. 접기는 패널 내부 상태로 폭만 바꾸며 xterm·입력 DOM·소켓을 재생성하지 않는다. 좁은 IDE에서도 오른쪽 열을 유지하고 접으면 36px로 줄어든다. 미연결 값을 모두 `—`로만 보여주지 않고 저장 기록의 토큰 수, 미제공 비용, 다음 실행 시 상태 연결 안내를 구분한다.
+
+이전 fallback은 History 목록/미리보기가 파일 위치를 먼저 찾아야 했다. `ClaudeHistory.usage`는 기존 기록 캐시 외에도 인증된 hook의 `transcript_path` 또는 현재 cwd에서 계산한 단일 project/session 파일을 확인한다. 전체 catalog 탐색 없이 stat과 최대 256KiB 읽기만 수행하며, hook 경로는 해당 reader의 projects 루트와 요청 세션의 JSONL 파일 이름에 속해야 한다. 경로 힌트는 최대 256개 메모리에만 보관하고 호스트 변경 시 폐기한다. 별도 CLI나 AI 엔진을 실행하지 않는다.
+
+`terminal-usage.test.ts`에 기록 보기 전 cwd/한글 hook 경로 조회, 다른 루트·세션 파일 거부와 호스트 변경 검사를 추가했다. 두 Electron 테스트는 실제 TerminalPane의 오른쪽 열, 좁은 화면, 패널 접기·펼치기 후 동일 입력 DOM, 사용량 갱신 중 부모 렌더 없음, 기존 공유 세션의 조판·입력·연결 유지를 검증한다. 화면 파일만 실행 설치본에 추가해도 오른쪽 UI를 적용할 수 있지만 새 서버의 초기 경로 조회는 다음 정상 실행부터다. 기존 tmux CLI에 없는 statusLine 데이터를 이미 연결했다고 보고하지 않는다.
+
 ## 1.18.9 공통 컨텍스트 상태줄
 
 `TerminalUsageBar`는 xterm mount와 독립된 형제 영역에 표시한다. 자체 상태에서 인증된 `/api/terminals/:id/usage?sessionId=...`만 조회하며 작업 중 2초·대기 중 5초, 오류 시 15초 간격을 사용한다. 숨긴 pane·문서는 조회를 멈추고 scope 변경 시 이전 수치를 즉시 숨긴다. 원문 보기에서도 표시용 대화 ID 확인을 유지해 다른 대화의 수치를 재사용하지 않는다. 갱신은 부모 TerminalPane·TranscriptItems를 다시 렌더하지 않는다. 새 API가 없는 백엔드는 반복 조회하지 않는다.

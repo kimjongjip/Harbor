@@ -316,10 +316,20 @@
   flex-direction: column;
   min-height: 0;
 }
-.terminal-instance > .terminal-mount {
+.terminal-surface {
+  order: 1;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.terminal-instance > .terminal-mount,
+.terminal-surface > .terminal-mount {
   order: 1;
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   height: auto;
 }
 .terminal-footer {
@@ -338,22 +348,49 @@
 .terminal-usage {
   order: 2;
   display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px 12px;
+  flex-direction: column;
+  flex: 0 0 clamp(150px, 25%, 280px);
+  max-width: 45%;
   min-width: 0;
-  padding: 7px 10px;
-  border-top: 1px solid var(--border);
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 12px;
+  border-left: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
-  font-size: calc(var(--ui-font-size, 14px) * 12 / 14);
+  font-size: calc(var(--ui-font-size, 14px) * 13 / 14);
   font-variant-numeric: tabular-nums;
 }
+.terminal-usage-header, .terminal-usage-session, .terminal-usage-heading, .terminal-usage-cost {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.terminal-usage-header { color: var(--muted); font-weight: 600; margin-bottom: 18px; }
+.terminal-usage-header button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.terminal-usage-header button:hover { color: var(--text); background: var(--bg); }
+.terminal-usage-session { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.terminal-usage-session > span { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.terminal-usage-session > .working { color: var(--text); }
+.terminal-usage-context { padding: 18px 0; }
+.terminal-usage-heading { margin-bottom: 12px; }
 .terminal-usage-meter {
   display: block;
-  flex: 0 1 150px;
-  min-width: 36px;
+  width: 100%;
   height: 9px;
   overflow: hidden;
   border-radius: 3px;
@@ -368,10 +405,17 @@
 .terminal-usage-meter.critical > span { background: #d15b57; }
 .terminal-usage-meter.unknown { opacity: .5; }
 .terminal-usage-label, .terminal-usage-percent, .terminal-usage-tokens, .terminal-usage-cost { white-space: nowrap; }
-.terminal-usage-percent { min-width: 42px; }
+.terminal-usage-percent { font-size: 16px; }
+.terminal-usage-tokens { display: block; margin-top: 12px; font-size: 18px; }
+.terminal-usage-caption { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
 .terminal-usage-divider { padding: 0 3px; }
-.terminal-usage-tokens, .terminal-usage-cost, .terminal-usage-note { color: var(--muted); }
-.terminal-usage-note { margin-left: auto; font-size: 11px; }
+.terminal-usage-cost { border-top: 1px solid var(--border); padding: 14px 0; flex-wrap: wrap; }
+.terminal-usage-cost > span, .terminal-usage-note { color: var(--muted); }
+.terminal-usage-cost > strong { font-weight: 500; }
+.terminal-usage-note { margin: 0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.terminal-usage.collapsed { flex-basis: 36px; max-width: 36px; padding: 8px 5px; overflow: hidden; }
+.terminal-usage.collapsed .terminal-usage-header { margin-bottom: 12px; }
+.terminal-usage-compact { align-self: center; font-size: 11px; color: var(--muted); writing-mode: vertical-rl; }
 .terminal-footer-status {
   flex: 1 1 0;
   min-width: 0;

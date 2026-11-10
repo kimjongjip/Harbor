@@ -45,7 +45,7 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.18.9",
+    version: "1.18.10",
     backendState: () => ipcRenderer.invoke("harbor:backend-state"),
     onBackendState: (callback) => {
       const listener = (_event, state) => callback(state);

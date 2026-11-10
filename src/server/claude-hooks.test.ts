@@ -75,11 +75,14 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
     hook_event_name: "SessionStart",
     session_id: "synthetic",
     cwd: "/fixture/a",
+    transcript_path: "/fixture/.claude/projects/-fixture-a/synthetic.jsonl",
   };
   assert.equal((await post(start, issued.token)).status, 401);
   assert.equal((await post(start)).status, 200);
   assert.equal(events.length, 1);
   assert.equal(events[0].id, "a");
+  assert.equal(events[0].event.transcript_path, start.transcript_path);
+  assert.equal(claudeHookSchema.parse({ ...start, transcript_path: null }).transcript_path, undefined);
   const usageBody = { session_id: "synthetic", context_window: { context_window_size: 1000000,
     current_usage: { input_tokens: 1000, cache_read_input_tokens: 31000, cache_creation_input_tokens: 10000 } }, cost: { total_cost_usd: 3.25 } };
   const postUsage = (body: any, bearer = issued.hookToken) => fetch(`${url}/usage`, {

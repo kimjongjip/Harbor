@@ -17,6 +17,8 @@ export const claudeHookSchema = z.object({
   ]),
   session_id: z.string().min(1).max(256),
   cwd: z.string().max(4096).optional(),
+  // Optional display metadata must never reject a native lifecycle/approval hook.
+  transcript_path: z.preprocess(value => typeof value === "string" && value.length <= 4096 ? value : undefined, z.string().optional()),
   notification_type: z.string().max(200).optional(),
   message: z.string().max(8000).optional(),
   tool_name: z.string().max(200).optional(),
