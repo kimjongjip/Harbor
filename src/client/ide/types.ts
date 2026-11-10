@@ -1,6 +1,11 @@
 import type { FileEntry } from "../../shared/types";
 
 export type IdeEncoding = "utf-8" | "utf-16le" | "utf-16be" | "cp949";
+export interface IdeMediaView {
+  imageZoom?: number | "fit";
+  pdfPage?: number;
+  pdfScale?: string | number;
+}
 export interface IdeFileDetails {
   terminalId: string;
   hostId: string;

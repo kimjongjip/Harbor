@@ -6,6 +6,7 @@ import IdeWorkspace from "./IdeWorkspace";
 import { createIdeApi, type IdeSelection } from "./types";
 import type { IdeChatAttachment } from "./IdeChatPanel";
 import { quoteIdeSelection } from "./annotationBridge";
+import IdeMediaPreview from "./IdeMediaPreview";
 
 const IdeChatPanel = lazy(() => import("./IdeChatPanel"));
 
@@ -69,6 +70,9 @@ export default function DesktopIdeView({
         {...props}
         api={editorApi}
         onQuote={quote}
+        renderMedia={(file, kind, view) => (
+          <IdeMediaPreview file={file} kind={kind} view={view} />
+        )}
         onPreview={(file) =>
           preview(file.path, { hostId: file.hostId, cwd: file.root })
         }

@@ -14,6 +14,7 @@ import { Files } from "../server/files.js";
 import { EditorFiles, createEditorRouter } from "../server/editor-files.js";
 import { sendMediaFile } from "../server/file-media.js";
 import type { HostConfig, TerminalInfo } from "../shared/types.js";
+import { pdfResources } from "../../vite.config.js";
 
 function largePng() {
   const width = 3200,
@@ -44,12 +45,15 @@ function largePng() {
 
 function largePdf() {
   const text = "BT /F1 24 Tf 50 740 Td (LARGE PDF PREVIEW VERIFIED) Tj ET\n";
+  const second = "BT /F1 24 Tf 50 740 Td (SECOND PAGE VERIFIED) Tj ET\n";
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     `<< /Length ${Buffer.byteLength(text)} >>\nstream\n${text}endstream`,
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >>",
+    `<< /Length ${Buffer.byteLength(second)} >>\nstream\n${second}endstream`,
   ];
   let value = "%PDF-1.7\n";
   const offsets = [0];
@@ -71,7 +75,7 @@ function largePdf() {
 }
 
 test(
-  "IDE opens large PDF, PNG, JPEG and SVG in real preview windows without text-size errors",
+  "IDE opens PDF and images in central tabs, preserves drafts and creates no popup",
   { skip: process.platform !== "win32", timeout: 180000 },
   async () => {
     const parent = resolve(".cache/ide-media-browser-tests");
@@ -115,10 +119,10 @@ test(
     await writeFile(
       join(directory, "fixture.tsx"),
       `
-import React from 'react';import{createRoot}from'react-dom/client';import IdeWorkspace from'/src/client/ide/IdeWorkspace';import{createIdeApi}from'/src/client/ide/types';import{monaco}from'/src/client/ide/monaco';import{PreviewProvider,usePreview}from'/src/client/ResourcePreview';import{ThemeProvider}from'/src/client/Theme';import{TypographyProvider}from'/src/client/Typography';import{setToken}from'/src/client/api';import'/src/client/styles.css';import'/src/client/themes.css';import'/src/client/rich-content.css';
+import React from 'react';import{createRoot}from'react-dom/client';import IdeWorkspace from'/src/client/ide/IdeWorkspace';import IdeMediaPreview from'/src/client/ide/IdeMediaPreview';import{createIdeApi}from'/src/client/ide/types';import{monaco}from'/src/client/ide/monaco';import{PreviewProvider,usePreview}from'/src/client/ResourcePreview';import{ThemeProvider}from'/src/client/Theme';import{TypographyProvider}from'/src/client/Typography';import{setToken}from'/src/client/api';import'/src/client/styles.css';import'/src/client/themes.css';import'/src/client/rich-content.css';
 setToken('fixture-token');window.monaco=monaco;
 const api=createIdeApi((p,init)=>fetch(p,{...init,headers:{...init.headers,'X-Harbor-Token':'fixture-token'}}));
-function Workspace(){const preview=usePreview();return <IdeWorkspace api={api} terminalId="fixture-terminal" hostId="fixture" hostLabel="Media fixture" onPreview={f=>preview(f.path,{hostId:f.hostId,cwd:f.root})}/>}
+function Workspace(){const preview=usePreview();return <IdeWorkspace api={api} terminalId="fixture-terminal" hostId="fixture" hostLabel="Media fixture" renderMedia={(file,kind,view)=><IdeMediaPreview file={file} kind={kind} view={view}/>} onPreview={f=>preview(f.path,{hostId:f.hostId,cwd:f.root})}/>}
 const target=new URLSearchParams(location.hash.slice(1)).get('target');createRoot(document.getElementById('root')).render(<ThemeProvider><TypographyProvider><PreviewProvider hosts={[${JSON.stringify(host)}]} onFolder={()=>{}} standalone={!!target} initialTarget={target?JSON.parse(target):undefined}>{!target&&<Workspace/>}</PreviewProvider></TypographyProvider></ThemeProvider>);`,
     );
     await writeFile(
@@ -129,7 +133,7 @@ const target=new URLSearchParams(location.hash.slice(1)).get('target');createRoo
       configFile: false,
       root: directory,
       cacheDir: join(directory, "vite"),
-      plugins: [react()],
+      plugins: [react(), pdfResources()],
       logLevel: "error",
       resolve: { alias: { "/src": resolve("src") } },
       build: { outDir: join(directory, "compiled"), minify: false },
@@ -226,73 +230,67 @@ const w=new BrowserWindow({show:false,width:1200,height:900,webPreferences:{cont
       await page.locator(".monaco-editor textarea").first().focus();
       await page.keyboard.press("Control+End");
       await page.keyboard.insertText("UNSAVED MEDIA DRAFT");
+      let popups = 0;
+      page.on("popup", () => popups++);
       for (const name of ["large.png", "large.jpg", "large.svg", "large.pdf"]) {
-        const opened = page.waitForEvent("popup");
         await page.getByRole("button", { name, exact: true }).click();
-        const preview = await opened;
-        preview.setDefaultTimeout(25000);
-        preview.on("pageerror", (e) => errors.push(e.message));
+        await page.locator(".ide-main .ide-media-host").waitFor();
         assert.equal(await page.locator(".ide-error").count(), 0);
+        assert.equal(
+          await page
+            .getByRole("tab", { name, exact: true })
+            .getAttribute("aria-selected"),
+          "true",
+        );
+        assert.equal(
+          await page
+            .getByRole("button", { name: "파일 저장", exact: true })
+            .isDisabled(),
+          true,
+        );
         if (name.endsWith(".pdf")) {
-          await preview.locator(".pdf-file-preview").waitFor();
-          try {
-            // Chromium's PDF renderer is nested inside its extension frame.
-            // The outer document iframe itself has no <embed> element.
-            let contentFrame;
-            const deadline = Date.now() + 25000;
-            while (!contentFrame && Date.now() < deadline) {
-              for (const frame of preview.frames()) {
-                if (
-                  !frame
-                    .url()
-                    .startsWith(origin + "/api/hosts/fixture/files/pdf")
-                )
-                  continue;
-                if (
-                  await frame
-                    .locator('embed[type="application/x-google-chrome-pdf"]')
-                    .count()
-                ) {
-                  contentFrame = frame;
-                  break;
-                }
-              }
-              if (!contentFrame)
-                await new Promise((done) => setTimeout(done, 100));
-            }
-            assert.ok(contentFrame, "The native PDF renderer must load");
-            await contentFrame.waitForFunction(
-              () =>
-                (document.querySelector<HTMLElement>("#sizer")?.offsetHeight ||
-                  0) > 0,
-            );
-          } catch (error) {
-            await preview.screenshot({ path: join(parent, "pdf-failure.png") });
-            await writeFile(
-              join(parent, "pdf-frames.json"),
-              JSON.stringify(
-                await Promise.all(
-                  preview.frames().map(async (frame) => ({
-                    url: frame.url(),
-                    html: await frame.content().catch(() => ""),
-                  })),
-                ),
-                null,
-                2,
-              ),
-            );
-            throw error;
-          }
-          await new Promise((done) => setTimeout(done, 1500));
-          await preview.screenshot({ path: join(parent, "large-pdf.png") });
+          await page.waitForFunction(() =>
+            document
+              .querySelector(".ide-pdf-scroll .textLayer")
+              ?.textContent?.includes("LARGE PDF PREVIEW VERIFIED"),
+          );
+          await page
+            .locator('.ide-pdf-scroll .page[data-page-number="1"] canvas')
+            .waitFor();
+          await page
+            .getByRole("button", { name: "PDF 다음 페이지", exact: true })
+            .click();
+          await page.waitForFunction(
+            () =>
+              document.querySelector<HTMLInputElement>(
+                '[aria-label="PDF 페이지"]',
+              )?.value === "2",
+          );
+          await page.waitForFunction(() =>
+            [...document.querySelectorAll(".ide-pdf-scroll .textLayer")].some(
+              (el) => el.textContent?.includes("SECOND PAGE VERIFIED"),
+            ),
+          );
+          await page
+            .getByRole("button", { name: "PDF 확대", exact: true })
+            .click();
+          await page
+            .getByRole("textbox", { name: "PDF 내용 찾기", exact: true })
+            .fill("SECOND");
+          await page
+            .getByRole("button", { name: "PDF 찾기", exact: true })
+            .click();
+          await page.locator(".ide-pdf-scroll .highlight").first().waitFor();
+          await page.screenshot({ path: join(parent, "central-pdf.png") });
         } else {
-          await preview.waitForFunction(() => {
-            const img =
-              document.querySelector<HTMLImageElement>(".image-viewer img");
+          await page.waitForFunction(() => {
+            const img = document.querySelector<HTMLImageElement>(
+              ".ide-image-scroll img",
+            );
             return img?.complete && img.naturalWidth > 0;
           });
-          const dimensions = await preview
-            .locator(".image-viewer img")
+          const dimensions = await page
+            .locator(".ide-image-scroll img")
             .evaluate((el) => ({
               width: (el as HTMLImageElement).naturalWidth,
               height: (el as HTMLImageElement).naturalHeight,
@@ -303,20 +301,83 @@ const w=new BrowserWindow({show:false,width:1200,height:900,webPreferences:{cont
               ? { width: 640, height: 480 }
               : { width: 3200, height: 2400 },
           );
-          if (name.endsWith(".png"))
-            await preview.screenshot({ path: join(parent, "large-image.png") });
+          if (name.endsWith(".png")) {
+            await page
+              .getByRole("button", { name: "이미지 확대", exact: true })
+              .click();
+            assert.ok(
+              (await page.locator(".ide-media-controls").innerText()).includes(
+                "125%",
+              ),
+            );
+            await page.screenshot({ path: join(parent, "central-image.png") });
+          }
         }
-        await preview.close();
+        assert.equal(popups, 0);
+        assert.equal(desktop.windows().length, 1);
+        assert.equal(
+          await page.evaluate(
+            () => (window as any).monaco.editor.getModels().length,
+          ),
+          1,
+          "Media tabs must not allocate text models",
+        );
         assert.ok(
           await page.evaluate(() =>
             (window as any).monaco.editor
-              .getModels()
-              .some((model: any) =>
-                model.getValue().includes("UNSAVED MEDIA DRAFT"),
-              ),
+              .getModels()[0]
+              .getValue()
+              .includes("UNSAVED MEDIA DRAFT"),
           ),
         );
       }
+      assert.equal(await page.getByRole("tab").count(), 5);
+      await page
+        .getByRole("button", { name: "large.pdf", exact: true })
+        .click();
+      assert.equal(
+        await page.getByRole("tab").count(),
+        5,
+        "Reopening media must reuse its tab",
+      );
+      await page.getByRole("tab", { name: "large.png", exact: true }).click();
+      assert.ok(
+        (await page.locator(".ide-media-controls").innerText()).includes(
+          "125%",
+        ),
+        "Image zoom survives tab switching",
+      );
+      await page.getByRole("tab", { name: "large.pdf", exact: true }).click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLInputElement>('[aria-label="PDF 페이지"]')
+            ?.value === "2",
+      );
+      await page
+        .getByRole("button", { name: "편집기 나누기", exact: true })
+        .click();
+      await page.getByRole("tab", { name: /^draft.md/ }).click();
+      await page
+        .locator(".ide-pane-shell")
+        .first()
+        .locator(".monaco-editor textarea")
+        .waitFor();
+      await page
+        .locator(".ide-pane-shell")
+        .nth(1)
+        .locator(".ide-pdf-scroll canvas")
+        .first()
+        .waitFor();
+      await page.screenshot({ path: join(parent, "central-split.png") });
+      await page
+        .getByRole("button", { name: "large.pdf 닫기", exact: true })
+        .click();
+      assert.equal(
+        await page.getByRole("tab", { name: "large.pdf", exact: true }).count(),
+        0,
+      );
+      assert.equal(await page.getByRole("tab").count(), 4);
+      assert.equal(popups, 0);
       for (const name of ["large.png", "large.jpg", "large.svg", "large.pdf"])
         assert.ok(
           requests.some(

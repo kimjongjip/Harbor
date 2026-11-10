@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   ChevronDown,
@@ -32,6 +32,7 @@ import {
   type IdeFileDetails,
   type IdeSelection,
   type IdeTree,
+  type IdeMediaView,
 } from "./types";
 import "./ide.css";
 import ResizableSidebar from "../ResizableSidebar";
@@ -41,7 +42,8 @@ import {
   type MarkdownRenderer,
 } from "./MarkdownReading";
 
-interface OpenDocument {
+interface TextDocument {
+  kind: "text";
   key: string;
   file: IdeFile;
   hostLabel?: string;
@@ -51,6 +53,18 @@ interface OpenDocument {
   markdownView?: "preview" | "source" | "split";
   disposeChange: () => void;
 }
+interface MediaDocument {
+  kind: "media";
+  key: string;
+  file: IdeFile;
+  hostLabel?: string;
+  media: "image" | "pdf";
+  revision: number;
+  views: [IdeMediaView, IdeMediaView];
+}
+type OpenDocument = TextDocument | MediaDocument;
+const isDirty = (doc: OpenDocument) =>
+  doc.kind === "text" && dirtyFile(doc.file, doc.model.getValue());
 export interface IdeWorkspaceProps {
   api: IdeApi;
   terminalId: string;
@@ -61,6 +75,11 @@ export interface IdeWorkspaceProps {
   visible?: boolean;
   onQuote?: (selection: IdeSelection) => Promise<void>;
   onPreview?: (file: IdeFile) => void;
+  renderMedia?: (
+    file: IdeFile,
+    kind: "image" | "pdf",
+    view: IdeMediaView,
+  ) => ReactNode;
   renderMarkdown?: MarkdownRenderer;
 }
 
@@ -192,7 +211,7 @@ function EditorPane({
   onFocus,
   onReady,
 }: {
-  document?: OpenDocument;
+  document?: TextDocument;
   comparison?: string;
   theme: string;
   onFocus: () => void;
@@ -279,6 +298,7 @@ export default function IdeWorkspace({
   visible = true,
   onQuote,
   onPreview,
+  renderMedia,
   renderMarkdown,
 }: IdeWorkspaceProps) {
   const [tree, setTree] = useState<IdeTree | null>(null);
@@ -308,11 +328,7 @@ export default function IdeWorkspace({
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (
-        documentsRef.current.some((doc) =>
-          dirtyFile(doc.file, doc.model.getValue()),
-        )
-      ) {
+      if (documentsRef.current.some(isDirty)) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -321,6 +337,7 @@ export default function IdeWorkspace({
     return () => {
       window.removeEventListener("beforeunload", warn);
       for (const doc of documentsRef.current) {
+        if (doc.kind !== "text") continue;
         doc.disposeChange();
         doc.model.dispose();
       }
@@ -351,9 +368,11 @@ export default function IdeWorkspace({
     };
   }, [api, terminalId, hostId]);
 
-  function updateDocument(key: string, update: Partial<OpenDocument>) {
+  function updateDocument(key: string, update: Partial<TextDocument>) {
     setDocuments((current) =>
-      current.map((doc) => (doc.key === key ? { ...doc, ...update } : doc)),
+      current.map((doc) =>
+        doc.key === key && doc.kind === "text" ? { ...doc, ...update } : doc,
+      ),
     );
   }
   async function open(path: string, encoding?: IdeEncoding, source?: IdeFile) {
@@ -378,7 +397,7 @@ export default function IdeWorkspace({
       if (generation.current !== ticket) return;
       const key = documentKey(file);
       const previous = documentsRef.current.find((doc) => doc.key === key);
-      if (previous) {
+      if (previous?.kind === "text") {
         if (
           previous.file.binding !== file.binding ||
           previous.file.version !== file.version
@@ -405,7 +424,8 @@ export default function IdeWorkspace({
         const listener = model.onDidChangeContent(() =>
           repaint((value) => value + 1),
         );
-        const document = {
+        const document: TextDocument = {
+          kind: "text",
           key,
           file,
           hostLabel:
@@ -417,8 +437,11 @@ export default function IdeWorkspace({
           model,
           disposeChange: () => listener.dispose(),
         };
-        documentsRef.current = [...documentsRef.current, document];
-        setDocuments((current) => [...current, document]);
+        documentsRef.current = [
+          ...documentsRef.current.filter((doc) => doc.key !== key),
+          document,
+        ];
+        setDocuments(documentsRef.current);
       }
       setPanes((old) => (focused === 0 ? [key, old[1]] : [old[0], key]));
       setStatus("");
@@ -426,6 +449,36 @@ export default function IdeWorkspace({
       if (generation.current !== ticket) return;
       setStatus("");
       if (error instanceof IdeApiError && error.details) {
+        const details = error.details;
+        if (
+          ["EDITOR_BINARY", "EDITOR_TOO_LARGE"].includes(error.code || "") &&
+          (details.preview === "image" || details.preview === "pdf") &&
+          renderMedia
+        ) {
+          const file = {
+            ...details,
+            content: "",
+            version: "",
+            binding: tree?.binding || "",
+          };
+          const key = documentKey(file);
+          const previous = documentsRef.current.find((doc) => doc.key === key);
+          if (!previous) {
+            const document: MediaDocument = {
+              kind: "media",
+              key,
+              file,
+              hostLabel,
+              media: details.preview,
+              revision: 0,
+              views: [{}, {}],
+            };
+            documentsRef.current = [...documentsRef.current, document];
+            setDocuments(documentsRef.current);
+          }
+          setPanes((old) => (focused === 0 ? [key, old[1]] : [old[0], key]));
+          return;
+        }
         if (
           ["EDITOR_BINARY", "EDITOR_TOO_LARGE"].includes(error.code || "") &&
           error.details.preview !== "download" &&
@@ -447,7 +500,7 @@ export default function IdeWorkspace({
     }
   }
 
-  async function save(doc: OpenDocument, against?: IdeFile) {
+  async function save(doc: TextDocument, against?: IdeFile) {
     if (doc.saving) return;
     const draft = doc.model.getValue();
     updateDocument(doc.key, { saving: true });
@@ -476,6 +529,16 @@ export default function IdeWorkspace({
   }
 
   async function refreshFile(doc: OpenDocument) {
+    if (doc.kind === "media") {
+      setDocuments((current) =>
+        current.map((item) =>
+          item.key === doc.key && item.kind === "media"
+            ? { ...item, revision: item.revision + 1 }
+            : item,
+        ),
+      );
+      return;
+    }
     if (doc.saving) return;
     setError("");
     setFileIssue(null);
@@ -498,8 +561,8 @@ export default function IdeWorkspace({
   }
   function close(doc: OpenDocument) {
     if (
-      doc.saving ||
-      (dirtyFile(doc.file, doc.model.getValue()) &&
+      (doc.kind === "text" && doc.saving) ||
+      (isDirty(doc) &&
         !window.confirm(
           `${fileName(doc.file.path)}의 저장하지 않은 변경을 버리고 닫을까요?`,
         ))
@@ -516,13 +579,15 @@ export default function IdeWorkspace({
           key === doc.key ? remaining.at(-1)?.key || "" : key,
         ) as [string, string],
     );
-    doc.disposeChange();
-    doc.model.dispose();
+    if (doc.kind === "text") {
+      doc.disposeChange();
+      doc.model.dispose();
+    }
   }
   async function quote() {
     const editor = editors.current[focused];
     const selection = editor?.getSelection();
-    if (!active || !editor || !selection || !onQuote) return;
+    if (active?.kind !== "text" || !editor || !selection || !onQuote) return;
     const value: IdeSelection = {
       terminalId: active.file.terminalId,
       hostId: active.file.hostId,
@@ -560,7 +625,7 @@ export default function IdeWorkspace({
       if (!target?.closest(".harbor-ide")) return;
       event.preventDefault();
       event.stopPropagation();
-      if (active && !active.conflict) void save(active);
+      if (active?.kind === "text" && !active.conflict) void save(active);
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
@@ -642,15 +707,13 @@ export default function IdeWorkspace({
                   <small>{doc.hostLabel || doc.file.hostId} · </small>
                 )}
                 {fileName(doc.file.path)}
-                {dirtyFile(doc.file, doc.model.getValue()) && (
-                  <span aria-label="저장 안 됨">●</span>
-                )}
+                {isDirty(doc) && <span aria-label="저장 안 됨">●</span>}
               </button>
               <button
                 title="파일 닫기"
                 aria-label={`${fileName(doc.file.path)} 닫기`}
                 onClick={() => close(doc)}
-                disabled={doc.saving}
+                disabled={doc.kind === "text" && doc.saving}
               >
                 <X size={13} />
               </button>
@@ -664,15 +727,17 @@ export default function IdeWorkspace({
           <button
             title="저장 (Ctrl+S)"
             aria-label="파일 저장"
-            disabled={!active || active.saving || !!active.conflict}
-            onClick={() => active && void save(active)}
+            disabled={
+              active?.kind !== "text" || active.saving || !!active.conflict
+            }
+            onClick={() => active?.kind === "text" && void save(active)}
           >
             <Save size={15} />
           </button>
           <button
             title="파일 새로고침 · 변경 비교"
             aria-label="파일 새로고침"
-            disabled={!active || active.saving}
+            disabled={!active || (active.kind === "text" && active.saving)}
             onClick={() => active && void refreshFile(active)}
           >
             <RefreshCw size={15} />
@@ -680,7 +745,7 @@ export default function IdeWorkspace({
           <button
             title="찾기 / 바꾸기 (Ctrl+F / Ctrl+H)"
             aria-label="찾기 및 바꾸기"
-            disabled={!active}
+            disabled={active?.kind !== "text"}
             onClick={() => {
               if (active && isMarkdownFile(active.file.path))
                 updateDocument(active.key, { markdownView: "source" });
@@ -700,7 +765,7 @@ export default function IdeWorkspace({
             title="저장된 버전과 비교"
             aria-label="변경 비교"
             aria-pressed={!!active && diffKey === active.key}
-            disabled={!active}
+            disabled={active?.kind !== "text"}
             onClick={() =>
               active && setDiffKey(diffKey === active.key ? "" : active.key)
             }
@@ -721,8 +786,8 @@ export default function IdeWorkspace({
           </button>
           {onPreview && (
             <button
-              title="파일 미리보기"
-              aria-label="파일 미리보기"
+              title="파일을 별도 창에서 열기"
+              aria-label="파일을 별도 창에서 열기"
               disabled={!active}
               onClick={() => active && onPreview(active.file)}
             >
@@ -734,7 +799,7 @@ export default function IdeWorkspace({
               className="ide-quote"
               title="선택한 코드로 AI에 질문"
               disabled={
-                !active ||
+                active?.kind !== "text" ||
                 quoteBusy ||
                 (isMarkdownFile(active.file.path) &&
                   (active.markdownView || "preview") === "preview")
@@ -746,7 +811,7 @@ export default function IdeWorkspace({
             </button>
           )}
         </div>
-        {active && isMarkdownFile(active.file.path) && (
+        {active?.kind === "text" && isMarkdownFile(active.file.path) && (
           <div
             className="ide-markdown-modes"
             role="group"
@@ -776,7 +841,7 @@ export default function IdeWorkspace({
             )}
           </div>
         )}
-        {active?.conflict && (
+        {active?.kind === "text" && active.conflict && (
           <div className="ide-conflict" role="alert">
             <span>
               서버 파일이 변경되었습니다. 왼쪽은 서버, 오른쪽은 내 편집
@@ -861,58 +926,69 @@ export default function IdeWorkspace({
                   key={index}
                   onPointerDown={() => setFocused(index)}
                 >
-                  <div
-                    className={`ide-document-pane ${doc && isMarkdownFile(doc.file.path) && !doc.conflict && diffKey !== doc.key ? `markdown-${doc.markdownView || "preview"}` : "source-only"}`}
-                  >
+                  {doc?.kind === "media" ? (
                     <div
-                      className="ide-source-host"
-                      hidden={
-                        !!doc &&
+                      className="ide-media-host"
+                      key={`${doc.key}:${doc.revision}`}
+                    >
+                      {renderMedia?.(doc.file, doc.media, doc.views[index])}
+                    </div>
+                  ) : (
+                    <div
+                      className={`ide-document-pane ${doc && isMarkdownFile(doc.file.path) && !doc.conflict && diffKey !== doc.key ? `markdown-${doc.markdownView || "preview"}` : "source-only"}`}
+                    >
+                      <div
+                        className="ide-source-host"
+                        hidden={
+                          !!doc &&
+                          isMarkdownFile(doc.file.path) &&
+                          !doc.conflict &&
+                          diffKey !== doc.key &&
+                          (doc.markdownView || "preview") === "preview"
+                        }
+                      >
+                        <EditorPane
+                          document={doc}
+                          comparison={
+                            doc && (doc.conflict || diffKey === doc.key)
+                              ? (doc.conflict?.content ?? doc.file.content)
+                              : undefined
+                          }
+                          theme={monacoTheme}
+                          onFocus={() => setFocused(index)}
+                          onReady={(editor) => {
+                            editors.current[index] = editor;
+                          }}
+                        />
+                      </div>
+                      {doc &&
                         isMarkdownFile(doc.file.path) &&
                         !doc.conflict &&
                         diffKey !== doc.key &&
-                        (doc.markdownView || "preview") === "preview"
-                      }
-                    >
-                      <EditorPane
-                        document={doc}
-                        comparison={
-                          doc && (doc.conflict || diffKey === doc.key)
-                            ? (doc.conflict?.content ?? doc.file.content)
-                            : undefined
-                        }
-                        theme={monacoTheme}
-                        onFocus={() => setFocused(index)}
-                        onReady={(editor) => {
-                          editors.current[index] = editor;
-                        }}
-                      />
+                        doc.markdownView !== "source" && (
+                          <MarkdownReading
+                            key={doc.key}
+                            text={doc.model.getValue()}
+                            file={doc.file}
+                            onOpenFile={(path) =>
+                              void open(path, undefined, doc.file)
+                            }
+                            renderMarkdown={renderMarkdown}
+                          />
+                        )}
                     </div>
-                    {doc &&
-                      isMarkdownFile(doc.file.path) &&
-                      !doc.conflict &&
-                      diffKey !== doc.key &&
-                      doc.markdownView !== "source" && (
-                        <MarkdownReading
-                          key={doc.key}
-                          text={doc.model.getValue()}
-                          file={doc.file}
-                          onOpenFile={(path) =>
-                            void open(path, undefined, doc.file)
-                          }
-                          renderMarkdown={renderMarkdown}
-                        />
-                      )}
-                  </div>
+                  )}
                 </div>
               );
             })}
         </div>
         <div className="ide-status" role="status">
           {status ||
-            (active
-              ? `${active.model.getLanguageId()} · ${(active.file.encoding || "utf-8").toUpperCase()}${active.file.bom ? " BOM" : ""}${dirtyFile(active.file, active.model.getValue()) ? " · 저장하지 않은 변경" : ""}`
-              : "파일은 선택한 터미널의 서버에서 열립니다.")}
+            (active?.kind === "media"
+              ? `${active.media === "pdf" ? "PDF" : "이미지"} · 읽기 전용`
+              : active
+                ? `${active.model.getLanguageId()} · ${(active.file.encoding || "utf-8").toUpperCase()}${active.file.bom ? " BOM" : ""}${dirtyFile(active.file, active.model.getValue()) ? " · 저장하지 않은 변경" : ""}`
+                : "파일은 선택한 터미널의 서버에서 열립니다.")}
         </div>
       </div>
     </section>

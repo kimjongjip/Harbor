@@ -9,6 +9,7 @@ import { List, Minus, Plus } from "lucide-react";
 import { Markdown } from "../RichMarkdown";
 import { classifyLink, fileParentDirectory } from "../../shared/links";
 import type { IdeFile } from "./types";
+import { fileMediaKind } from "../../shared/file-media";
 
 export const isMarkdownFile = (filename: string) =>
   /\.(?:md|markdown|mdown)$/i.test(filename);
@@ -19,7 +20,11 @@ export function markdownFileLink(
   filename: string,
 ): string | null {
   const target = classifyLink(href.split("#")[0]);
-  if (target.kind !== "file" || !isMarkdownFile(target.path)) return null;
+  if (
+    target.kind !== "file" ||
+    (!isMarkdownFile(target.path) && !fileMediaKind(target.path))
+  )
+    return null;
   if (/^(?:[/\\]|[A-Za-z]:[/\\]|~[/\\])/.test(target.path)) return target.path;
   const parent = fileParentDirectory(filename);
   const separator = parent.includes("\\") ? "\\" : "/";
