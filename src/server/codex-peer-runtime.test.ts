@@ -40,6 +40,7 @@ async function fixture(
   const states: string[] = [];
   const answers: { terminalId: string; answer: CodexCompletedAnswer }[] = [];
   const usages: any[] = [];
+  const crews: any[] = [];
   const completed: { terminalId: string; sessionId: string; turnId: string }[] =
     [];
   const failures: { terminalId: string; sessionId: string; notice: string }[] =
@@ -109,6 +110,8 @@ async function fixture(
   });
   const runtime = new CodexPeerRuntime({
     onUsage: (terminalId, usage) => usages.push({ terminalId, usage }),
+    onCrew: (terminalId, sessionId, crew) =>
+      crews.push({ terminalId, sessionId, crew }),
     connect: async (_id, port) => {
       const stream = createConnection({ host: "127.0.0.1", port });
       await once(stream, "connect");
@@ -136,6 +139,7 @@ async function fixture(
     failures,
     answers,
     usages,
+    crews,
     completed,
     notify(method: string, params: any) {
       assert.ok(connection);
@@ -160,20 +164,84 @@ async function fixture(
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
 
+test("native crew observes only the bound parent, sends no child requests, and resets on session change", async () => {
+  const app = await fixture();
+  try {
+    const requests = app.requests.length;
+    const item = {
+      type: "subAgentActivity",
+      agentThreadId: "child",
+      agentPath: "/root/reviewer",
+      kind: "started",
+    };
+    app.notify("item/started", { threadId: "unrelated", item });
+    await settle();
+    assert.equal(app.crews.length, 0);
+    app.notify("item/started", { threadId: sessionId, item });
+    await settle();
+    assert.equal(app.crews.at(-1).crew.agents[0].state, "working");
+    app.notify("item/completed", {
+      threadId: sessionId,
+      item: { ...item, kind: "completed" },
+    });
+    await settle();
+    assert.equal(app.crews.at(-1).crew.agents[0].state, "completed");
+    assert.equal(
+      app.requests.length,
+      requests,
+      "display telemetry cannot read/resume a child or submit input",
+    );
+    app.notify("thread/started", {
+      thread: { id: "new-primary", source: "cli" },
+    });
+    app.notify("item/completed", { threadId: sessionId, item });
+    app.notify("item/started", {
+      threadId: "new-primary",
+      item: { ...item, agentThreadId: "new-child" },
+    });
+    await settle();
+    assert.equal(app.crews.at(-1).sessionId, "new-primary");
+    assert.deepEqual(
+      app.crews.at(-1).crew.agents.map((a: any) => a.id),
+      ["new-child"],
+    );
+    app.runtime.disposeAll();
+    assert.equal(
+      app.crews.at(-1).crew.source,
+      "history",
+      "a disconnected child no longer animates as a live state",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 test("native context events update only the bound main conversation without sending any input", async () => {
   const app = await fixture();
   try {
     app.runtime.setSession("fixture-terminal", sessionId);
     const before = app.requests.length;
-    const tokenUsage = { last: { totalTokens: 42000 }, total: { totalTokens: 8000000 }, modelContextWindow: 1000000 };
-    app.notify("thread/tokenUsage/updated", { threadId: "child-session", tokenUsage });
-    app.notify("thread/tokenUsage/updated", { threadId: sessionId, tokenUsage });
+    const tokenUsage = {
+      last: { totalTokens: 42000 },
+      total: { totalTokens: 8000000 },
+      modelContextWindow: 1000000,
+    };
+    app.notify("thread/tokenUsage/updated", {
+      threadId: "child-session",
+      tokenUsage,
+    });
+    app.notify("thread/tokenUsage/updated", {
+      threadId: sessionId,
+      tokenUsage,
+    });
     await settle();
     assert.equal(app.usages.length, 1);
     assert.equal(app.usages[0].usage.usedTokens, 42000);
     assert.equal(app.usages[0].usage.contextWindow, 1000000);
     assert.equal(app.requests.length, before);
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+  }
 });
 
 test("IDE text enters the exact native conversation FIFO without peer instructions or peer receipts", async () => {

@@ -115,6 +115,35 @@ test("bounded Codex scan advances incrementally, survives partial records, and r
   store.clear("h");
 });
 
+test("split UTF-8 agent names survive incremental history reads", async () => {
+  const store = new CodexUsageHistory();
+  const content = Buffer.from(
+    tokens(100, 0, 10) +
+      line({
+        type: "event_msg",
+        payload: {
+          type: "sub_agent_activity",
+          agent_thread_id: "child",
+          agent_path: "/root/코드검토",
+          kind: "started",
+        },
+      }),
+  );
+  const read = async (start: number) => ({
+    size: content.length,
+    data: content.subarray(start, start + 1),
+  });
+  let value = await store.read("h", "s", "/file", read, async () =>
+    content.toString(),
+  );
+  while (value?.costStatus === "loading")
+    value = await store.read("h", "s", "/file", read, async () =>
+      content.toString(),
+    );
+  assert.equal(value?.crew?.agents[0].name, "코드검토");
+  store.shutdown();
+});
+
 test("current context does not wait for the old cost scan, and closing the host cancels it", async () => {
   const store = new CodexUsageHistory();
   let release!: (chunk: { size: number; data: Buffer }) => void,

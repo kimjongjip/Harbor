@@ -1773,6 +1773,7 @@ export default function TerminalPane({
           terminalId={info.id} provider={info.agentKind}
           sessionId={historySessionId || info.agentSessionId || info.resumeThreadId}
           active={active} working={info.agentState === "working"}
+          waiting={info.agentState === "waiting"}
         />}
       </div>
       {nativeTerminal && (

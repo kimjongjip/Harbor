@@ -118,6 +118,7 @@ let research: ResearchLabs;
 const peerGenerations = new Map<string, number>();
 const codexPeers = new CodexPeerRuntime({
   onUsage: (id, usage) => terminalUsage.put(id, usage),
+  onCrew: (id, sessionId, crew) => terminalUsage.putCrew(id, "codex", sessionId, crew),
   onCompacted: (id) => terminalUsage.compact(id),
   connect: (id, peerPort) => terminals.connectPeerRuntime(id, peerPort),
   onSession: (id, sessionId) => {
@@ -967,7 +968,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.11" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.12" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({

@@ -15,6 +15,8 @@ Windows에서 로컬·SSH 터미널과 Codex·Claude Code 세션을 관리하는
 
 관리자 역할의 AI에게 새 Claude·Codex를 띄워 공동 작업을 맡기고 진행·결과를 관리하도록 요청할 수도 있습니다. 두 참여자는 별도 대화로 실행되며 **연구실** 탭에서 확인합니다. [관리자 AI 사용법](docs/user-guide.md#ai에게-새-연구실-맡기기)을 참고하세요.
 
+오른쪽 **Harbor 패널**에서 Claude·Codex의 컨텍스트 사용량과 에이전트 활동을 확인합니다. 경계선을 드래그해 너비를 조절하고, 캐릭터 설정에서 고양이·로봇·여우와 크기·애니메이션을 선택합니다. 별도 Crew 설치 없이 사용합니다. [패널 사용법](docs/user-guide.md#패널-크기와-에이전트-캐릭터-11812)
+
 ## Windows 빠른 시작
 
 Windows 10/11 **x64**, Windows PowerShell 5.1, 인터넷 연결, Git이 필요합니다. Git이 없으면 저장소의 **Code → Download ZIP**으로 내려받아 압축을 풀어도 됩니다.

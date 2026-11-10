@@ -49,6 +49,19 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         costUsd: partial ? null : 3.25,
         updatedAt: Date.now(),
         source: partial ? "history" : "native",
+        crew: {
+          source: "native",
+          updatedAt: Date.now(),
+          agents: [
+            {
+              id: "reviewer",
+              name: "코드 검토",
+              state: "working",
+              model: "synthetic-model",
+            },
+            { id: "researcher", name: "자료 확인", state: "completed" },
+          ],
+        },
       };
       if (hold && req.query.sessionId === first) {
         hold = false;
@@ -86,7 +99,7 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
     const main = join(directory, "electron.cjs");
     await writeFile(
       main,
-      `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(directory, "profile"))});app.commandLine.appendSwitch('disable-gpu');app.whenReady().then(()=>new BrowserWindow({show:false,width:850,height:400,webPreferences:{backgroundThrottling:false,contextIsolation:true,sandbox:true}}).loadURL('http://127.0.0.1:${(server.address() as any).port}/'));app.on('window-all-closed',()=>app.quit());`,
+      `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(directory, "profile"))});app.commandLine.appendSwitch('disable-gpu');app.whenReady().then(()=>new BrowserWindow({show:false,width:850,height:800,webPreferences:{backgroundThrottling:false,contextIsolation:true,sandbox:true}}).loadURL('http://127.0.0.1:${(server.address() as any).port}/'));app.on('window-all-closed',()=>app.quit());`,
     );
     let desktop: Awaited<ReturnType<typeof _electron.launch>> | undefined;
     try {
@@ -129,15 +142,111 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         "usage is a right column, never a bottom row or an overlay",
       );
       const renders = await page.evaluate(() => (window as any).renders);
+      await page.screenshot({ path: join(directory, "crew-cat.png") });
       await page.getByRole("textbox").fill("한글 English 즉시 입력 /");
       await page.evaluate(
         () => ((window as any).inputNode = document.querySelector("textarea")),
+      );
+      const resize = page.getByRole("separator", {
+        name: "Harbor 패널 너비 조절",
+      });
+      const handle = (await resize.boundingBox())!;
+      await page.mouse.move(handle.x + 3, handle.y + 40);
+      await page.mouse.down();
+      await page.mouse.move(handle.x - 97, handle.y + 40, { steps: 10 });
+      await page.mouse.up();
+      assert.ok(
+        Math.abs(
+          (await page.locator(".terminal-usage").boundingBox())!.width - 380,
+        ) < 2,
+      );
+      await resize.press("Shift+ArrowLeft");
+      assert.equal(await resize.getAttribute("aria-valuenow"), "420");
+      assert.equal(
+        await page.evaluate(() =>
+          localStorage.getItem("harbor.usagePanelWidth"),
+        ),
+        "420",
+      );
+      assert.equal(
+        await page.evaluate(() => (window as any).renders),
+        renders,
+        "dragging does not redraw the parent or transcript",
+      );
+      await page.getByRole("button", { name: "캐릭터 설정" }).click();
+      await page.getByRole("button", { name: "로봇", exact: true }).click();
+      await page.screenshot({ path: join(directory, "crew-robot.png") });
+      await page.getByRole("button", { name: "여우", exact: true }).click();
+      await page.getByRole("slider", { name: "캐릭터 크기" }).press("End");
+      assert.equal(
+        await page.locator(".crew-scale-label output").innerText(),
+        "150%",
+      );
+      const motion = page.getByRole("checkbox", {
+        name: "애니메이션",
+        exact: true,
+      });
+      await motion.uncheck();
+      assert.equal(
+        await page
+          .locator(".crew-main .crew-body")
+          .evaluate((e) => getComputedStyle(e).animationPlayState),
+        "paused",
+      );
+      await motion.check();
+      await page.locator(".crew-main").scrollIntoViewIfNeeded();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".terminal-crew")
+            ?.getAttribute("data-motion") === "on",
+      );
+      const before = await page
+        .locator(".crew-main .crew-body")
+        .evaluate((e) => e.getAnimations()[0].currentTime as number);
+      await page.waitForTimeout(170);
+      const after = await page
+        .locator(".crew-main .crew-body")
+        .evaluate((e) => e.getAnimations()[0].currentTime as number);
+      assert.ok(
+        after > before,
+        `CSS animation advances independently of usage polling and React (${before} -> ${after})`,
+      );
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      assert.equal(
+        await page
+          .locator(".crew-main .crew-body")
+          .evaluate((e) => getComputedStyle(e).animationName),
+        "none",
+      );
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await page.evaluate(() => {
+        (window as any).visibility = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".terminal-crew")
+            ?.getAttribute("data-motion") === "off",
+      );
+      await page.evaluate(() => {
+        (window as any).visibility = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.getByRole("button", { name: "캐릭터 설정" }).click();
+      assert.equal(await page.locator(".crew-agent").count(), 2);
+      assert.equal(
+        await page.locator(".crew-finished summary").innerText(),
+        "이전 에이전트 1개",
       );
       await page.getByRole("button", { name: "상태 패널 접기" }).click();
       assert.ok(
         (await page.locator(".terminal-usage").boundingBox())!.width <= 36,
       );
       await page.getByRole("button", { name: "상태 패널 펼치기" }).click();
+      assert.equal(await resize.getAttribute("aria-valuenow"), "420");
+      assert.equal(await page.locator(".crew-main .crew-fox").count(), 1);
       assert.equal(
         await page.evaluate(
           () =>
@@ -210,6 +319,14 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         document.body.style.background = "#1c212a";
       });
       await page.screenshot({ path: join(directory, "dark-narrow.png") });
+      await page.setViewportSize({ width: 850, height: 800 });
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".terminal-usage-resizer")
+            ?.getAttribute("aria-valuenow") === "420",
+      );
+      await page.screenshot({ path: join(directory, "crew-dark.png") });
       partial = true;
       await page.waitForFunction(() =>
         document
@@ -237,6 +354,12 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       );
       await page.evaluate(() => (window as any).setActive(false));
       await page.waitForTimeout(100);
+      assert.equal(
+        await page
+          .locator(".crew-main .crew-body")
+          .evaluate((e) => getComputedStyle(e).animationPlayState),
+        "paused",
+      );
       const paused = reads;
       await page.waitForTimeout(2200);
       assert.equal(reads, paused, "inactive panes stop polling");
@@ -261,6 +384,25 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         null,
         "missing data is not zero",
       );
+      assert.equal(
+        await page.locator(".crew-agent").count(),
+        0,
+        "old-session agents cannot leak into the new conversation",
+      );
+      await page.reload();
+      await page.waitForSelector(".crew-main .crew-fox");
+      assert.equal(
+        await resize.getAttribute("aria-valuenow"),
+        "420",
+        "width survives a page reload",
+      );
+      await page.getByRole("button", { name: "캐릭터 설정" }).click();
+      assert.equal(
+        await page.getByRole("slider", { name: "캐릭터 크기" }).inputValue(),
+        "150",
+      );
+      await resize.dblclick();
+      assert.equal(await resize.getAttribute("aria-valuenow"), "280");
       assert.deepEqual(errors, []);
       console.log(`Usage preview: ${directory}`);
     } finally {

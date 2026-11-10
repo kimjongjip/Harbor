@@ -1,5 +1,7 @@
 import { codexUsage, codexUsageTail } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
+import { TerminalAgentRoster } from "./terminal-agent-roster.js";
+import { StringDecoder } from "node:string_decoder";
 
 // USD / 1M tokens, Standard API equivalents, checked 2026-11-10.
 // https://developers.openai.com/api/docs/pricing
@@ -62,6 +64,7 @@ export class CodexUsageLedger {
   private previous = zero();
   private fragment = "";
   private skipping = false;
+  private crew = new TerminalAgentRoster();
   constructor(readonly sessionId: string) {}
   append(text: string) {
     const lines = (this.fragment + text).split("\n");
@@ -84,6 +87,13 @@ export class CodexUsageLedger {
     }
   }
   private record(row: any) {
+    if (row.type === "event_msg") {
+      const stamp = Date.parse(row.timestamp);
+      this.crew.observe(
+        row.payload,
+        Number.isFinite(stamp) ? stamp : Date.now(),
+      );
+    }
     if (row.type === "turn_context" && typeof row.payload?.model === "string")
       this.model = row.payload.model.slice(0, 150);
     if (row.type === "compacted") {
@@ -134,6 +144,7 @@ export class CodexUsageLedger {
     if (!this.usage) return null;
     return {
       ...this.usage,
+      crew: this.crew.snapshot("history"),
       model: this.model,
       costUsd: this.priced ? this.cost : null,
       costSource: "api-estimate",
@@ -153,6 +164,7 @@ type Entry = {
   file: string;
   offset: number;
   ledger: CodexUsageLedger;
+  decoder: StringDecoder;
   pending?: Promise<void>;
   cancelled?: boolean;
   failed?: boolean;
@@ -170,7 +182,12 @@ export class CodexUsageHistory {
     let e = this.entries.get(key);
     if (!e || e.file !== file) {
       if (e) e.cancelled = true;
-      e = { file, offset: 0, ledger: new CodexUsageLedger(sessionId) };
+      e = {
+        file,
+        offset: 0,
+        ledger: new CodexUsageLedger(sessionId),
+        decoder: new StringDecoder("utf8"),
+      };
       this.entries.set(key, e);
     }
     this.entries.delete(key);
@@ -192,12 +209,12 @@ export class CodexUsageHistory {
           if (size < entry.offset) {
             entry.offset = 0;
             entry.ledger = new CodexUsageLedger(sessionId);
+            entry.decoder = new StringDecoder("utf8");
             continue;
           }
           if (!chunk.data.length) break;
-          // Usage/model fields are ASCII; decode complete UTF-8 independently of
-          // content, which is deliberately never kept or returned by this reader.
-          entry.ledger.append(chunk.data.toString("utf8"));
+          // Preserve split UTF-8 names while retaining display metadata only.
+          entry.ledger.append(entry.decoder.write(chunk.data));
           entry.offset += chunk.data.length;
           if (entry.offset >= size) break;
           await new Promise<void>((resolve) => setImmediate(resolve));

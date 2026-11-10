@@ -21,6 +21,14 @@ let generation = 0;
 let credentials;
 let usagePending = false;
 let latestUsage;
+let usageTimer;
+
+function watchUsage($) {
+  usageTimer?.cancel();
+  queueUsage($);
+  // The UI animates locally; native metadata needs only a quiet status pulse.
+  usageTimer = $.clock.every(2500, () => queueUsage($));
+}
 
 function keep(key, value) {
   cache.delete(key);
@@ -63,7 +71,12 @@ function queueUsage($, value) {
       const tokens = context?.tokens ?? context?.breakdown?.totalTokens;
       const known = typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0;
       const model = await $.session.model().catch(() => undefined);
+      const facts = await $.agent.list().catch(() => undefined);
       if (epoch !== generation) return;
+      const clean = (value, length) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, length) : undefined;
+      const agents = Array.isArray(facts) ? facts.filter(agent => typeof agent?.id === 'string' && /^[A-Za-z0-9_./:-]{1,128}$/.test(agent.id))
+        .sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running')).slice(0,32)
+        .map(agent => ({id:agent.id,name:clean(agent.name || agent.type,48),status:clean(agent.status,24)})) : undefined;
       const payload = {session_id: auth.sessionId, model: {id: model},
         context_window: {context_window_size: context?.window,
           current_usage: known ? {input_tokens: tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0} : null},
@@ -71,6 +84,7 @@ function queueUsage($, value) {
         harbor_context_estimated: context?.tokens === undefined && known,
         harbor_compact_limit: context?.breakdown?.rawMaxTokens,
         harbor_updated_at: await $.clock.now(),
+        ...(agents ? {harbor_agents: agents} : {}),
       };
       // A tiny, session-scoped fallback also survives a bridge reconnect and
       // lets an already running older Harbor read the figures without restart.
@@ -141,7 +155,7 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
-    queueUsage($);
+    watchUsage($);
     return next(e);
   });
 
@@ -158,11 +172,13 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
-    queueUsage($);
+    watchUsage($);
     return next(e);
   });
 
   on('session.end', async ($, e, next) => {
+    usageTimer?.cancel();
+    usageTimer = undefined;
     generation++;
     cache.clear();
     credentials = undefined;

@@ -1,5 +1,17 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.12 패널 리사이즈와 Harbor 캐릭터
+
+`TerminalPanelResize`는 같은 aside의 CSS 너비만 바꾼다. 드래그 프레임마다 React 상태·전역 상태를 갱신하지 않는다. 선호 너비를 로컬에 저장하고 `ResizeObserver`로 가용 폭에 맞춰 제한한다. 좁아졌다 다시 넓어지는 경우 선호 너비를 보존하며, 최초 자식 layout effect에서 부모 ref가 아직 연결되지 않은 경우도 처리한다. 기존 xterm·입력·소켓은 유지한다.
+
+`CrewCharacter`는 Harbor에서 새로 그린 SVG다. [Agent Crew](https://github.com/kimjongjip/agent-crew)의 책상 앞 작업·눈 깜빡임·상태 표현을 참고했으며 원본 소스·그림은 포함하지 않는다. 고양이·로봇·여우와 크기·동작 설정을 `TerminalCrew` 안에서 관리한다. CSS transform/opacity로 움직이며 React 프레임 타이머나 터미널 재렌더를 만들지 않는다. 비활성 탭·문서 숨김·사용자의 동작 끄기·reduced-motion을 반영한다.
+
+Claude 모듈은 기존 사용량 큐에서 `$.agent.list()`의 ID·짧은 이름·상태만 최대 32개 전송한다. 2.5초 간격의 네이티브 상태 확인을 사용하며 세션 변경 시 타이머를 교체하고 종료 시 취소한다. 대화·프롬프트·도구 결과는 포함하지 않고 16KiB 스냅샷 범위를 유지한다. 상태 확인은 `ui.invalidate`를 호출하지 않는다. 실행 중인 구서버도 기존 인증된 파일 읽기로 이 작은 스냅샷을 이용할 수 있다.
+
+Codex `TerminalAgentRoster`는 이미 연결된 부모 대화의 `collabAgentToolCall`·`subAgentActivity`를 처리한다. 작업 도구 완료와 자식 에이전트 완료를 구분하며 다른 대화의 이벤트를 거부한다. 추가 child read/resume/start나 입력 제출은 없다. 연결 종료 시 최근 기록으로 전환하고 세션 변경 시 목록을 초기화한다. 공유 대화는 기존 증분 rollout 읽기에서 같은 메타데이터를 추출한다. UTF-8 이름의 청크 경계를 보존하고 최대 32개의 표시 정보만 유지한다. 사용량 캐시와 분리해 상태 변경이 비용 집계를 기다리지 않는다. 프로토콜 근거: [Codex app-server](https://learn.chatgpt.com/docs/app-server), [공개 item 정의](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/item.rs).
+
+검증은 격리된 네이티브 이벤트·타이머·기록 fixture와 숨긴 Electron에서 수행한다. 너비 드래그·키보드·새로고침 복원·테마·좁은 화면·설정 저장·동작 중지·입력 DOM 보존·부모 렌더 수·이전 세션 응답 격리를 확인한다. 실행 중 설치에는 해시된 화면 자산과 index만 안전하게 추가하며 자동 새로고침이나 재시작을 하지 않는다. 새 백엔드는 다음 정상 실행용으로 준비하고 적용 상태를 구분한다.
+
 ## 1.18.11 실제 한도·비용 연결
 
 `createBridgeRouter`를 production listener와 훅 통합 테스트에서 함께 사용한다. 기존 `all("/bridge/claude", ...)`는 `/usage` 하위 경로를 받지 못했으므로 `use`로 고쳤다. 이 listener는 UI·bootstrap을 노출하지 않는다. 사용량 payload의 토큰·세션·제공자 검증은 기존 브리지 인증을 유지한다.

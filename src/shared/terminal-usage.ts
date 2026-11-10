@@ -1,3 +1,8 @@
+import {
+  terminalAgents,
+  type TerminalCrewSnapshot,
+} from "./terminal-agents.js";
+
 /** A provider-reported snapshot, never a sum of every request in a conversation. */
 export interface TerminalUsage {
   provider: "codex" | "claude";
@@ -13,6 +18,7 @@ export interface TerminalUsage {
   compactLimit?: number;
   costSource?: "native" | "api-estimate";
   costStatus?: "loading" | "partial" | "unpriced";
+  crew?: TerminalCrewSnapshot;
 }
 
 export interface TerminalUsageResponse {
@@ -60,7 +66,14 @@ export function claudeUsage(
     context.used_percentage <= 100
       ? context.used_percentage
       : null;
-  if (used === null && window === null && cost === null && percent === null)
+  const agents = terminalAgents(value.harbor_agents);
+  if (
+    used === null &&
+    window === null &&
+    cost === null &&
+    percent === null &&
+    !agents
+  )
     return null;
   const model = value.model?.id;
   return {
@@ -74,6 +87,9 @@ export function claudeUsage(
     updatedAt,
     source: "native",
     costSource: "native",
+    ...(agents
+      ? { crew: { agents, updatedAt, source: "native" as const } }
+      : {}),
     ...(typeof model === "string" && /^[A-Za-z0-9._:[\]-]{1,150}$/.test(model)
       ? { model }
       : {}),

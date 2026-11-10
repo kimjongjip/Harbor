@@ -242,6 +242,19 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         /UNSENT DRAFT/,
       );
       await page.waitForTimeout(400);
+      const resizeHandle = page.getByRole("separator", { name: "Harbor 패널 너비 조절" });
+      const resizeBox = (await resizeHandle.boundingBox())!;
+      const terminalBeforeResize = await page.evaluateHandle(() => document.querySelector(".xterm-helper-textarea"));
+      const socketsBeforeResize = socketsOpened;
+      await page.mouse.move(resizeBox.x + 3, resizeBox.y + 40);
+      await page.mouse.down();
+      await page.mouse.move(resizeBox.x - 77, resizeBox.y + 40, { steps: 8 });
+      await page.mouse.up();
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(old => old === document.querySelector(".xterm-helper-textarea"), terminalBeforeResize), true);
+      assert.equal(socketsOpened, socketsBeforeResize, "resizing reflows the existing terminal without reconnecting");
+      assert.equal(await page.evaluate(() => (window as any).mounts), 1);
+      await terminalBeforeResize.dispose();
       const baseline = {
         sizes: sizes.length,
         sockets: socketsOpened,

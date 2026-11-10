@@ -1,4 +1,5 @@
 import type { TerminalUsage } from "../shared/terminal-usage.js";
+import type { TerminalCrewSnapshot } from "../shared/terminal-agents.js";
 export { claudeUsage } from "../shared/terminal-usage.js";
 
 const count = (value: unknown): number | null =>
@@ -127,6 +128,14 @@ export function claudeUsageTail(
 /** Independent of terminal/global state: no transcript renders or disk writes on updates. */
 export class TerminalUsageStore {
   private values = new Map<string, TerminalUsage>();
+  private crews = new Map<
+    string,
+    {
+      provider: TerminalUsage["provider"];
+      sessionId: string;
+      crew: TerminalCrewSnapshot;
+    }
+  >();
   private reads = new Map<
     string,
     { time: number; pending: Promise<TerminalUsage | null> }
@@ -137,14 +146,28 @@ export class TerminalUsageStore {
     if (this.values.size > 256)
       this.values.delete(this.values.keys().next().value!);
   }
+  putCrew(
+    terminalId: string,
+    provider: TerminalUsage["provider"],
+    sessionId: string,
+    crew: TerminalCrewSnapshot,
+  ) {
+    this.crews.delete(terminalId);
+    this.crews.set(terminalId, { provider, sessionId, crew });
+    if (this.crews.size > 256)
+      this.crews.delete(this.crews.keys().next().value!);
+  }
   clear(terminalId: string) {
     this.values.delete(terminalId);
+    this.crews.delete(terminalId);
     for (const key of this.reads.keys())
       if (key.startsWith(`${terminalId}\0`)) this.reads.delete(key);
   }
   compact(terminalId: string) {
     const previous = this.values.get(terminalId);
+    const crew = this.crews.get(terminalId);
     this.clear(terminalId);
+    if (crew) this.crews.set(terminalId, crew);
     if (previous)
       this.put(terminalId, {
         ...previous,
@@ -165,20 +188,45 @@ export class TerminalUsageStore {
         ? native
         : undefined;
     if (currentNative && provider === "claude") return currentNative;
+    const withCrew = (value: TerminalUsage | null) => {
+      const current = this.crews.get(terminalId);
+      if (current?.provider !== provider || current.sessionId !== sessionId)
+        return value;
+      if (
+        current.crew.source === "history" &&
+        value?.crew &&
+        value.crew.updatedAt > current.crew.updatedAt
+      )
+        return value;
+      // Prefer newly received native changes over a cached history response.
+      return {
+        ...(value ||
+          snapshot(
+            provider,
+            sessionId,
+            null,
+            null,
+            null,
+            current.crew.updatedAt,
+            "native",
+          )),
+        crew: current.crew,
+      };
+    };
     const withNative = (value: TerminalUsage | null) => {
       const latest = this.values.get(terminalId);
       if (latest?.provider !== provider || latest.sessionId !== sessionId)
-        return value;
+        return withCrew(value);
       if (provider === "codex" && value)
-        return {
+        return withCrew({
           ...value,
           ...latest,
           model: latest.model ?? value.model,
           costUsd: latest.costUsd ?? value.costUsd,
           costSource: latest.costSource ?? value.costSource,
           costStatus: value.costStatus,
-        };
-      return latest;
+        });
+      return withCrew(latest);
     };
     const key = `${terminalId}\0${provider}\0${sessionId}`;
     const previous = this.reads.get(key);
@@ -193,7 +241,9 @@ export class TerminalUsageStore {
       .catch((error) => {
         const latest = this.values.get(terminalId);
         if (latest?.provider === provider && latest.sessionId === sessionId)
-          return latest;
+          return withCrew(latest);
+        const crew = withCrew(null);
+        if (crew) return crew;
         throw error;
       })
       .finally(() => {

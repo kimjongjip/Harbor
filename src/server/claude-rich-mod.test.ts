@@ -32,6 +32,7 @@ async function fixture() {
     },
   );
   const deferred: (() => Promise<void>)[] = [];
+  const pulses = new Set<() => void>();
   const requests: { url: string; init: any }[] = [];
   const snapshots: { path: string; text: string }[] = [];
   let now = 100;
@@ -42,6 +43,7 @@ async function fixture() {
   let url = "http://127.0.0.1:43219/bridge/claude";
   let pending: Promise<void> | undefined;
   const $ = {
+    agent: { list: async (): Promise<any[]> => [] },
     env: {
       get: async (name: string) =>
         name === "HOME"
@@ -65,6 +67,11 @@ async function fixture() {
       }),
     },
     clock: {
+      every: (ms: number, callback: () => void) => {
+        assert.equal(ms, 2500);
+        pulses.add(callback);
+        return { cancel: () => pulses.delete(callback) };
+      },
       now: async () => now,
       after: (_ms: number, callback: () => Promise<void>) => {
         deferred.push(callback);
@@ -115,6 +122,7 @@ async function fixture() {
     deferred,
     requests,
     snapshots,
+    pulses,
     get invalidations() {
       return invalidations;
     },
@@ -141,6 +149,53 @@ async function fixture() {
     },
   };
 }
+
+test("agent status pulses are bounded, separate from drawing, and cancelled with the native session", async () => {
+  const f = await fixture();
+  f.$.agent.list = async () =>
+    Array.from({ length: 80 }, (_, i) => ({
+      id: `child-${i}`,
+      type: "review",
+      status: i === 70 ? "running" : "completed",
+      description: "PRIVATE PROMPT",
+      result: "PRIVATE ANSWER",
+    }));
+  await f.hooks.get("session.start")!(f.$, {}, async () => ENGINE);
+  assert.equal(f.pulses.size, 1);
+  await f.flush();
+  let payload = JSON.parse(f.snapshots.at(-1)!.text);
+  assert.equal(payload.harbor_agents.length, 32);
+  assert.equal(payload.harbor_agents[0].id, "child-70");
+  assert.doesNotMatch(JSON.stringify(payload), /PRIVATE/);
+  assert.ok(f.snapshots.at(-1)!.text.length < 16384);
+  f.$.agent.list = async () => [
+    { id: "child-70", type: "review", status: "completed" },
+  ];
+  for (const pulse of f.pulses) pulse();
+  await f.flush();
+  payload = JSON.parse(f.snapshots.at(-1)!.text);
+  assert.equal(
+    payload.harbor_agents[0].status,
+    "completed",
+    "agent-only changes do not require a model usage event",
+  );
+  assert.equal(
+    f.invalidations,
+    0,
+    "telemetry never invalidates the native terminal renderer",
+  );
+  await f.hooks.get("classic.SessionStart")!(f.$, {}, async () => ENGINE);
+  assert.equal(f.pulses.size, 1, "clear/resume replaces the timer");
+  await f.hooks.get("session.end")!(f.$, {}, async () => ENGINE);
+  assert.equal(f.pulses.size, 0);
+  const writes = f.snapshots.length;
+  await f.flush();
+  assert.equal(
+    f.snapshots.length,
+    writes,
+    "ending a session discards a queued pulse",
+  );
+});
 
 test("completed native reply reserves exactly the acknowledged rows and leaves the transcript unchanged", async () => {
   const f = await fixture();

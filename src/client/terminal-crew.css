@@ -1,0 +1,478 @@
+.terminal-crew {
+  --crew-accent: #78a998;
+  margin: 2px 0 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.crew-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.crew-heading small {
+  margin-left: 5px;
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.crew-heading button {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.crew-heading button:hover,
+.crew-heading button[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border);
+}
+.crew-settings {
+  padding: 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 11px;
+}
+.crew-character-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+.crew-character-options button {
+  font: inherit;
+  padding: 5px 3px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.crew-character-options button[aria-pressed="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--crew-accent) 18%, var(--panel));
+  border-color: var(--crew-accent);
+}
+.crew-scale-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 7px;
+  margin-top: 12px;
+}
+.crew-scale-label input {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--crew-accent);
+}
+.crew-motion-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+}
+.crew-motion-label input {
+  accent-color: var(--crew-accent);
+  margin: 0;
+}
+.crew-stage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--crew-accent) 5%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--crew-accent) 14%, var(--border));
+}
+.crew-stage > .crew-art {
+  display: block;
+  width: calc(200px * var(--crew-scale));
+  max-width: 100%;
+  height: auto;
+}
+.crew-main-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.crew-main-caption > .crew-state {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.crew-state i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #8c9ca0;
+}
+[data-state="working"] > .crew-main-caption .crew-state i {
+  background: #4a9b7d;
+  box-shadow: 0 0 0 3px #4a9b7d18;
+}
+[data-state="waiting"] > .crew-main-caption .crew-state i {
+  background: #c08b42;
+}
+.crew-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.crew-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 7px 3px 1px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.crew-agent .crew-art {
+  width: calc(42px * var(--crew-scale));
+  height: calc(42px * var(--crew-scale));
+  flex-shrink: 0;
+}
+.crew-agent-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.crew-agent-name strong {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crew-agent-name > span {
+  font-size: 9px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crew-agent > .crew-state {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.crew-agent[data-state="working"] > .crew-state {
+  color: var(--success, #498b72);
+}
+.crew-agent[data-state="failed"] > .crew-state {
+  color: var(--red, #c96969);
+}
+.crew-finished {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.crew-finished summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.crew-history-note {
+  color: var(--muted);
+  font-size: 10px;
+  margin: 8px 0 0;
+}
+.crew-art {
+  --fur: #e7ad65;
+  --fur-shadow: #c3884e;
+  --shirt: #6a9e90;
+  --shirt-light: #83b5a6;
+  --face: #f9e5c6;
+  --ear: #d8988a;
+  --ink: #473d3d;
+}
+.crew-fox {
+  --fur: #d88b56;
+  --fur-shadow: #b66a43;
+  --shirt: #818bb6;
+  --shirt-light: #a0a7c6;
+  --face: #f4e3c9;
+}
+.crew-robot {
+  --fur: #8aaebe;
+  --shirt: #728da5;
+  --shirt-light: #a5bfce;
+  --ink: #a9dfda;
+}
+.crew-wall {
+  fill: color-mix(in srgb, var(--crew-accent) 6%, var(--panel));
+}
+.crew-window-frame {
+  fill: color-mix(in srgb, var(--muted) 22%, var(--panel));
+}
+.crew-window {
+  fill: color-mix(in srgb, #87b9c9 25%, var(--panel));
+}
+.crew-cloud {
+  fill: color-mix(in srgb, #fff 65%, var(--panel));
+}
+.crew-sun {
+  fill: #e6c47d;
+}
+.crew-window-grid {
+  fill: none;
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+.crew-shelf {
+  fill: color-mix(in srgb, #a27d5e 55%, var(--panel));
+}
+.crew-shadow {
+  fill: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.crew-fur,
+.crew-tail {
+  fill: var(--fur);
+}
+.crew-stripes {
+  fill: var(--fur-shadow);
+}
+.crew-ear {
+  fill: var(--ear);
+}
+.crew-muzzle {
+  fill: var(--face);
+}
+.crew-chair {
+  fill: color-mix(in srgb, var(--shirt) 35%, var(--panel));
+}
+.crew-shirt {
+  fill: var(--shirt);
+}
+.crew-shirt-light {
+  fill: var(--shirt-light);
+}
+.crew-collar {
+  fill: #ead5a6;
+}
+.crew-eyes {
+  fill: var(--ink);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: crew-blink 7.4s infinite;
+}
+.crew-eye-glint {
+  fill: #fff8e8;
+}
+.crew-smile {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+.crew-cheeks {
+  fill: #d88d84;
+  opacity: 0.45;
+}
+.crew-metal {
+  fill: #a7c3cd;
+}
+.crew-metal-dark {
+  fill: #799aa9;
+}
+.crew-metal-light {
+  fill: #d5e8e9;
+}
+.crew-antenna {
+  fill: #dfb86f;
+}
+.crew-robot-smile {
+  fill: none;
+  stroke: #91c4b4;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.crew-desk {
+  fill: #b59c82;
+}
+.crew-desk-leg {
+  fill: #947d69;
+}
+.crew-paw {
+  fill: var(--fur);
+}
+.crew-paw path {
+  fill: none;
+  stroke: var(--fur-shadow);
+  stroke-width: 0.7;
+}
+.crew-mug {
+  fill: #baa5cc;
+}
+.crew-steam {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  opacity: 0.3;
+  animation: crew-steam 4s ease-in-out infinite;
+}
+.crew-screen {
+  fill: #273d4b;
+}
+.crew-body {
+  animation: crew-breathe 4.6s ease-in-out infinite;
+}
+.crew-tail {
+  transform-origin: 44px 88px;
+  animation: crew-tail 4s ease-in-out infinite;
+}
+.crew-status-bubble {
+  display: none;
+  fill: #eed49d;
+}
+.crew-bubble-mark {
+  fill: none;
+  stroke: #785b38;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.crew-question-dot {
+  fill: #785b38;
+}
+.crew-art[data-state="working"] .crew-paw-left {
+  animation: crew-type 0.42s steps(2, end) infinite;
+}
+.crew-art[data-state="working"] .crew-paw-right {
+  animation: crew-type 0.42s steps(2, end) -0.21s infinite;
+}
+.crew-art[data-state="working"] .crew-body {
+  animation: crew-breathe 1.6s ease-in-out infinite;
+}
+.crew-art[data-state="working"] .crew-code-lines {
+  animation: crew-code 1.8s steps(3, end) infinite;
+}
+.crew-art[data-state="waiting"] .crew-status-bubble,
+.crew-art[data-state="completed"] .crew-status-bubble,
+.crew-art[data-state="failed"] .crew-status-bubble {
+  display: block;
+}
+.crew-art[data-state="waiting"] .crew-status-bubble {
+  animation: crew-bubble 2.2s ease-in-out infinite;
+}
+.crew-art[data-state="completed"] .crew-status-bubble {
+  fill: #c0ddc8;
+}
+.crew-art[data-state="completed"] .crew-bubble-mark {
+  stroke: #487b5c;
+}
+.crew-art[data-state="failed"] .crew-status-bubble {
+  fill: #eec9c6;
+}
+.crew-art[data-state="failed"] .crew-bubble-mark {
+  stroke: #a15d5b;
+}
+.crew-art[data-state="stopped"],
+.crew-art[data-state="unknown"] {
+  opacity: 0.62;
+}
+.terminal-crew[data-motion="off"] *,
+.crew-agent[data-motion="off"] * {
+  animation-play-state: paused !important;
+}
+@keyframes crew-blink {
+  0%,
+  39%,
+  43%,
+  76%,
+  80%,
+  100% {
+    transform: scaleY(1);
+  }
+  41%,
+  78% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes crew-breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
+  }
+}
+@keyframes crew-tail {
+  0%,
+  100% {
+    transform: rotate(-3deg);
+  }
+  50% {
+    transform: rotate(5deg);
+  }
+}
+@keyframes crew-type {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes crew-code {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@keyframes crew-steam {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.18;
+  }
+  50% {
+    transform: translateY(-2px);
+    opacity: 0.4;
+  }
+}
+@keyframes crew-bubble {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-crew * {
+    animation: none !important;
+  }
+}

@@ -1,6 +1,8 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
+import { TerminalPanelResize } from "./TerminalPanelResize";
+import { TerminalCrew } from "./TerminalCrew";
 import {
   claudeUsageSnapshot,
   compactTokens,
@@ -15,6 +17,7 @@ interface Props {
   sessionId?: string;
   active: boolean;
   working: boolean;
+  waiting?: boolean;
 }
 
 /** Own state only: a usage tick never invalidates TerminalPane or its transcript. */
@@ -25,8 +28,11 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   sessionId,
   active,
   working,
+  waiting = false,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
+  const panel = useRef<HTMLElement>(null);
+  const panelId = useId();
   const scope = `${terminalId}:${provider}:${sessionId || ""}`;
   const [snapshot, setSnapshot] = useState<{
     scope: string;
@@ -69,7 +75,10 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
         if (
           provider === "claude" &&
           hostId &&
-          (!usage || usage.contextWindow === null || usage.costUsd === null)
+          (!usage ||
+            usage.contextWindow === null ||
+            usage.costUsd === null ||
+            !usage.crew)
         ) {
           try {
             const path = `~/.cache/harbor/usage/claude-${sessionId}.json`;
@@ -169,10 +178,17 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
       : null;
   return (
     <aside
+      ref={panel}
+      id={panelId}
       className={`terminal-usage${collapsed ? " collapsed" : ""}`}
       data-tone={tone}
       aria-label={`${providerName} 컨텍스트 사용량`}
     >
+      <TerminalPanelResize
+        panel={panel}
+        collapsed={collapsed}
+        controls={panelId}
+      />
       <header className="terminal-usage-header">
         {!collapsed && <span>Harbor</span>}
         <button
@@ -190,11 +206,11 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
           {percent === null ? "상태" : `${Math.round(percent)}%`}
         </span>
       ) : (
-        <>
+        <div className="terminal-usage-scroll">
           <div className="terminal-usage-session">
             <strong>{providerName}</strong>
             <span className={working ? "working" : ""}>
-              {working ? "작업 중" : "대기"}
+              {waiting ? "입력 대기" : working ? "작업 중" : "대기"}
             </span>
           </div>
           {usage?.model && (
@@ -285,6 +301,14 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 : `$${usage.costUsd.toFixed(2)}`}
             </strong>
           </div>
+          <TerminalCrew
+            key={scope}
+            provider={provider}
+            state={waiting ? "waiting" : working ? "working" : "idle"}
+            active={active}
+            crew={usage?.crew}
+            unavailable={current?.unavailable}
+          />
           <p className="terminal-usage-note">
             {current?.unavailable
               ? "사용량 연결을 확인 중입니다. 마지막 수치를 유지합니다."
@@ -306,7 +330,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                             ? "Claude 엔진의 로컬 추정치 · 다음 응답 후 실측값으로 갱신됩니다."
                             : "마지막 응답 기준 · 입력 중인 글자는 다음 응답에 반영됩니다."}
           </p>
-        </>
+        </div>
       )}
     </aside>
   );

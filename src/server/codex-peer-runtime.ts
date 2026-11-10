@@ -2,6 +2,8 @@ import type { Duplex } from "node:stream";
 import WebSocket from "ws";
 import { codexUsage } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
+import type { TerminalCrewSnapshot } from "../shared/terminal-agents.js";
+import { TerminalAgentRoster } from "./terminal-agent-roster.js";
 
 export interface CodexPeerEndpoint {
   port: number;
@@ -46,6 +48,11 @@ export interface CodexPeerCallbacks {
   /** Authoritative completed reply on the bound native primary thread only. */
   onAnswer?(terminalId: string, answer: CodexCompletedAnswer): void;
   onUsage?(terminalId: string, usage: TerminalUsage): void;
+  onCrew?(
+    terminalId: string,
+    sessionId: string,
+    crew: TerminalCrewSnapshot,
+  ): void;
   onCompacted?(terminalId: string): void;
 }
 
@@ -98,6 +105,7 @@ interface RuntimeEntry {
   userDelivering: Map<string, Promise<"queued" | "uncertain">>;
   failedTurns: Set<string>;
   answeredItems: Set<string>;
+  crew: TerminalAgentRoster;
 }
 
 /**
@@ -147,6 +155,7 @@ export class CodexPeerRuntime {
       userDelivering: new Map(),
       failedTurns: new Set(),
       answeredItems: new Set(),
+      crew: new TerminalAgentRoster(),
     };
     this.entries.set(terminalId, entry);
     socket.on("message", (data) => {
@@ -163,6 +172,7 @@ export class CodexPeerRuntime {
     });
     socket.on("close", () => {
       if (this.entries.get(terminalId) !== entry) return;
+      this.retainCrewHistory(terminalId, entry);
       this.closeEntry(entry);
       this.callbacks.onState?.(
         terminalId,
@@ -516,11 +526,25 @@ export class CodexPeerRuntime {
         params.thread.cwd,
       );
     if (params.threadId !== entry.sessionId) return;
+    if (
+      entry.sessionId &&
+      (message.method === "item/started" ||
+        message.method === "item/completed") &&
+      entry.crew.observe(params.item)
+    )
+      this.callbacks.onCrew?.(
+        terminalId,
+        entry.sessionId,
+        entry.crew.snapshot("native")!,
+      );
     if (message.method === "thread/tokenUsage/updated" && entry.sessionId) {
       const usage = codexUsage(entry.sessionId, params.tokenUsage);
       if (usage) this.callbacks.onUsage?.(terminalId, usage);
     }
-    if (message.method === "item/completed" && params.item?.type === "contextCompaction")
+    if (
+      message.method === "item/completed" &&
+      params.item?.type === "contextCompaction"
+    )
       this.callbacks.onCompacted?.(terminalId);
     if (
       message.method === "item/completed" &&
@@ -644,6 +668,7 @@ export class CodexPeerRuntime {
     entry.sessionId = id;
     entry.subscribedSessionId = undefined;
     entry.answeredItems.clear();
+    entry.crew = new TerminalAgentRoster();
     this.callbacks.onSession?.(terminalId, id);
     this.callbacks.onAvailable?.(terminalId);
   }
@@ -685,9 +710,16 @@ export class CodexPeerRuntime {
   }
 
   private disposeEntry(terminalId: string, entry: RuntimeEntry) {
+    this.retainCrewHistory(terminalId, entry);
     if (this.entries.get(terminalId) === entry) this.entries.delete(terminalId);
     this.closeEntry(entry);
     entry.socket.terminate();
+  }
+
+  private retainCrewHistory(terminalId: string, entry: RuntimeEntry) {
+    const crew = entry.crew.snapshot("history");
+    if (crew && entry.sessionId)
+      this.callbacks.onCrew?.(terminalId, entry.sessionId, crew);
   }
 }
 
