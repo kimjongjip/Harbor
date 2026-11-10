@@ -33,6 +33,7 @@ async function fixture() {
   );
   const deferred: (() => Promise<void>)[] = [];
   const requests: { url: string; init: any }[] = [];
+  const snapshots: { path: string; text: string }[] = [];
   let now = 100;
   let invalidations = 0;
   let reply: unknown = descriptor;
@@ -42,11 +43,26 @@ async function fixture() {
   let pending: Promise<void> | undefined;
   const $ = {
     env: {
-      get: async (name: string) => (name === "HARBOR_HOOK_TOKEN" ? token : url),
+      get: async (name: string) =>
+        name === "HOME"
+          ? "/synthetic/home"
+          : name === "HARBOR_HOOK_TOKEN"
+            ? token
+            : url,
+    },
+    fs: {
+      write: async (path: string, text: string) => {
+        snapshots.push({ path, text });
+      },
     },
     session: {
       id: async () => "synthetic-native-session",
       cwd: async () => "/synthetic/project",
+      model: async () => "claude-opus-5-5",
+      usage: async (_args?: unknown) => ({
+        context: { tokens: 51000, window: 1000000 },
+        cost: { usd: 47.8 },
+      }),
     },
     clock: {
       now: async () => now,
@@ -98,6 +114,7 @@ async function fixture() {
     render,
     deferred,
     requests,
+    snapshots,
     get invalidations() {
       return invalidations;
     },
@@ -161,6 +178,112 @@ test("completed native reply reserves exactly the acknowledged rows and leaves t
     f.requests.length,
     1,
     "cached redraw does not duplicate the request",
+  );
+});
+
+test("engine usage reaches Harbor without a Crew pane or a statusLine setting", async () => {
+  const f = await fixture();
+  const next = async (e: unknown) => e;
+  await f.hooks.get("session.start")!(f.$, {}, next);
+  assert.equal(f.requests.length, 0, "lifecycle hooks never wait on HTTP");
+  await f.flush();
+  assert.equal(f.requests.length, 1);
+  assert.ok(f.requests[0].url.endsWith("/bridge/claude/usage"));
+  const value = JSON.parse(f.requests[0].init.body);
+  assert.equal(value.context_window.context_window_size, 1000000);
+  assert.equal(value.context_window.current_usage.input_tokens, 51000);
+  assert.equal(value.cost.total_cost_usd, 47.8);
+  assert.equal(f.snapshots.length, 1);
+  assert.equal(
+    f.snapshots[0].path,
+    "/synthetic/home/.cache/harbor/usage/claude-synthetic-native-session.json",
+  );
+  assert.deepEqual(JSON.parse(f.snapshots[0].text), value);
+  assert.equal(f.snapshots[0].text.includes("synthetic-hook-token"), false);
+  assert.equal(
+    f.invalidations,
+    0,
+    "usage does not redraw the native transcript",
+  );
+  for (const tokens of [60000, 70000, 85000])
+    await f.hooks.get("session.measure")!(
+      f.$,
+      { context: { tokens, window: 200000 }, cost: { usd: 48 } },
+      next,
+    );
+  await f.flush();
+  assert.equal(f.requests.length, 2, "a measurement burst is coalesced");
+  assert.equal(
+    JSON.parse(f.requests[1].init.body).context_window.current_usage
+      .input_tokens,
+    85000,
+  );
+});
+
+test("fresh or compacted Claude usage uses a local estimate and drops old-session pending work", async () => {
+  const f = await fixture();
+  const args: unknown[] = [];
+  f.$.session.usage = async (input?: unknown) => {
+    args.push(input);
+    return {
+      context: {
+        tokens: undefined as any,
+        window: 1000000,
+        breakdown: { totalTokens: 12000, rawMaxTokens: 980000 },
+      },
+      cost: { usd: 3 },
+    };
+  };
+  await f.hooks.get("session.measure")!(
+    f.$,
+    { context: { window: 1000000 } },
+    async (e: unknown) => e,
+  );
+  await f.flush();
+  const value = JSON.parse(f.requests[0].init.body);
+  assert.deepEqual(
+    args,
+    [{ breakdown: "summary" }],
+    "no full token-count API request",
+  );
+  assert.equal(value.context_window.current_usage.input_tokens, 12000);
+  assert.equal(value.harbor_context_estimated, true);
+  assert.equal(value.harbor_compact_limit, 980000);
+  await f.hooks.get("session.measure")!(
+    f.$,
+    { context: { tokens: 90000, window: 1000000 } },
+    async (e: unknown) => e,
+  );
+  await f.hooks.get("session.end")!(f.$, {}, async (e: unknown) => e);
+  await f.flush();
+  assert.equal(f.requests.length, 1);
+});
+
+test("clear and resume refresh the identity without sending old-session measurements", async () => {
+  const f = await fixture();
+  const next = async (e: unknown) => e;
+  await f.hooks.get("session.start")!(f.$, {}, next);
+  await f.flush();
+  await f.hooks.get("session.measure")!(
+    f.$,
+    { context: { tokens: 99000, window: 1000000 } },
+    next,
+  );
+  f.$.session.id = async () => "synthetic-resumed-session";
+  await f.hooks.get("classic.SessionStart")!(f.$, { source: "resume" }, next);
+  await f.flush();
+  assert.equal(f.requests.length, 2);
+  assert.equal(
+    JSON.parse(f.requests[1].init.body).session_id,
+    "synthetic-resumed-session",
+  );
+  assert.equal(
+    JSON.parse(f.requests[1].init.body).context_window.current_usage
+      .input_tokens,
+    51000,
+  );
+  assert.ok(
+    f.snapshots[1].path.endsWith("claude-synthetic-resumed-session.json"),
   );
 });
 
@@ -312,10 +435,10 @@ test(
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64"),
+        "-Command",
+        "$script=[Console]::In.ReadToEnd(); . ([ScriptBlock]::Create($script))",
       ],
-      { encoding: "utf8", timeout: 10000, windowsHide: true },
+      { input: script, encoding: "utf8", timeout: 10000, windowsHide: true },
     );
     assert.equal(run.status, 0, run.stderr);
     const directory = realpathSync(run.stdout.trim());

@@ -1,5 +1,19 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.11 실제 한도·비용 연결
+
+`createBridgeRouter`를 production listener와 훅 통합 테스트에서 함께 사용한다. 기존 `all("/bridge/claude", ...)`는 `/usage` 하위 경로를 받지 못했으므로 `use`로 고쳤다. 이 listener는 UI·bootstrap을 노출하지 않는다. 사용량 payload의 토큰·세션·제공자 검증은 기존 브리지 인증을 유지한다.
+
+`harbor-rich` 모듈은 `session.start`, `session.measure`, `classic.SessionStart`에서 `$.session.usage()`의 `context.tokens`, `context.window`, `cost.usd`를 읽는다. `/clear`·`/resume`도 세션 ID를 다시 확인한다. 응답 전·압축 직후에는 `breakdown: "summary"`의 로컬 추정만 사용하며 모델 API를 호출하지 않는다. 100ms 묶음 처리를 거쳐 훅 밖에서 전송하고 세대가 바뀐 요청을 폐기한다. 출처: [Claude Mods API](https://code.claude.com/docs/en/plugins/mods/reference), [공식 statusLine JSON](https://code.claude.com/docs/en/statusline). 구형 CLI에는 기존 statusLine 경로가 남는다.
+
+숫자·모델·세션 ID·시각만 담은 16KiB 이하 `~/.cache/harbor/usage/claude-<sessionId>.json`을 함께 기록한다. 인증용 비밀값·대화 내용은 저장하지 않는다. 기존 서버의 인증된 Files preview도 이 파일을 읽을 수 있어 새 백엔드 없이 Claude 연결을 확인할 수 있다. 파일 쓰기 중 불완전한 JSON은 마지막 네이티브 값을 유지한다. 이전 실행의 모듈이 갱신을 감지하지 못하면 사용자가 Claude에서 `/reload-plugins`를 실행하거나 다음 정상 실행에서 새 모듈을 읽는다. 테스트나 배포 과정에서 사용자 PTY에 명령을 보내지 않는다.
+
+`CodexUsageHistory`는 기존 읽기 전용 `thread/read`로 찾은 rollout을 256KiB씩 백그라운드에서 읽는다. 현재 컨텍스트는 마지막 256KiB 또는 `thread/tokenUsage/updated`로 먼저 반환한다. 모델별 누적 usage의 증가분만 계산하고 캐시 입력·reasoning 출력을 중복 합산하지 않는다. 진행 중인 비용은 소계로 구분하며 다음 조회는 파일의 추가 부분만 읽는다. 호스트 해제·캐시 퇴출·종료 시 취소하고 최대 32개 세션만 보관한다. 파일 축소 시 장부를 다시 만든다.
+
+API 환산은 2026-11-10 확인한 [공식 표준 단가](https://developers.openai.com/api/docs/pricing)를 사용한다. 등록 모델은 GPT-6 Astra/Sol/Luna, GPT-6.1 Sol/Terra, GPT-5.6 Sol이며 날짜 접미사를 지원한다. 캐시 읽기 할인·입력 272k 초과의 장문 요율·기본 30분 캐시 쓰기 요율을 반영한다. 빠른 처리·도구 요금·계약 할인·별도 캐시 보관 옵션은 계산하지 않으며 구독 청구액이나 잔여 할당량이 아니다. 미등록 모델·불연속 누적치는 확인된 소계 또는 단가 미등록으로 표시한다. 가격 변경 시 이 표와 비용 테스트를 함께 갱신한다.
+
+화면은 사용/전체·정확한 숫자 tooltip·남은 토큰·모델·비용을 표시하고 60%/85% 경계에서 노랑/빨강으로 바뀐다. 상태 갱신으로 입력·대화 부모를 다시 렌더하지 않는다. 검증에는 실제 restricted router, 인증·세션 격리, 압축·모델 변경·중복 usage·백그라운드 취소·파일 범위 제한과 별도 Electron의 구서버 호환·입력 보존을 포함한다. 화면 패치와 Claude 연결 모듈 반영, 다음 정상 실행용 새 백엔드 준비를 구분해서 보고한다.
+
 ## 1.18.10 오른쪽 상태 패널과 초기 사용량 읽기
 
 `TerminalPane`의 안정된 `terminal-surface` 안에서 기존 `terminal-mount`와 `TerminalUsageBar`를 좌우로 배치한다. 조판 portal은 기존 mount 안에 남고 상태 패널은 바깥 형제라 CLI 슬래시 메뉴·Mods 재배치에 포함되지 않는다. 접기는 패널 내부 상태로 폭만 바꾸며 xterm·입력 DOM·소켓을 재생성하지 않는다. 좁은 IDE에서도 오른쪽 열을 유지하고 접으면 36px로 줄어든다. 미연결 값을 모두 `—`로만 보여주지 않고 저장 기록의 토큰 수, 미제공 비용, 다음 실행 시 상태 연결 안내를 구분한다.

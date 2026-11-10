@@ -14,7 +14,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve, join, sep } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import express from "express";
+import { createBridgeRouter } from './bridge-router.js';
 import { AgentBridge } from "./agent-bridge.js";
 import { Mailbox } from "./mailbox.js";
 import { Requests } from "./requests.js";
@@ -45,8 +45,7 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
     onClaudeEvent: (id, event) => events.push({ id, event }),
     onUsage: (id, usage) => usages.push({ id, usage }),
   });
-  const app = express();
-  app.use("/claude", bridge.claudeHandle);
+  const app = createBridgeRouter(bridge);
   const server = createServer(app);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -60,7 +59,8 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
     await rm(dir, { recursive: true, force: true });
   });
   const issued = bridge.issue("a");
-  const url = `http://127.0.0.1:${(server.address() as any).port}/claude`;
+  const url = `http://127.0.0.1:${(server.address() as any).port}/bridge/claude`;
+  assert.equal((await fetch(url.replace('/bridge/claude','/api/bootstrap'))).status,404);
   const post = (body: any, token = issued.hookToken) =>
     fetch(url, {
       method: "POST",

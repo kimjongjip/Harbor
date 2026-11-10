@@ -39,8 +39,11 @@ import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
+import { createBridgeRouter } from './bridge-router.js';
+import { claudeUsageSnapshot } from '../shared/terminal-usage.js';
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
-import { TerminalUsageStore, codexUsageTail } from "./terminal-usage.js";
+import { TerminalUsageStore } from "./terminal-usage.js";
+import { CodexUsageHistory } from './codex-usage-history.js';
 import {
   ResearchLabs,
   researchCreateSchema,
@@ -90,6 +93,7 @@ const terminalAnnotations = new TerminalAnnotations(store.directory);
 const credentials = new Credentials(store.directory);
 const history = new History();
 const terminalUsage = new TerminalUsageStore();
+const codexUsageHistory = new CodexUsageHistory();
 const claudeHistory = new ClaudeHistory();
 const historyProvider = z.enum(["codex", "claude"]).default("codex");
 const historyReader = (provider: "codex" | "claude") =>
@@ -336,15 +340,7 @@ researchManager = new ResearchLabManager({
 const researchTick = setInterval(() => research.tick(), 5000);
 researchTick.unref();
 // SSH forwards only this listener. Never expose bootstrap/UI routes through it.
-const bridgeApp = express();
-bridgeApp.disable("x-powered-by");
-bridgeApp.all("/bridge/mcp", bridge.handle);
-bridgeApp.all("/bridge/permission", bridge.permissionHandle);
-bridgeApp.all("/bridge/claude", bridge.claudeHandle);
-bridgeApp.all("/bridge/annotation", bridge.annotationHandle);
-bridgeApp.use("/bridge/peers", bridge.peerHandle);
-bridgeApp.all("/bridge/rich", bridge.richHandle);
-bridgeApp.use((_req, res) => res.sendStatus(404));
+const bridgeApp = createBridgeRouter(bridge);
 const bridgeServer = createServer(bridgeApp);
 await new Promise<void>((resolve, reject) => {
   bridgeServer.once("error", reject);
@@ -971,7 +967,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.10" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.11" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1037,6 +1033,7 @@ app.patch("/api/hosts/:id", (req, res) => {
     );
   const host = hub.updateHost(id, hostInput.parse(req.body));
   history.close(id);
+  codexUsageHistory.clear(id);
   claudeHistory.close(id);
   hub.passwords.delete(id);
   files.close(id);
@@ -1086,6 +1083,7 @@ app.delete("/api/hosts/:id/credentials", async (req, res) => {
   const id = hub.host(String(req.params.id)).id;
   await credentials.remove(id);
   history.close(id);
+  codexUsageHistory.clear(id);
   claudeHistory.close(id);
   hub.passwords.delete(id);
   files.close(id);
@@ -1119,6 +1117,7 @@ app.post("/api/hosts/:id/connect", async (req, res) => {
 });
 app.post("/api/hosts/:id/disconnect", (req, res) => {
   history.close(String(req.params.id));
+  codexUsageHistory.clear(String(req.params.id));
   claudeHistory.close(String(req.params.id));
   hub.disconnect(String(req.params.id));
   res.json({ ok: true });
@@ -1787,9 +1786,16 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
   const host = hub.host(terminal.hostId);
   const usage = await terminalUsage.read(terminal.id, terminal.agentKind, sessionId, async () => {
     const password = await passwordFor(host.id);
-    if (terminal.agentKind === "claude") return claudeHistory.usage(host, password, sessionId, terminal.cwd);
+    if (terminal.agentKind === "claude") {
+      const native = await files.usageSnapshot(host, `~/.cache/harbor/usage/claude-${sessionId}.json`).then(text=>claudeUsageSnapshot(text,sessionId)).catch(()=>null);
+      const saved = await claudeHistory.usage(host, password, sessionId, terminal.cwd).catch(error => {
+        if (native) return null;
+        throw error;
+      });
+      return native && (!saved || native.updatedAt >= saved.updatedAt) ? native : saved;
+    }
     const file = await history.usagePath(host, password, sessionId);
-    return file ? codexUsageTail(sessionId, await files.usageTail(host, file), Date.now()) : null;
+    return file ? codexUsageHistory.read(host.id,sessionId,file,start=>files.usageChunk(host,file,start),()=>files.usageTail(host,file)) : null;
   });
   res.json({ usage });
 });
@@ -2130,6 +2136,7 @@ function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
   ideChats.close();
   hub.shutdown();
   history.shutdown();
+  codexUsageHistory.shutdown();
   claudeHistory.shutdown();
   requests.shutdown();
   autoApproval.dispose();

@@ -19,6 +19,8 @@ const cache = new Map();
 let running = 0;
 let generation = 0;
 let credentials;
+let usagePending = false;
+let latestUsage;
 
 function keep(key, value) {
   cache.delete(key);
@@ -35,9 +37,62 @@ async function connection($) {
   ]).then(([url, token, sessionId, cwd]) => {
     if (typeof url !== 'string' || !/^http:\/\/127\.0\.0\.1:\d{1,5}\/bridge\/[a-z-]+$/.test(url)
       || typeof token !== 'string' || !token || typeof sessionId !== 'string' || !sessionId) return null;
-    return {url: url.replace(/\/[^/]*$/, '/rich'), token, sessionId, cwd};
+    return {url: url.replace(/\/[^/]*$/, '/rich'), usageUrl: url.replace(/\/[^/]*$/, '/claude/usage'), token, sessionId, cwd};
   }).catch(() => null);
   return credentials;
+}
+
+// Same engine figures as Crew and /cost. No pane, model call or render wait.
+// Coalesce bursts of session.measure and do I/O outside the engine hook.
+function queueUsage($, value) {
+  latestUsage = value;
+  if (usagePending) return;
+  usagePending = true;
+  const epoch = generation;
+  $.clock.after(100, async () => {
+    try {
+      const auth = await connection($);
+      if (!auth || epoch !== generation) return;
+      let usage = latestUsage || await $.session.usage();
+      latestUsage = undefined;
+      if (usage.context?.tokens === undefined) {
+        usage = await $.session.usage({breakdown: 'summary'}).catch(() => usage);
+      }
+      if (epoch !== generation) return;
+      const context = usage.context;
+      const tokens = context?.tokens ?? context?.breakdown?.totalTokens;
+      const known = typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0;
+      const model = await $.session.model().catch(() => undefined);
+      if (epoch !== generation) return;
+      const payload = {session_id: auth.sessionId, model: {id: model},
+        context_window: {context_window_size: context?.window,
+          current_usage: known ? {input_tokens: tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0} : null},
+        cost: {total_cost_usd: usage.cost?.usd},
+        harbor_context_estimated: context?.tokens === undefined && known,
+        harbor_compact_limit: context?.breakdown?.rawMaxTokens,
+        harbor_updated_at: await $.clock.now(),
+      };
+      // A tiny, session-scoped fallback also survives a bridge reconnect and
+      // lets an already running older Harbor read the figures without restart.
+      const home = await $.env.get('HOME') || await $.env.get('USERPROFILE');
+      if (typeof home === 'string' && /^(?:\/|[A-Za-z]:[\\/])/.test(home)
+        && /^[A-Za-z0-9-]{1,128}$/.test(auth.sessionId)) {
+        await $.fs.write(home.replace(/[\\/]$/, '') + '/.cache/harbor/usage/claude-' + auth.sessionId + '.json', JSON.stringify(payload)).catch(() => {});
+      }
+      if (epoch !== generation) return;
+      await $.http.fetch(auth.usageUrl, {
+        method: 'POST',
+        headers: {'Authorization': 'Bearer ' + auth.token, 'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+    } catch { /* Telemetry never interrupts the native session or input. */ }
+    finally {
+      if (epoch === generation) {
+        usagePending = false;
+        if (latestUsage) queueUsage($, latestUsage);
+      }
+    }
+  });
 }
 
 function reservation(value, columns) {
@@ -84,6 +139,26 @@ export function register(on) {
     cache.clear();
     credentials = undefined;
     running = 0;
+    usagePending = false;
+    latestUsage = undefined;
+    queueUsage($);
+    return next(e);
+  });
+
+  on('session.measure', ($, e, next) => {
+    queueUsage($, e);
+    return next(e);
+  });
+
+  // /clear and /resume keep the loaded module but change the session identity.
+  on('classic.SessionStart', ($, e, next) => {
+    generation++;
+    cache.clear();
+    credentials = undefined;
+    running = 0;
+    usagePending = false;
+    latestUsage = undefined;
+    queueUsage($);
     return next(e);
   });
 
@@ -91,6 +166,8 @@ export function register(on) {
     generation++;
     cache.clear();
     credentials = undefined;
+    latestUsage = undefined;
+    usagePending = false;
     return next(e);
   });
 
