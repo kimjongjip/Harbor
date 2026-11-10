@@ -21,13 +21,18 @@ test("Codex native events track real children without treating a completed spawn
       tool: "spawnAgent",
       status: "completed",
       receiverThreadIds: ["child"],
-      prompt: "PRIVATE PROMPT",
+      prompt: "Review keyboard input",
       agentsStates: { child: { status: "running", message: "PRIVATE ANSWER" } },
     },
     1,
   );
   assert.deepEqual(roster.snapshot("native")!.agents, [
-    { id: "child", name: "에이전트", state: "working" },
+    {
+      id: "child",
+      name: "에이전트",
+      state: "working",
+      task: "Review keyboard input",
+    },
   ]);
   roster.observe(
     {
@@ -55,6 +60,7 @@ test("Codex native events track real children without treating a completed spawn
       name: "reviewer",
       state: "completed",
       model: "synthetic-model",
+      task: "Review keyboard input",
     },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
@@ -71,6 +77,61 @@ test("Codex native events track real children without treating a completed spawn
     ),
     false,
   );
+});
+
+test("child usage is scoped to known agents and cumulative totals never mix with parent context", () => {
+  const roster = new TerminalAgentRoster();
+  const params = {
+    tokenUsage: {
+      total: {
+        totalTokens: 12000,
+        inputTokens: 10000,
+        outputTokens: 2000,
+        cachedInputTokens: 8000,
+      },
+      last: { totalTokens: 3000 },
+    },
+  };
+  assert.equal(
+    roster.observeChild("unrelated", "thread/tokenUsage/updated", params),
+    false,
+  );
+  roster.observe({
+    type: "collabToolCall",
+    tool: "spawnAgent",
+    status: "completed",
+    newThreadId: "child",
+    prompt: "x".repeat(400),
+  });
+  assert.equal(roster.snapshot("native")!.agents[0].task?.length, 160);
+  roster.observeChild("child", "thread/tokenUsage/updated", params);
+  assert.deepEqual(roster.snapshot("native")!.agents[0].tokens, {
+    total: 12000,
+    input: 10000,
+    output: 2000,
+    cached: 8000,
+    scope: "session",
+  });
+  assert.equal(
+    roster.observeChild("child", "thread/tokenUsage/updated", params),
+    false,
+    "duplicate cumulative events are not added",
+  );
+  roster.observeChild("child", "item/started", {
+    item: {
+      id: "tool-a",
+      type: "commandExecution",
+      command: "PRIVATE COMMAND",
+    },
+  });
+  assert.equal(roster.snapshot("native")!.agents[0].activity, "명령 실행");
+  assert.doesNotMatch(JSON.stringify(roster.snapshot("native")), /PRIVATE/);
+  roster.observeChild("child", "item/completed", { item: { id: "tool-a" } });
+  assert.equal(roster.snapshot("native")!.agents[0].activity, undefined);
+  roster.observeChild("child", "turn/completed", {
+    turn: { status: "completed" },
+  });
+  assert.equal(roster.snapshot("native")!.agents[0].state, "completed");
 });
 
 test("roster bounds metadata, strips controls, and keeps active children first", () => {
@@ -162,7 +223,7 @@ test("crew updates bypass usage-read cache and remain isolated across sessions a
   );
 });
 
-test("existing incremental Codex history scan extracts child metadata without retaining prompts or changing usage", () => {
+test("existing incremental Codex history scan extracts bounded task labels without answers or changed usage", () => {
   const ledger = new CodexUsageLedger("primary");
   for (const payload of [
     {
@@ -177,7 +238,7 @@ test("existing incremental Codex history scan extracts child metadata without re
       new_thread_id: "child",
       new_agent_nickname: "Reviewer",
       status: "running",
-      prompt: "PRIVATE PROMPT",
+      prompt: "Review keyboard input",
     },
     {
       type: "collab_waiting_end",
@@ -194,7 +255,12 @@ test("existing incremental Codex history scan extracts child metadata without re
   const result = ledger.snapshot()!;
   assert.equal(result.contextWindow, 258400);
   assert.deepEqual(result.crew?.agents, [
-    { id: "child", name: "Reviewer", state: "completed" },
+    {
+      id: "child",
+      name: "Reviewer",
+      state: "completed",
+      task: "Review keyboard input",
+    },
   ]);
   assert.equal(result.crew?.source, "history");
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);

@@ -78,7 +78,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
           (!usage ||
             usage.contextWindow === null ||
             usage.costUsd === null ||
-            !usage.crew)
+            !usage.crew?.detailVersion)
         ) {
           try {
             const path = `~/.cache/harbor/usage/claude-${sessionId}.json`;
@@ -94,6 +94,13 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 : null;
             if (native && (!usage || native.updatedAt >= usage.updatedAt))
               usage = native;
+            else if (
+              usage &&
+              native?.crew?.detailVersion &&
+              !usage.crew?.detailVersion &&
+              Date.now() - native.crew.updatedAt < 30000
+            )
+              usage = { ...usage, crew: native.crew };
           } catch {
             /* Keep the last available reading during reconnect/write. */
           }

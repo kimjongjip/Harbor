@@ -525,7 +525,19 @@ export class CodexPeerRuntime {
         params.thread.id,
         params.thread.cwd,
       );
-    if (params.threadId !== entry.sessionId) return;
+    if (params.threadId !== entry.sessionId) {
+      if (
+        entry.sessionId &&
+        typeof params.threadId === "string" &&
+        entry.crew.observeChild(params.threadId, message.method || "", params)
+      )
+        this.callbacks.onCrew?.(
+          terminalId,
+          entry.sessionId,
+          entry.crew.snapshot("native")!,
+        );
+      return;
+    }
     if (
       entry.sessionId &&
       (message.method === "item/started" ||

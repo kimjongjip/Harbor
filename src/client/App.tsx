@@ -39,7 +39,6 @@ import CloseTerminalDialog from "./CloseTerminalDialog";
 import DirectoryTree from "./DirectoryTree";
 import FilesBrowser from "./FilesBrowser";
 import HostManager from "./HostManager";
-import { ClaudeModsButton } from "./ClaudeMods";
 import WorkspaceInbox, { type InboxTab } from "./WorkspaceInbox";
 import { ReportNotificationsSync } from "./ReportNotifications";
 import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
@@ -864,7 +863,6 @@ export default function App() {
                   </select>
                 </label>
                 <span className="harbor-ide-context-separator">/</span>
-                {host && <ClaudeModsButton host={host} />}
                 <select
                   className="harbor-ide-session"
                   aria-label="IDE 세션"

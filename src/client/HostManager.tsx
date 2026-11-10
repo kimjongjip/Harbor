@@ -19,7 +19,6 @@ import { useTheme, terminalColors } from "./Theme";
 import { useHostReorderDrag, type MoveHost } from "./server-order";
 import "./server-order.css";
 import { CliApprovalSettings } from "./CliApprovalSettings";
-import { ClaudeModsButton } from "./ClaudeMods";
 
 interface Props {
   hosts: HostView[];
@@ -86,7 +85,6 @@ export default function HostManager(props: Props) {
             >
               <div className="host-card-top">
                 <CliApprovalSettings host={host} />
-                <ClaudeModsButton host={host} />
                 <span
                   className={`host-avatar ${host.kind}`}
                   style={{ "--host-color": host.color } as CSSProperties}

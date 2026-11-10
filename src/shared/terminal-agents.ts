@@ -11,16 +11,27 @@ export interface TerminalAgent {
   name: string;
   state: TerminalAgentState;
   model?: string;
+  task?: string;
+  activity?: string;
+  tokens?: {
+    total: number;
+    input?: number;
+    output?: number;
+    cached?: number;
+    scope: "session" | "observed";
+  };
 }
 export interface TerminalCrewSnapshot {
   agents: TerminalAgent[];
   updatedAt: number;
   source: "native" | "history";
+  detailVersion?: 1;
 }
 const label = (value: unknown, limit = 80) =>
   typeof value === "string"
     ? value
         .replace(/[\x00-\x1f\x7f]/g, " ")
+        .replace(/\s+/g, " ")
         .trim()
         .slice(0, limit)
     : "";
@@ -53,7 +64,7 @@ export function terminalAgentState(value: unknown): TerminalAgentState {
       return "unknown";
   }
 }
-/** Display metadata only. Prompts, answers, tool arguments and credentials are never copied. */
+/** Bounded task labels and measured counts; no full transcript or tool results. */
 export function terminalAgents(value: unknown): TerminalAgent[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const agents = new Map<string, TerminalAgent>();
@@ -65,11 +76,31 @@ export function terminalAgents(value: unknown): TerminalAgent[] | undefined {
     )
       continue;
     const model = label(row.model, 100);
+    const task = label(row.task, 160),
+      activity = label(row.activity, 96);
+    const count = (n: unknown): n is number =>
+      typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+    const usage = row.tokens;
+    const tokens =
+      usage &&
+      count(usage.total) &&
+      ["session", "observed"].includes(usage.scope)
+        ? {
+            total: usage.total,
+            scope: usage.scope as "session" | "observed",
+            ...(count(usage.input) ? { input: usage.input } : {}),
+            ...(count(usage.output) ? { output: usage.output } : {}),
+            ...(count(usage.cached) ? { cached: usage.cached } : {}),
+          }
+        : undefined;
     agents.set(row.id, {
       id: row.id,
       name: label(row.name) || label(row.type) || "에이전트",
       state: terminalAgentState(row.state ?? row.status),
       ...(model ? { model } : {}),
+      ...(task ? { task } : {}),
+      ...(activity ? { activity } : {}),
+      ...(tokens ? { tokens } : {}),
     });
   }
   return [...agents.values()]

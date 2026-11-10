@@ -124,10 +124,38 @@ export class History {
   }
   /** Only thread/read: never start or resume an engine to obtain telemetry. */
   async usagePath(host: HostConfig, password: string | undefined, id: string) {
-    return this.using(host, password, async client => {
-      const result = await client.call("thread/read", { threadId: id, includeTurns: false }, 12000);
+    return this.using(host, password, async (client) => {
+      const result = await client.call(
+        "thread/read",
+        { threadId: id, includeTurns: false },
+        12000,
+      );
       if (result.thread?.id !== id) throw new Error("Usage session changed");
       return typeof result.thread.path === "string" ? result.thread.path : null;
+    });
+  }
+  async agentTelemetryPath(
+    host: HostConfig,
+    password: string | undefined,
+    id: string,
+  ) {
+    return this.using(host, password, async (client) => {
+      const result = await client.call(
+        "thread/read",
+        { threadId: id, includeTurns: false },
+        12000,
+      );
+      if (result.thread?.id !== id) throw new Error("Agent session changed");
+      return {
+        path:
+          typeof result.thread.path === "string" ? result.thread.path : null,
+        task:
+          typeof result.thread.name === "string" && result.thread.name.trim()
+            ? result.thread.name.slice(0, 160)
+            : typeof result.thread.preview === "string"
+              ? result.thread.preview.slice(0, 160)
+              : undefined,
+      };
     });
   }
   async models(host: HostConfig, password?: string): Promise<ResearchModel[]> {
@@ -240,7 +268,8 @@ export class History {
         20000,
       );
       const thread = historyThread(host.id, summary.thread);
-      if (thread.id !== threadId) throw new Error("조회 중 Codex 대화가 변경됐습니다. 다시 선택하세요.");
+      if (thread.id !== threadId)
+        throw new Error("조회 중 Codex 대화가 변경됐습니다. 다시 선택하세요.");
       let turns: any[],
         nextCursor: string | null = null;
       const legacyOffset = cursor?.match(/^harbor-read:(\d{1,9})$/);
@@ -285,10 +314,17 @@ export class History {
           throw error;
         turns = await readLegacy(0);
       }
-      const items: MessageItem[] = [], timeline: MessageItem[] = [];
+      const items: MessageItem[] = [],
+        timeline: MessageItem[] = [];
       for (const turn of turns) {
-        const turnStatus: MessageItem["turnStatus"] = ["completed", "inProgress", "failed", "interrupted"].includes(turn.status)
-          ? turn.status : "unknown";
+        const turnStatus: MessageItem["turnStatus"] = [
+          "completed",
+          "inProgress",
+          "failed",
+          "interrupted",
+        ].includes(turn.status)
+          ? turn.status
+          : "unknown";
         for (const raw of turn.items || []) {
           const item = historyItem(raw, turn.id);
           if (!item) continue;
@@ -302,8 +338,17 @@ export class History {
         }
       }
       // The newest work (often a running turn) gets the preview budget first.
-      const previews = historyActivities.previewAll(host, "codex", threadId, timeline, (item) => !["user", "assistant", "notice"].includes(item.kind));
-      return { thread, items, nextCursor,
+      const previews = historyActivities.previewAll(
+        host,
+        "codex",
+        threadId,
+        timeline,
+        (item) => !["user", "assistant", "notice"].includes(item.kind),
+      );
+      return {
+        thread,
+        items,
+        nextCursor,
         ...(options.includeActivity ? { timeline: previews } : {}),
       };
     });

@@ -22,6 +22,35 @@ let credentials;
 let usagePending = false;
 let latestUsage;
 let usageTimer;
+const agentMetrics = new Map();
+const agentSteps = new Set();
+const agentTools = new Map();
+
+function agentStep(id, result) {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_./:-]{1,128}$/.test(id) || !result?.usage || typeof result.turnId !== 'string' || !Number.isSafeInteger(result.index)) return;
+  const key = id + ':' + result.turnId + ':' + result.index;
+  if (agentSteps.has(key)) return;
+  const u = result.usage;
+  const counts = [u.input_tokens, u.output_tokens, u.cache_read_input_tokens ?? 0, u.cache_creation_input_tokens ?? 0];
+  if (!counts.every(n => Number.isSafeInteger(n) && n >= 0)) return;
+  const input = counts[0] + counts[2] + counts[3], output = counts[1];
+  const previous = agentMetrics.get(id);
+  const tokens = {total: (previous?.tokens.total || 0) + input + output, input: (previous?.tokens.input || 0) + input,
+    output: (previous?.tokens.output || 0) + output, cached: (previous?.tokens.cached || 0) + counts[2], scope: 'observed'};
+  if (![tokens.total,tokens.input,tokens.output,tokens.cached].every(Number.isSafeInteger)) return;
+  agentSteps.add(key); while (agentSteps.size > 4096) agentSteps.delete(agentSteps.values().next().value);
+  agentMetrics.delete(id); agentMetrics.set(id,{tokens,model:u.model});
+  while (agentMetrics.size > 64) agentMetrics.delete(agentMetrics.keys().next().value);
+}
+
+function usageBytes(value) {
+  let size = 0;
+  for (const char of JSON.stringify(value)) {
+    const code = char.codePointAt(0);
+    size += code <= 127 ? 1 : code <= 2047 ? 2 : code <= 65535 ? 3 : 4;
+  }
+  return size;
+}
 
 function watchUsage($) {
   usageTimer?.cancel();
@@ -76,7 +105,8 @@ function queueUsage($, value) {
       const clean = (value, length) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, length) : undefined;
       const agents = Array.isArray(facts) ? facts.filter(agent => typeof agent?.id === 'string' && /^[A-Za-z0-9_./:-]{1,128}$/.test(agent.id))
         .sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running')).slice(0,32)
-        .map(agent => ({id:agent.id,name:clean(agent.name || agent.type,48),status:clean(agent.status,24)})) : undefined;
+        .map(agent => ({id:agent.id,name:clean(agent.name || agent.type,40),status:clean(agent.status,24),task:clean(agent.description,96),
+          model:clean(agentMetrics.get(agent.id)?.model,64),tokens:agentMetrics.get(agent.id)?.tokens,activity:clean(agentTools.get(agent.id)?.tool,48)})) : undefined;
       const payload = {session_id: auth.sessionId, model: {id: model},
         context_window: {context_window_size: context?.window,
           current_usage: known ? {input_tokens: tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0} : null},
@@ -85,7 +115,9 @@ function queueUsage($, value) {
         harbor_compact_limit: context?.breakdown?.rawMaxTokens,
         harbor_updated_at: await $.clock.now(),
         ...(agents ? {harbor_agents: agents} : {}),
+        harbor_agent_details: 1,
       };
+      while (payload.harbor_agents?.length && usageBytes(payload) > 15800) payload.harbor_agents.pop();
       // A tiny, session-scoped fallback also survives a bridge reconnect and
       // lets an already running older Harbor read the figures without restart.
       const home = await $.env.get('HOME') || await $.env.get('USERPROFILE');
@@ -155,6 +187,7 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
+    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
     watchUsage($);
     return next(e);
   });
@@ -172,6 +205,7 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
+    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
     watchUsage($);
     return next(e);
   });
@@ -184,14 +218,35 @@ export function register(on) {
     credentials = undefined;
     latestUsage = undefined;
     usagePending = false;
+    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
     return next(e);
+  });
+
+  on('tool.call', async ($, e, next) => {
+    if (typeof e.agentId !== 'string' || !/^[A-Za-z0-9_./:-]{1,128}$/.test(e.agentId)) return next(e);
+    const epoch = generation;
+    const current = {id:e.tool_use_id,tool:e.tool};
+    agentTools.set(e.agentId,current);
+    while (agentTools.size > 64) agentTools.delete(agentTools.keys().next().value);
+    queueUsage($);
+    try { return await next(e); }
+    finally {
+      if (epoch === generation && agentTools.get(e.agentId) === current) {
+        agentTools.delete(e.agentId); queueUsage($);
+      }
+    }
   });
 
   // AssistantMessage has no isStreaming field. Use the real native stream's
   // completion, never an output-idle timer or an ANSI/text scrape. Tool calls,
   // thinking and subagents pass through untouched, with their original result.
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId) return yield* next(e);
+    if (e.agentId) {
+      const epoch = generation;
+      const result = yield* next(e);
+      if (epoch === generation) { agentStep(e.agentId,result); queueUsage($); }
+      return result;
+    }
     running++;
     const stream = next(e);
     let ended = false;

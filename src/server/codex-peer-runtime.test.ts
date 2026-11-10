@@ -180,6 +180,17 @@ test("native crew observes only the bound parent, sends no child requests, and r
     app.notify("item/started", { threadId: sessionId, item });
     await settle();
     assert.equal(app.crews.at(-1).crew.agents[0].state, "working");
+    app.notify("thread/tokenUsage/updated", {
+      threadId: "child",
+      tokenUsage: { total: { totalTokens: 9000 }, last: { totalTokens: 1000 } },
+    });
+    await settle();
+    assert.equal(app.crews.at(-1).crew.agents[0].tokens.total, 9000);
+    assert.equal(
+      app.usages.length,
+      0,
+      "child totals never replace primary context usage",
+    );
     app.notify("item/completed", {
       threadId: sessionId,
       item: { ...item, kind: "completed" },

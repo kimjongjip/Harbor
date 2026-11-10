@@ -24,7 +24,6 @@ import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import { AutoApproval } from "./auto-approval.js";
-import { ClaudeMods } from "./claude-mods.js";
 import { Store } from "./store.js";
 import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
 import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
@@ -44,6 +43,7 @@ import { claudeUsageSnapshot } from '../shared/terminal-usage.js';
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
 import { TerminalUsageStore } from "./terminal-usage.js";
 import { CodexUsageHistory } from './codex-usage-history.js';
+import { CodexAgentTelemetry } from './codex-agent-telemetry.js';
 import {
   ResearchLabs,
   researchCreateSchema,
@@ -94,6 +94,7 @@ const credentials = new Credentials(store.directory);
 const history = new History();
 const terminalUsage = new TerminalUsageStore();
 const codexUsageHistory = new CodexUsageHistory();
+const codexAgentTelemetry = new CodexAgentTelemetry();
 const claudeHistory = new ClaudeHistory();
 const historyProvider = z.enum(["codex", "claude"]).default("codex");
 const historyReader = (provider: "codex" | "claude") =>
@@ -366,7 +367,6 @@ bridge.peers.on("change", () => {
       void flushPeerMessages(terminal.id);
 });
 const files = new Files((id) => hub.passwords.get(id));
-const claudeMods = new ClaudeMods();
 const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
@@ -968,7 +968,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.12" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.13" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1035,6 +1035,7 @@ app.patch("/api/hosts/:id", (req, res) => {
   const host = hub.updateHost(id, hostInput.parse(req.body));
   history.close(id);
   codexUsageHistory.clear(id);
+  codexAgentTelemetry.clear(id);
   claudeHistory.close(id);
   hub.passwords.delete(id);
   files.close(id);
@@ -1048,26 +1049,6 @@ app.patch("/api/hosts/:id/cli-approval", (req, res) => {
     .strict()
     .parse(req.body);
   res.json(hub.setCliApprovalMode(String(req.params.id), mode));
-});
-app.use("/api/hosts/:id/claude-mods", (req, res, next) => {
-  if (!validToken(req.headers["x-harbor-token"], token)) {
-    res.status(403).json({ error: "화면을 새로고침한 뒤 Mods를 다시 열어 주세요." });
-    return;
-  }
-  next();
-});
-app.get("/api/hosts/:id/claude-mods", async (req, res) => {
-  const host = hub.host(String(req.params.id));
-  res.json(await claudeMods.status(host, await passwordFor(host.id)));
-});
-app.get("/api/hosts/:id/claude-mods/job", (req, res) => {
-  const host = hub.host(String(req.params.id));
-  res.json({ job: claudeMods.job(host.id) || null });
-});
-app.post("/api/hosts/:id/claude-mods/install", async (req, res) => {
-  z.object({ mod: z.literal("agent-crew") }).strict().parse(req.body);
-  const host = hub.host(String(req.params.id));
-  res.status(202).json(claudeMods.install(host, await passwordFor(host.id)));
 });
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));
@@ -1085,6 +1066,7 @@ app.delete("/api/hosts/:id/credentials", async (req, res) => {
   await credentials.remove(id);
   history.close(id);
   codexUsageHistory.clear(id);
+  codexAgentTelemetry.clear(id);
   claudeHistory.close(id);
   hub.passwords.delete(id);
   files.close(id);
@@ -1119,6 +1101,7 @@ app.post("/api/hosts/:id/connect", async (req, res) => {
 app.post("/api/hosts/:id/disconnect", (req, res) => {
   history.close(String(req.params.id));
   codexUsageHistory.clear(String(req.params.id));
+  codexAgentTelemetry.clear(String(req.params.id));
   claudeHistory.close(String(req.params.id));
   hub.disconnect(String(req.params.id));
   res.json({ ok: true });
@@ -1798,7 +1781,11 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
     const file = await history.usagePath(host, password, sessionId);
     return file ? codexUsageHistory.read(host.id,sessionId,file,start=>files.usageChunk(host,file,start),()=>files.usageTail(host,file)) : null;
   });
-  res.json({ usage });
+  const enriched = usage?.provider === "codex" && usage.crew ? { ...usage,
+    crew: codexAgentTelemetry.read(host.id, sessionId, usage.crew,
+      async id => history.agentTelemetryPath(host, await passwordFor(host.id), id),
+      path => files.usageTail(host, path)) } : usage;
+  res.json({ usage: enriched });
 });
 app.get("/api/terminals/:id/rich", (req, res) => {
   res.json({
@@ -2138,6 +2125,7 @@ function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
   hub.shutdown();
   history.shutdown();
   codexUsageHistory.shutdown();
+  codexAgentTelemetry.shutdown();
   claudeHistory.shutdown();
   requests.shutdown();
   autoApproval.dispose();

@@ -157,7 +157,8 @@ test("agent status pulses are bounded, separate from drawing, and cancelled with
       id: `child-${i}`,
       type: "review",
       status: i === 70 ? "running" : "completed",
-      description: "PRIVATE PROMPT",
+      description: "Review keyboard input",
+      prompt: "PRIVATE PROMPT",
       result: "PRIVATE ANSWER",
     }));
   await f.hooks.get("session.start")!(f.$, {}, async () => ENGINE);
@@ -166,6 +167,7 @@ test("agent status pulses are bounded, separate from drawing, and cancelled with
   let payload = JSON.parse(f.snapshots.at(-1)!.text);
   assert.equal(payload.harbor_agents.length, 32);
   assert.equal(payload.harbor_agents[0].id, "child-70");
+  assert.equal(payload.harbor_agents[0].task, "Review keyboard input");
   assert.doesNotMatch(JSON.stringify(payload), /PRIVATE/);
   assert.ok(f.snapshots.at(-1)!.text.length < 16384);
   f.$.agent.list = async () => [
@@ -195,6 +197,100 @@ test("agent status pulses are bounded, separate from drawing, and cancelled with
     writes,
     "ending a session discards a queued pulse",
   );
+});
+
+test("Claude child responses count measured tokens once, preserve stream results, and expose only task and tool labels", async () => {
+  const f = await fixture();
+  f.$.agent.list = async () => [
+    {
+      id: "child",
+      type: "review",
+      description: "Review keyboard input",
+      status: "running",
+    },
+  ];
+  const response = {
+    turnId: "turn-1",
+    index: 0,
+    answer: "PRIVATE ANSWER",
+    usage: {
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_input_tokens: 80,
+      cache_creation_input_tokens: 10,
+      model: "synthetic-model",
+    },
+  };
+  const next = async function* () {
+    yield { kind: "text", text: "native text" };
+    return response;
+  };
+  const step = () => f.hooks.get("turn.step")!(f.$, { agentId: "child" }, next);
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const stream = step();
+    assert.deepEqual(await stream.next(), {
+      done: false,
+      value: { kind: "text", text: "native text" },
+    });
+    assert.equal((await stream.next()).value, response);
+  }
+  await f.flush();
+  let payload = JSON.parse(f.snapshots.at(-1)!.text);
+  assert.deepEqual(payload.harbor_agents[0].tokens, {
+    total: 210,
+    input: 190,
+    output: 20,
+    cached: 80,
+    scope: "observed",
+  });
+  assert.equal(payload.harbor_agents[0].model, "synthetic-model");
+  assert.equal(f.invalidations, 0);
+  let release!: (value: any) => void;
+  const result = { result: { text: "PRIVATE RESULT" } };
+  const operation = f.hooks.get("tool.call")!(
+    f.$,
+    {
+      agentId: "child",
+      tool: "Bash",
+      tool_use_id: "call",
+      command: "PRIVATE COMMAND",
+    },
+    () => new Promise((resolve) => (release = resolve)),
+  );
+  await f.flush();
+  payload = JSON.parse(f.snapshots.at(-1)!.text);
+  assert.equal(payload.harbor_agents[0].activity, "Bash");
+  assert.doesNotMatch(JSON.stringify(payload), /PRIVATE/);
+  release(result);
+  assert.equal(await operation, result);
+  await f.flush();
+  assert.equal(
+    JSON.parse(f.snapshots.at(-1)!.text).harbor_agents[0].activity,
+    undefined,
+  );
+  await f.hooks.get("classic.SessionStart")!(f.$, {}, async () => ({}));
+  await f.flush();
+  assert.equal(
+    JSON.parse(f.snapshots.at(-1)!.text).harbor_agents[0].tokens,
+    undefined,
+    "clear/resume cannot reuse old usage",
+  );
+});
+
+test("large Unicode agent metadata remains within the existing UTF-8 snapshot byte limit", async () => {
+  const f = await fixture();
+  f.$.agent.list = async () =>
+    Array.from({ length: 32 }, (_, i) => ({
+      id: `child-${i}-` + "x".repeat(110),
+      name: "가".repeat(100),
+      description: "한".repeat(160),
+      status: "running",
+    }));
+  await f.hooks.get("session.start")!(f.$, {}, async () => ({}));
+  await f.flush();
+  const text = f.snapshots.at(-1)!.text;
+  assert.ok(Buffer.byteLength(text, "utf8") <= 15800);
+  assert.ok(JSON.parse(text).harbor_agents.length > 0);
 });
 
 test("completed native reply reserves exactly the acknowledged rows and leaves the transcript unchanged", async () => {

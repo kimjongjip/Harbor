@@ -11,7 +11,7 @@ import { TerminalControl } from "../server/terminal-control";
 import { TerminalScreen } from "../server/terminal-screen";
 
 test(
-  "full desktop IDE moves the same live terminal and preserves drafts, splits and Mods host selection",
+  "full desktop IDE moves the same live terminal and preserves drafts, splits without an external Mods installer",
   { skip: process.platform !== "win32", timeout: 90000 },
   async () => {
     const root = resolve(".cache/ide-terminal-switch-tests");
@@ -72,10 +72,7 @@ test(
     const controls = new TerminalControl((id) => `native-${id}`);
     const input: { id: string; text: string }[] = [],
       requests: { method: string; path: string }[] = [];
-    let socketsOpened = 0,
-      installed = false,
-      installHost = "",
-      job: any;
+    let socketsOpened = 0;
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -136,44 +133,6 @@ test(
     app.get("/api/hosts/:id/files/preview", (_req, res) =>
       res.status(404).json({ error: "No fixture reports" }),
     );
-    app.get("/api/hosts/:id/claude-mods", (_req, res) =>
-      res.json({
-        version: "2.1.319",
-        compatible: true,
-        installed,
-        enabled: installed,
-      }),
-    );
-    app.get("/api/hosts/:id/claude-mods/job", (_req, res) =>
-      res.json({ job: job || null }),
-    );
-    app.post("/api/hosts/:id/claude-mods/install", (req, res) => {
-      assert.deepEqual(req.body, { mod: "agent-crew" });
-      installHost = req.params.id;
-      job = {
-        id: "fixture-job",
-        hostId: installHost,
-        status: "running",
-        message: "Installing fixture",
-        startedAt: 1,
-        updatedAt: 1,
-      };
-      res.status(202).json(job);
-      setTimeout(() => {
-        installed = true;
-        job = {
-          ...job,
-          status: "succeeded",
-          message: "새 Claude 세션부터 사용할 수 있습니다.",
-          result: {
-            version: "2.1.319",
-            compatible: true,
-            installed: true,
-            enabled: true,
-          },
-        };
-      }, 900);
-    });
     app.use("/api", (_req, res) =>
       res.json({ data: [], messages: [], requests: [], hosts: [host] }),
     );
@@ -461,23 +420,15 @@ test(
         .getByRole("button", { name: "현재 터미널로 돌아가기", exact: true })
         .click();
       await page.getByRole("button", { name: "터미널", exact: true }).click();
-      await page
-        .getByRole("button", { name: "Test server Claude Mods", exact: true })
-        .first()
-        .click();
-      await page
-        .getByRole("button", { name: "Test server에 설치", exact: true })
-        .click();
-      await page
-        .getByRole("button", { name: "설치 확인됨", exact: true })
-        .waitFor();
-      assert.equal(installHost, "fixture");
       assert.equal(
-        input.map((item) => item.text).join(""),
-        "abcdef",
-        "Mods install must not type into the current terminal",
+        await page.getByRole("button", { name: /Claude Mods/ }).count(),
+        0,
       );
-      await page.screenshot({ path: join(root, "mods-installed.png") });
+      assert.equal(
+        requests.some((request) => request.path.includes("claude-mods")),
+        false,
+      );
+      assert.equal(input.map((item) => item.text).join(""), "abcdef");
       // Reload only this isolated fixture, never the user's running Harbor.
       await page.reload();
       await page.getByRole("button", { name: "IDE", exact: true }).click();

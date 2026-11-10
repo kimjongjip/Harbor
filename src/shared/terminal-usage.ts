@@ -88,7 +88,16 @@ export function claudeUsage(
     source: "native",
     costSource: "native",
     ...(agents
-      ? { crew: { agents, updatedAt, source: "native" as const } }
+      ? {
+          crew: {
+            agents,
+            updatedAt,
+            source: "native" as const,
+            ...(value.harbor_agent_details === 1
+              ? { detailVersion: 1 as const }
+              : {}),
+          },
+        }
       : {}),
     ...(typeof model === "string" && /^[A-Za-z0-9._:[\]-]{1,150}$/.test(model)
       ? { model }

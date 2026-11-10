@@ -1,6 +1,21 @@
-import { memo, useEffect, useId, useState, type CSSProperties } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useState,
+  type CSSProperties,
+} from "react";
 import { Settings2 } from "lucide-react";
-import { CrewCharacter, type CrewCharacterKind } from "./CrewCharacter";
+import {
+  CrewCharacter,
+  crewCharacters,
+  crewCharacterNames,
+  agentCharacter,
+  type CrewCharacterKind,
+} from "./CrewCharacter";
+import { CrewAgentFacts, crewStatus as status } from "./CrewAgentFacts";
+import { CrewDemo } from "./CrewDemo";
 import type {
   TerminalAgentState,
   TerminalCrewSnapshot,
@@ -18,7 +33,7 @@ function saved(): Preferences {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "null");
     return {
-      character: ["auto", "cat", "robot", "fox"].includes(value?.character)
+      character: ["auto", ...crewCharacters].includes(value?.character)
         ? value.character
         : "auto",
       scale: Number.isFinite(value?.scale)
@@ -30,19 +45,10 @@ function saved(): Preferences {
     return initial;
   }
 }
-const status: Record<TerminalAgentState, string> = {
-  working: "작업 중",
-  waiting: "입력 대기",
-  idle: "대기",
-  completed: "완료",
-  failed: "실패",
-  stopped: "중단",
-  unknown: "상태 미확인",
-};
 const caption: Record<TerminalAgentState, string> = {
   working: "열심히 작업하고 있어요",
   waiting: "확인이나 입력을 기다려요",
-  idle: "다음 요청을 기다리고 있어요",
+  idle: "커피 한 잔 하며 기다리고 있어요",
   completed: "작업을 마쳤어요",
   failed: "작업 내용을 확인해 주세요",
   stopped: "작업이 멈췄어요",
@@ -64,6 +70,11 @@ export const TerminalCrew = memo(function TerminalCrew({
 }) {
   const [preferences, setPreferences] = useState(saved);
   const [settings, setSettings] = useState(false);
+  const [demo, setDemo] = useState(false);
+  const closeDemo = useCallback(() => setDemo(false), []);
+  useEffect(() => {
+    if (!active) setDemo(false);
+  }, [active]);
   const [visible, setVisible] = useState(
     () => document.visibilityState !== "hidden",
   );
@@ -109,10 +120,15 @@ export const TerminalCrew = memo(function TerminalCrew({
       data-state={agent.state}
       data-motion={live ? "on" : "off"}
     >
-      <CrewCharacter character={character} state={agent.state} miniature />
+      <CrewCharacter
+        character={agentCharacter(agent.id)}
+        state={agent.state}
+        miniature
+      />
       <div className="crew-agent-name">
         <strong title={agent.name}>{agent.name}</strong>
         {agent.model && <span title={agent.model}>{agent.model}</span>}
+        <CrewAgentFacts agent={agent} />
       </div>
       <span className="crew-state">{status[agent.state]}</span>
     </div>
@@ -129,19 +145,31 @@ export const TerminalCrew = memo(function TerminalCrew({
           에이전트{" "}
           <small>{agents.length ? `메인 + ${agents.length}` : "메인"}</small>
         </span>
-        <button
-          type="button"
-          aria-label="캐릭터 설정"
-          aria-expanded={settings}
-          aria-controls={settingsId}
-          title="캐릭터 · 크기 · 애니메이션"
-          onClick={() => setSettings((value) => !value)}
-        >
-          <Settings2 size={15} />
-        </button>
+        <div className="crew-heading-actions">
+          <button
+            type="button"
+            className="crew-demo-button"
+            onClick={() => setDemo(true)}
+          >
+            데모
+          </button>
+          <button
+            type="button"
+            aria-label="캐릭터 설정"
+            aria-expanded={settings}
+            aria-controls={settingsId}
+            title="캐릭터 · 크기 · 애니메이션"
+            onClick={() => setSettings((value) => !value)}
+          >
+            <Settings2 size={15} />
+          </button>
+        </div>
       </div>
       {settings && (
         <div id={settingsId} className="crew-settings">
+          <p className="crew-setting-hint">
+            메인 캐릭터 · 동료는 각자의 모습으로 표시돼요
+          </p>
           <div
             role="group"
             aria-label="캐릭터 선택"
@@ -150,9 +178,9 @@ export const TerminalCrew = memo(function TerminalCrew({
             {(
               [
                 ["auto", "자동"],
-                ["cat", "고양이"],
-                ["robot", "로봇"],
-                ["fox", "여우"],
+                ...crewCharacters.map(
+                  (value) => [value, crewCharacterNames[value]] as const,
+                ),
               ] as const
             ).map(([value, title]) => (
               <button
@@ -190,8 +218,11 @@ export const TerminalCrew = memo(function TerminalCrew({
         </div>
       )}
       <div className="crew-main" data-state={state}>
+        <div className="crew-leader-label">
+          메인 · {provider === "claude" ? "Claude" : "Codex"}
+        </div>
         <div className="crew-stage">
-          <CrewCharacter character={character} state={state} />
+          <CrewCharacter character={character} state={state} leader />
         </div>
         <div className="crew-main-caption">
           <span className="crew-state">
@@ -216,6 +247,9 @@ export const TerminalCrew = memo(function TerminalCrew({
         <p className="crew-history-note">
           마지막으로 확인한 에이전트 상태입니다.
         </p>
+      )}
+      {demo && active && (
+        <CrewDemo onClose={closeDemo} motion={preferences.motion} />
       )}
     </section>
   );
