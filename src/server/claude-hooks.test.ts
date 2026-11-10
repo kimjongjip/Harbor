@@ -37,11 +37,13 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
   const requests = new Requests(dir, resolver),
     mailbox = new Mailbox(dir, resolver);
   const events: any[] = [];
+  const usages: any[] = [];
   const bridge = new AgentBridge(mailbox, {
     terminals: () => terminals,
     host: resolver.host,
     requests,
     onClaudeEvent: (id, event) => events.push({ id, event }),
+    onUsage: (id, usage) => usages.push({ id, usage }),
   });
   const app = express();
   app.use("/claude", bridge.claudeHandle);
@@ -78,6 +80,20 @@ test("Claude HTTP hooks authenticate, scope metadata and honor only explicit per
   assert.equal((await post(start)).status, 200);
   assert.equal(events.length, 1);
   assert.equal(events[0].id, "a");
+  const usageBody = { session_id: "synthetic", context_window: { context_window_size: 1000000,
+    current_usage: { input_tokens: 1000, cache_read_input_tokens: 31000, cache_creation_input_tokens: 10000 } }, cost: { total_cost_usd: 3.25 } };
+  const postUsage = (body: any, bearer = issued.hookToken) => fetch(`${url}/usage`, {
+    method: "POST", headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  assert.equal((await postUsage(usageBody, issued.token)).status, 401);
+  assert.equal((await postUsage(usageBody)).status, 200);
+  await postUsage({ ...usageBody, session_id: "other" });
+  await postUsage({ ...usageBody, agent_id: "child" });
+  assert.equal(usages.length, 1);
+  assert.equal(usages[0].id, "a");
+  assert.equal(usages[0].usage.usedTokens, 42000);
+  assert.equal(usages[0].usage.costUsd, 3.25);
+  assert.equal(events.length, 1, "usage is not a lifecycle or permission event");
   const reference = bridge.annotations.capture("a", {
     text: "selected Claude text",
     source: { hostName: "fixture", title: "a", cwd: "/fixture/a" },

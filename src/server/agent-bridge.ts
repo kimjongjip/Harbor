@@ -8,6 +8,8 @@ import express, {
 } from "express";
 import { z } from "zod";
 import { claudeHookSchema, type ClaudeHookEvent } from "./claude-hooks.js";
+import { claudeUsage } from "./terminal-usage.js";
+import type { TerminalUsage } from "../shared/terminal-usage.js";
 import {
   claudeHookBatch,
   claudeHookMessageActive,
@@ -45,6 +47,7 @@ interface BridgeOptions {
   onState?(terminalId: string, state: "shell" | "codex"): void;
   onChange?(): void;
   onClaudeEvent?(terminalId: string, event: ClaudeHookEvent): void;
+  onUsage?(terminalId: string, usage: TerminalUsage): void;
   onClaudeContinuation?(terminalId: string, sessionId: string): void;
   requests?: Requests;
   onPeerRuntime?(terminalId: string, runtime: PeerRuntime): void;
@@ -472,6 +475,16 @@ export class AgentBridge {
     // A bounded native Stop answer can be multibyte UTF-8. Permission/MCP limits
     // remain separate, and the answer is reduced to a hash in terminal state.
     this.claudeHandle.use(express.json({ limit: "512kb" }));
+    this.claudeHandle.post("/usage", (req, res) => {
+      const credential = res.locals.harborCredential as Credential;
+      const runtime = this.peers.runtime(credential.terminalId);
+      const usage = claudeUsage(req.body);
+      // A child CLI or a late response from /clear cannot overwrite the main session.
+      if (usage && !req.body.agent_id && runtime?.kind === "claude" &&
+          runtime.state !== "offline" && runtime.sessionId === usage.sessionId)
+        this.options.onUsage?.(credential.terminalId, usage);
+      res.json({});
+    });
     this.claudeHandle.use((req, res) => {
       const event = claudeHookSchema.safeParse(req.body);
       if (!event.success) {

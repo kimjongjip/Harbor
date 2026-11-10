@@ -190,6 +190,21 @@ export class Files {
     const file = await this.readableFile(host, filename);
     return { size: file.size, name: file.name, stream: file.read() };
   }
+  /** Bounded read-only telemetry, using the existing file transport. */
+  async usageTail(host: HostConfig, filename: string) {
+    const file = await this.readableFile(host, filename);
+    if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error("Invalid usage file size");
+    const start = Math.max(0, file.size - 256 * 1024);
+    if (!file.size) return "";
+    const chunks: Buffer[] = [];
+    const stream = file.read({ start, end: file.size - 1 });
+    const timer = setTimeout(() => stream.destroy(new Error("Usage read timed out")), 8000);
+    try {
+      for await (const part of stream) chunks.push(Buffer.from(part));
+      const text = Buffer.concat(chunks).toString("utf8");
+      return start ? text.slice(text.indexOf("\n") + 1) : text;
+    } finally { clearTimeout(timer); stream.destroy(); }
+  }
   async resolvePath(host: HostConfig, filename: string, cwd: string) {
     if (!filename || /[\0\r\n]/.test(filename))
       throw new Error("파일 경로를 확인하세요.");

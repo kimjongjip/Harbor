@@ -45,6 +45,7 @@ import { TerminalRich, richSelectedText } from "./TerminalRich";
 import { TerminalConversation } from "./TerminalConversation";
 import { useTerminalHistorySession } from "./useTerminalHistorySession";
 import { TerminalControlStatus } from "./TerminalControlStatus";
+import { TerminalUsageBar } from "./TerminalUsageBar";
 import { ReconnectTerminalDialog } from "./ReconnectTerminalDialog";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { useNotifications } from "./Notifications";
@@ -126,7 +127,7 @@ export default function TerminalPane({
   const historySessionId = useTerminalHistorySession(
     nativeTerminal,
     info,
-    active && !rawOutput,
+    active,
   );
   const { push, isServerNoticeEnabled } = useNotifications();
   const openRef = useRef(open);
@@ -1480,6 +1481,11 @@ export default function TerminalPane({
           }}
         />
       )}
+      {info.agentKind && !info.exited && <TerminalUsageBar
+        terminalId={info.id} provider={info.agentKind}
+        sessionId={historySessionId || info.agentSessionId || info.resumeThreadId}
+        active={active} working={info.agentState === "working"}
+      />}
       <div className="terminal-footer">
         {info.cliApprovalMode === "full-access" && (
           <span title="이 터미널은 Codex·Claude 승인 생략·전체 권한으로 시작하도록 설정됐습니다. 이후 CLI에서 직접 바꾼 모드는 CLI에서 확인하세요.">

@@ -40,6 +40,7 @@ import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
+import { TerminalUsageStore, codexUsageTail } from "./terminal-usage.js";
 import {
   ResearchLabs,
   researchCreateSchema,
@@ -88,6 +89,7 @@ const richTerminals = new RichTerminals(
 const terminalAnnotations = new TerminalAnnotations(store.directory);
 const credentials = new Credentials(store.directory);
 const history = new History();
+const terminalUsage = new TerminalUsageStore();
 const claudeHistory = new ClaudeHistory();
 const historyProvider = z.enum(["codex", "claude"]).default("codex");
 const historyReader = (provider: "codex" | "claude") =>
@@ -111,6 +113,8 @@ let researchManager: import("./research-manager.js").ResearchLabManager;
 let research: ResearchLabs;
 const peerGenerations = new Map<string, number>();
 const codexPeers = new CodexPeerRuntime({
+  onUsage: (id, usage) => terminalUsage.put(id, usage),
+  onCompacted: (id) => terminalUsage.compact(id),
   connect: (id, peerPort) => terminals.connectPeerRuntime(id, peerPort),
   onSession: (id, sessionId) => {
     const runtime = bridge.peers.runtime(id);
@@ -212,6 +216,7 @@ const bridge = new AgentBridge(mailbox, {
   onPeerRuntime: (id, runtime) => {
     terminals.markPeerRuntime(id, runtime);
     if (runtime.state === "offline") {
+      terminalUsage.clear(id);
       peerGenerations.set(id, (peerGenerations.get(id) || 0) + 1);
       codexPeers.dispose(id);
     } else if (runtime.kind === "codex") {
@@ -245,6 +250,7 @@ const bridge = new AgentBridge(mailbox, {
     mobile.completions.continued(id);
   },
   onClaudeEvent: (id, event) => {
+    if (event.hook_event_name === "SessionStart" || event.hook_event_name === "SessionEnd") terminalUsage.clear(id);
     terminals.markClaudeEvent(id, event);
     mobile.completions.claudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
@@ -257,6 +263,7 @@ const bridge = new AgentBridge(mailbox, {
       );
     }
   },
+  onUsage: (id, usage) => terminalUsage.put(id, usage),
 });
 terminals.on("peer-runtime-restored", (id, runtime) =>
   bridge.setPeerRuntime(id, runtime),
@@ -960,7 +967,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.8" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.9" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1762,6 +1769,25 @@ app.post("/api/terminals/:id/reconnect", async (req, res) => {
       .status(409)
       .json({ error: errorText(error), code: disconnectCategory(error) });
   }
+});
+app.get("/api/terminals/:id/usage", async (req, res) => {
+  if (!validToken(req.headers["x-harbor-token"], token)) {
+    res.status(403).json({ error: "화면을 새로고침해 주세요." });
+    return;
+  }
+  const terminal = terminals.list().find(t => t.id === req.params.id && !t.exited);
+  if (!terminal || !terminal.agentKind) { res.json({ usage: null }); return; }
+  const sessionId = z.string().uuid().parse(req.query.sessionId);
+  const bound = terminal.agentSessionId || terminal.resumeThreadId;
+  if (bound && bound !== sessionId) { res.json({ usage: null }); return; }
+  const host = hub.host(terminal.hostId);
+  const usage = await terminalUsage.read(terminal.id, terminal.agentKind, sessionId, async () => {
+    const password = await passwordFor(host.id);
+    if (terminal.agentKind === "claude") return claudeHistory.usage(host, password, sessionId);
+    const file = await history.usagePath(host, password, sessionId);
+    return file ? codexUsageTail(sessionId, await files.usageTail(host, file), Date.now()) : null;
+  });
+  res.json({ usage });
 });
 app.get("/api/terminals/:id/rich", (req, res) => {
   res.json({

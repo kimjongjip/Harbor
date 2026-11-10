@@ -122,6 +122,14 @@ export class History {
       }
     }
   }
+  /** Only thread/read: never start or resume an engine to obtain telemetry. */
+  async usagePath(host: HostConfig, password: string | undefined, id: string) {
+    return this.using(host, password, async client => {
+      const result = await client.call("thread/read", { threadId: id, includeTurns: false }, 12000);
+      if (result.thread?.id !== id) throw new Error("Usage session changed");
+      return typeof result.thread.path === "string" ? result.thread.path : null;
+    });
+  }
   async models(host: HostConfig, password?: string): Promise<ResearchModel[]> {
     return this.using(host, password, async (client) => {
       const models = new Map<string, ResearchModel>();

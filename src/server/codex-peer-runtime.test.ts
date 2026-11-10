@@ -39,6 +39,7 @@ async function fixture(
   const received: { messageId: string; sessionId: string }[] = [];
   const states: string[] = [];
   const answers: { terminalId: string; answer: CodexCompletedAnswer }[] = [];
+  const usages: any[] = [];
   const completed: { terminalId: string; sessionId: string; turnId: string }[] =
     [];
   const failures: { terminalId: string; sessionId: string; notice: string }[] =
@@ -107,6 +108,7 @@ async function fixture(
     });
   });
   const runtime = new CodexPeerRuntime({
+    onUsage: (terminalId, usage) => usages.push({ terminalId, usage }),
     connect: async (_id, port) => {
       const stream = createConnection({ host: "127.0.0.1", port });
       await once(stream, "connect");
@@ -133,6 +135,7 @@ async function fixture(
     states,
     failures,
     answers,
+    usages,
     completed,
     notify(method: string, params: any) {
       assert.ok(connection);
@@ -156,6 +159,22 @@ async function fixture(
 }
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+test("native context events update only the bound main conversation without sending any input", async () => {
+  const app = await fixture();
+  try {
+    app.runtime.setSession("fixture-terminal", sessionId);
+    const before = app.requests.length;
+    const tokenUsage = { last: { totalTokens: 42000 }, total: { totalTokens: 8000000 }, modelContextWindow: 1000000 };
+    app.notify("thread/tokenUsage/updated", { threadId: "child-session", tokenUsage });
+    app.notify("thread/tokenUsage/updated", { threadId: sessionId, tokenUsage });
+    await settle();
+    assert.equal(app.usages.length, 1);
+    assert.equal(app.usages[0].usage.usedTokens, 42000);
+    assert.equal(app.usages[0].usage.contextWindow, 1000000);
+    assert.equal(app.requests.length, before);
+  } finally { await app.close(); }
+});
 
 test("IDE text enters the exact native conversation FIFO without peer instructions or peer receipts", async () => {
   const app = await fixture({ fresh: true });

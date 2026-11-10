@@ -1,5 +1,17 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.9 공통 컨텍스트 상태줄
+
+`TerminalUsageBar`는 xterm mount와 독립된 형제 영역에 표시한다. 자체 상태에서 인증된 `/api/terminals/:id/usage?sessionId=...`만 조회하며 작업 중 2초·대기 중 5초, 오류 시 15초 간격을 사용한다. 숨긴 pane·문서는 조회를 멈추고 scope 변경 시 이전 수치를 즉시 숨긴다. 원문 보기에서도 표시용 대화 ID 확인을 유지해 다른 대화의 수치를 재사용하지 않는다. 갱신은 부모 TerminalPane·TranscriptItems를 다시 렌더하지 않는다. 새 API가 없는 백엔드는 반복 조회하지 않는다.
+
+`TerminalUsageStore`는 전역 상태 broadcast·디스크 저장과 분리된 최대 256개 메모리 캐시다. 네이티브 수치는 제공자·세션이 일치할 때만 반환하고 읽기 요청을 합친다. Codex는 기존 `CodexPeerRuntime`의 `thread/tokenUsage/updated`를 사용한다. `last.totalTokens`가 현재 컨텍스트이며 `total`은 누적치다. 공유 daemon 등 이벤트가 없는 연결은 기존 읽기 전용 History의 `thread/read`로 rollout 경로를 확인하고 Files에서 마지막 256KiB만 읽는다. 새 thread/start·resume나 PTY 입력은 하지 않는다. `compacted` 이후 이전 컨텍스트를 재사용하지 않는다.
+
+Claude는 공식 `statusLine` JSON을 세션 전용 command로 받아 기존 hook 토큰으로 `/bridge/claude/usage`에 전달한다. 사용자 전역 설정 파일은 수정하지 않으며 해당 실행의 네이티브 상태줄을 Harbor 표시로 대체한다. Windows PowerShell·SSH Python 모두 2초 제한과 무출력 실패 처리를 사용한다. 부모 세션과 다른 ID·agent_id 입력은 거부하고 표시 정보만 보관한다. current_usage의 입력·캐시 생성·캐시 읽기를 합산하며 current_usage:null은 압축 직후 등의 미확정 상태다. 구세션은 이미 기록 보기에서 찾은 파일만 읽고 새 프로젝트 탐색은 하지 않는다. 한도·가격을 모델 이름으로 추정하지 않는다. API 출처: [Codex 사용량 이벤트](https://learn.chatgpt.com/docs/app-server), [Claude statusLine 필드](https://code.claude.com/docs/en/statusline).
+
+`terminal-usage.test.ts`는 현재/누적 구분·압축·결측·세션 격리·동시 조회·범위 읽기·읽기 전용 경로 탐색을 검증한다. 브리지와 peer runtime 테스트는 다른 세션/토큰 거부 및 입력 전송 없음을 검사한다. `claude-statusline.test.ts`는 격리 HTTP 서버와 PowerShell에서 실제 command 전송을 확인한다. `terminal-usage.browser.test.ts`는 별도 숨긴 Electron 창에서 좁은 화면·밝은/어두운 테마·부모 재렌더 없음·입력 보존·비활성 조회 중지·늦은 응답 폐기를 검사한다. 실제 사용자 CLI나 node-pty를 테스트로 실행하지 않는다.
+
+수집 경로가 새 백엔드에 있으므로 이전 실행에 화면 파일만 복사해서 활성화됐다고 보고하지 않는다. 새 패키지와 release pointer를 준비하고 사용자의 다음 정상 실행에 적용한다. 기존 Claude 프로세스는 새 statusLine 설정으로 실행/재개하기 전에는 저장 기록에 있는 값만 제공한다.
+
 ## 1.18.8 공유 Codex 화면 유지
 
 `useTerminalHistorySession`의 복구 대상 판정과 활성 표시를 분리한다. 비활성 탭·원문 보기는 조회 구독만 정지하고 검증한 ID 및 `TerminalConversation`을 유지한다. 복구 값은 terminal 객체·host/terminal scope·대화 제목과 함께 보관하며, 활성화 layout effect에서 현재 제목을 확인해 다른 대화가 이전 조판으로 한 프레임 보이지 않게 한다. 종료·제공자/터미널 교체·원래 세션 ID 도착은 기존 우선순위와 취소 규칙을 따른다.

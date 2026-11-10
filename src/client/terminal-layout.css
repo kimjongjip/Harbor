@@ -323,7 +323,7 @@
   height: auto;
 }
 .terminal-footer {
-  order: 2;
+  order: 3;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -335,6 +335,43 @@
   color: var(--muted);
   font-size: calc(var(--ui-font-size, 14px) * 11 / 12);
 }
+.terminal-usage {
+  order: 2;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: calc(var(--ui-font-size, 14px) * 12 / 14);
+  font-variant-numeric: tabular-nums;
+}
+.terminal-usage-meter {
+  display: block;
+  flex: 0 1 150px;
+  min-width: 36px;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+}
+.terminal-usage-meter > span {
+  display: block;
+  height: 100%;
+  background: #599b48;
+}
+.terminal-usage-meter.warning > span { background: #c48c27; }
+.terminal-usage-meter.critical > span { background: #d15b57; }
+.terminal-usage-meter.unknown { opacity: .5; }
+.terminal-usage-label, .terminal-usage-percent, .terminal-usage-tokens, .terminal-usage-cost { white-space: nowrap; }
+.terminal-usage-percent { min-width: 42px; }
+.terminal-usage-divider { padding: 0 3px; }
+.terminal-usage-tokens, .terminal-usage-cost, .terminal-usage-note { color: var(--muted); }
+.terminal-usage-note { margin-left: auto; font-size: 11px; }
 .terminal-footer-status {
   flex: 1 1 0;
   min-width: 0;

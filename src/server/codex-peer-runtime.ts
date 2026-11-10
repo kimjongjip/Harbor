@@ -1,5 +1,7 @@
 import type { Duplex } from "node:stream";
 import WebSocket from "ws";
+import { codexUsage } from "./terminal-usage.js";
+import type { TerminalUsage } from "../shared/terminal-usage.js";
 
 export interface CodexPeerEndpoint {
   port: number;
@@ -43,6 +45,8 @@ export interface CodexPeerCallbacks {
   onTurnCompleted?(terminalId: string, sessionId: string, turnId: string): void;
   /** Authoritative completed reply on the bound native primary thread only. */
   onAnswer?(terminalId: string, answer: CodexCompletedAnswer): void;
+  onUsage?(terminalId: string, usage: TerminalUsage): void;
+  onCompacted?(terminalId: string): void;
 }
 
 type NativeMessage = {
@@ -512,6 +516,12 @@ export class CodexPeerRuntime {
         params.thread.cwd,
       );
     if (params.threadId !== entry.sessionId) return;
+    if (message.method === "thread/tokenUsage/updated" && entry.sessionId) {
+      const usage = codexUsage(entry.sessionId, params.tokenUsage);
+      if (usage) this.callbacks.onUsage?.(terminalId, usage);
+    }
+    if (message.method === "item/completed" && params.item?.type === "contextCompaction")
+      this.callbacks.onCompacted?.(terminalId);
     if (
       message.method === "item/completed" &&
       entry.sessionId &&

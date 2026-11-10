@@ -9,6 +9,7 @@ import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCurso
 import { assembleClaudeHistory, belongsToClaudeSession, projectClaudeRecord, type ClaudeHistoryRecord } from './claude-history-items.js';
 import { historyActivities } from './history-activity.js';
 import { readSftpRange } from './sftp-range.js';
+import { claudeUsageTail } from './terminal-usage.js';
 
 const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
@@ -231,6 +232,20 @@ export class ClaudeHistory {
     return this.using(host, password, async r => { const search = options.search?.toLocaleLowerCase(); const all = (await this.catalog(r, host.id)).filter(e => !search || [e.thread.title, e.thread.cwd, e.thread.preview].some(t => t.toLocaleLowerCase().includes(search))); const offset = this.offset(options.cursor); return { data: all.slice(offset, offset + 50).map(e => e.thread), nextCursor: offset + 50 < all.length ? String(offset + 50) : null }; });
   }
   private offset(cursor?: string) { if (cursor && !/^\d{1,8}$/.test(cursor)) throw new Error('잘못된 Claude 기록 페이지입니다.'); return Number(cursor || 0); }
+  async usage(host: HostConfig, password: string | undefined, id: string) {
+    if (!validId(id)) throw new Error('Invalid Claude session');
+    // The conversation reader already discovers files. A status tick must never
+    // scan every project or compete with the initial transcript load.
+    const entry = this.sessions.get(sessionKey(host.id, id)) || this.cache.get(host.id)?.entries.find(e => e.thread.id === id);
+    if (!entry) return null;
+    return this.using(host, password, async r => {
+      const stat = r.stat ? await r.stat(entry.file) : { directory: false, size: entry.size, modified: entry.thread.updatedAt };
+      if (stat.directory || !Number.isSafeInteger(stat.size) || stat.size < 0) return null;
+      const start = Math.max(0, stat.size - 256 * 1024);
+      const text = (await r.read(entry.file, start, stat.size - start)).toString();
+      return claudeUsageTail(id, start ? text.slice(text.indexOf('\n') + 1) : text, stat.modified);
+    });
+  }
   async read(host: HostConfig, password: string | undefined, id: string, cursor?: string, options: HistoryReadOptions = {}): Promise<HistoryDetail> {
     if (!validId(id)) throw new Error('잘못된 Claude 세션 ID입니다.');
     const page = decodeClaudePageCursor(cursor);

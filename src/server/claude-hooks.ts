@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { shellQuote } from "./ssh.js";
+import { claudeStatuslineCommand } from "./claude-statusline.js";
 
 export const claudeHookSchema = z.object({
   hook_event_name: z.enum([
@@ -59,6 +60,7 @@ export function claudeHookSettings(
 ) {
   const events = claudeHookSchema.shape.hook_event_name.options;
   return JSON.stringify({
+    statusLine: { type: "command", command: claudeStatuslineCommand(url, platform) },
     hooks: Object.fromEntries(
       events.map((event) => [
         event,
