@@ -15,7 +15,7 @@ export const crewCharacterNames: Record<CrewCharacterKind, string> = {
   cat: "고양이",
   robot: "로봇",
   fox: "여우",
-  human: "사람",
+  human: "남자",
   penguin: "펭귄",
   dog: "강아지",
   frog: "개구리",
@@ -126,21 +126,19 @@ export const CrewCharacter = memo(function CrewCharacter({
           </g>
         ) : character === "human" ? (
           <g>
-            <path className="crew-hair" d="M43 46c-7-26 54-27 50 1v21H43z" />
+            <path className="crew-hair" d="M45 49V39q0-13 23-13t23 13v10z" />
             <path className="crew-fur" d="M42 51h7v12h-7zM87 51h7v12h-7z" />
-            <rect
+            <path
               className="crew-fur"
-              x="47"
-              y="39"
-              width="42"
-              height="36"
-              rx="14"
+              d="M47 39h42v24l-6 10-7 4H60l-7-4-6-10z"
             />
             <path
               className="crew-hair"
-              d="M47 49V36h42v15L78 39Q66 50 47 49Z"
+              d="M46 49V35l9-7 14 2 8-5 13 10v17h-5V41l-7-4-12 7-14-3v8z"
             />
-            <path className="crew-hair-shine" d="M50 37q14-10 29-2" />
+            <path className="crew-hair-shine" d="m54 34 11 2 11-5" />
+            <path className="crew-human-brows" d="m54 49 9-1m10 0 9 1" />
+            <path className="crew-human-jaw" d="m53 66 4 6 7 3h8l7-3 4-6" />
           </g>
         ) : character === "penguin" ? (
           <g>

@@ -208,7 +208,7 @@ test(
         ["고양이", "cat"],
         ["로봇", "robot"],
         ["여우", "fox"],
-        ["사람", "human"],
+        ["남자", "human"],
         ["펭귄", "penguin"],
         ["강아지", "dog"],
         ["개구리", "frog"],
@@ -222,6 +222,10 @@ test(
           await page.locator(".crew-agent .crew-" + character).count(),
           2,
         );
+        if (character === "human")
+          await page
+            .locator(".crew-main")
+            .screenshot({ path: join(directory, "male-character.png") });
       }
       await page.getByRole("button", { name: "고양이", exact: true }).click();
       await page.getByRole("button", { name: "캐릭터 설정" }).click();

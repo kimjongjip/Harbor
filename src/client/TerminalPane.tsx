@@ -107,12 +107,14 @@ export default function TerminalPane({
   active,
   focused = active,
   terminalColorsSupported = false,
+  showHarborPanel = true,
   hostName,
 }: {
   info: TerminalInfo;
   active: boolean;
   focused?: boolean;
   terminalColorsSupported?: boolean;
+  showHarborPanel?: boolean;
   hostName?: string;
 }) {
   const open = usePreview();
@@ -1769,6 +1771,7 @@ export default function TerminalPane({
           data-testid={`terminal-${info.id}`}
         />
         {info.agentKind && !info.exited && <TerminalUsageBar
+          visible={showHarborPanel}
           hostId={info.hostId}
           terminalId={info.id} provider={info.agentKind}
           sessionId={historySessionId || info.agentSessionId || info.resumeThreadId}

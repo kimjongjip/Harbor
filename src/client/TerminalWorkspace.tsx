@@ -320,6 +320,7 @@ export default function TerminalWorkspace({
   popoutId,
   ready,
   terminalColorsSupported = false,
+  showHarborPanel = true,
   singleTerminalId,
   onFocus,
   onCloseTerminal,
@@ -335,6 +336,7 @@ export default function TerminalWorkspace({
   popoutId: string | null;
   ready: boolean;
   terminalColorsSupported?: boolean;
+  showHarborPanel?: boolean;
   /** IDE presents one existing pane without changing the saved split layout. */
   singleTerminalId?: string;
   onFocus: (id: string) => void;
@@ -882,6 +884,7 @@ export default function TerminalWorkspace({
                     active={visible && isShown}
                     focused={visible && focusId === info.id}
                     terminalColorsSupported={terminalColorsSupported}
+                    showHarborPanel={showHarborPanel}
                   />
                 </div>
               </article>

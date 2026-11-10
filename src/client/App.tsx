@@ -1320,6 +1320,7 @@ export default function App() {
                     terminals={state.terminals}
                     hosts={orderedHosts}
                     activeId={activeId}
+                    showHarborPanel={!ideMode}
                     singleTerminalId={
                       ideMode && ideNativeTerminal ? ideTerminal?.id : undefined
                     }

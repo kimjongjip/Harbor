@@ -506,6 +506,19 @@
   stroke-width: 3;
   stroke-linecap: round;
 }
+.crew-human-brows {
+  fill: none;
+  stroke: #584740;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.crew-human-jaw {
+  fill: none;
+  stroke: #9f7867;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
 .crew-penguin-belly {
   fill: var(--face);
 }

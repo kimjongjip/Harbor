@@ -10,7 +10,7 @@ import { _electron } from "playwright";
 
 test(
   "Harbor's right status panel keeps input and parent renders stable, collapses without remounting, and rejects stale usage",
-  { skip: process.platform !== "win32", timeout: 60000 },
+  { skip: process.platform !== "win32", timeout: 90000 },
   async () => {
     const root = resolve(".cache/terminal-usage-browser-tests");
     await mkdir(root, { recursive: true });
@@ -298,19 +298,22 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       );
       await page.screenshot({ path: join(directory, "light.png") });
       await page.setViewportSize({ width: 360, height: 500 });
+      await page.locator(".terminal-usage").waitFor({ state: "detached" });
+      const mobileReads = reads;
+      await page.waitForTimeout(2250);
+      assert.equal(reads, mobileReads, "mobile layout stops usage polling");
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
         true,
-        "narrow IDE pane has no horizontal overflow",
+        "mobile layout has no horizontal overflow",
       );
       assert.ok(
         await page.evaluate(
           () =>
-            document.querySelector(".terminal-usage")!.getBoundingClientRect()
-              .left >=
-            document.querySelector("textarea")!.getBoundingClientRect().right,
+            document.querySelector("textarea")!.getBoundingClientRect().width >=
+            innerWidth - 40,
         ),
       );
       await page.evaluate(() => {

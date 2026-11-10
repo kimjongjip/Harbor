@@ -98,6 +98,20 @@ test(
       res.json({ name: "codex-harbor", version: "1.18.0" }),
     );
     app.get("/api/terminals/:id/rich", (_req, res) => res.json({ blocks: [] }));
+    app.get("/api/terminals/:id/usage", (req, res) =>
+      res.json({
+        usage: {
+          provider: "codex",
+          sessionId: `native-${req.params.id}`,
+          usedTokens: 42000,
+          contextWindow: 200000,
+          usedPercent: 21,
+          costUsd: null,
+          updatedAt: Date.now(),
+          source: "native",
+        },
+      }),
+    );
     app.get("/api/terminals/:id/control", (req, res) =>
       res.json({ control: controls.view(req.params.id) }),
     );
@@ -192,6 +206,7 @@ test(
         .getByText(/UNSENT one/)
         .waitFor();
       const pane = page.locator('[data-terminal-id="one"]');
+      await pane.locator(".terminal-usage").waitFor();
       await pane.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("abc");
       await page.waitForFunction(() =>
@@ -256,6 +271,12 @@ test(
       );
       await page.getByRole("button", { name: "IDE", exact: true }).click();
       await page.getByLabel("IDE 작업 공간", { exact: true }).waitFor();
+      await page.waitForFunction(
+        () => !document.querySelector(".terminal-usage"),
+      );
+      const ideUsageReads = requests.filter((request) =>
+        request.path.endsWith("/usage"),
+      ).length;
       await page.waitForFunction(() => {
         const editor = document
           .querySelector(".harbor-ide-region")
@@ -357,6 +378,11 @@ test(
           ?.textContent?.includes("UNSENT one abcdef"),
       );
       await page.screenshot({ path: join(root, "same-terminal-in-ide.png") });
+      assert.equal(
+        requests.filter((request) => request.path.endsWith("/usage")).length,
+        ideUsageReads,
+        "IDE keeps usage polling stopped while preserving terminal input",
+      );
       await page.getByLabel("IDE 세션", { exact: true }).selectOption("two");
       await page
         .locator('[data-terminal-id="two"] .terminal-native-flow')
@@ -369,6 +395,7 @@ test(
         "IDE selection preserves the terminal split layout",
       );
       await page.getByRole("button", { name: "터미널", exact: true }).click();
+      await pane.locator(".terminal-usage").waitFor();
       await page.waitForFunction(
         () =>
           document

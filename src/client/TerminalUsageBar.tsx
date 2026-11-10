@@ -16,6 +16,7 @@ interface Props {
   provider: "codex" | "claude";
   sessionId?: string;
   active: boolean;
+  visible?: boolean;
   working: boolean;
   waiting?: boolean;
 }
@@ -26,10 +27,21 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   hostId,
   provider,
   sessionId,
-  active,
+  active: terminalActive,
+  visible = true,
   working,
   waiting = false,
 }: Props) {
+  const mobileQuery = "(max-width: 760px), (hover: none) and (pointer: coarse)";
+  const [mobile, setMobile] = useState(() => matchMedia(mobileQuery).matches);
+  useEffect(() => {
+    const media = matchMedia(mobileQuery);
+    const changed = () => setMobile(media.matches);
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
+  const shown = visible && !mobile;
+  const active = terminalActive && shown;
   const [collapsed, setCollapsed] = useState(false);
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
@@ -151,6 +163,9 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
       document.removeEventListener("visibilitychange", visibility);
     };
   }, [scope, terminalId, hostId, provider, sessionId, active, working]);
+  // Keep cached usage/collapse state while releasing the panel's space, resize
+  // observer and Crew animations. The terminal DOM and socket stay mounted.
+  if (!shown) return null;
   const usage = current?.usage;
   const percent = usage?.usedPercent ?? null;
   const title = [
