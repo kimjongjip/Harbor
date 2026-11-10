@@ -1,11 +1,6 @@
 import { useEffect, useState } from "react";
 import { Modal } from "./Dialogs";
-import {
-  CrewCharacter,
-  crewCharacters,
-  crewCharacterNames,
-  type CrewCharacterKind,
-} from "./CrewCharacter";
+import { CrewCharacter, type CrewCharacterKind } from "./CrewCharacter";
 import { CrewAgentFacts, crewStatus } from "./CrewAgentFacts";
 import type {
   TerminalAgent,
@@ -22,56 +17,64 @@ const jobs = [
   "좁은 IDE 화면을 확인해요",
   "변경 내용을 문서에 정리해요",
 ];
+const roles = [
+  "메인 · 작업 조율",
+  "입력 성능 분석",
+  "테스트 실행",
+  "상태 연결 검토",
+  "캐릭터 디자인",
+  "사용량 표시",
+  "IDE 화면 검토",
+  "문서 정리",
+];
 export function crewDemoFrame(
   frame: number,
+  character: CrewCharacterKind = "cat",
 ): (TerminalAgent & { character: CrewCharacterKind; leader: boolean })[] {
-  return (["human", ...crewCharacters] as CrewCharacterKind[]).map(
-    (character, index) => {
-      const tick = frame + index * 2,
-        phase = tick % 12;
-      const state: TerminalAgentState =
-        phase < 6
-          ? "working"
-          : phase < 8
-            ? "waiting"
-            : phase < 10
-              ? "completed"
-              : "idle";
-      const total =
-        1200 +
-        index * 1450 +
-        (Math.floor(tick / 12) * 6 + Math.min(phase, 6)) * 210;
-      const output = Math.floor(total / 5);
-      return {
-        id: `demo-${index}`,
-        character,
-        leader: index === 0,
-        name:
-          index === 0
-            ? "메인 · 작업 조율"
-            : `${crewCharacterNames[character]} 에이전트`,
-        state,
-        task: jobs[index],
-        activity: ["코드 검토", "명령 실행", "파일 읽기"][index % 3],
-        tokens: {
-          total,
-          input: total - output,
-          output,
-          cached: Math.floor(total / 4),
-          scope: "session",
-        },
-      };
-    },
-  );
+  return jobs.map((task, index) => {
+    const tick = frame + index * 2,
+      phase = tick % 12;
+    const state: TerminalAgentState =
+      phase < 6
+        ? "working"
+        : phase < 8
+          ? "waiting"
+          : phase < 10
+            ? "completed"
+            : "idle";
+    const total =
+      1200 +
+      index * 1450 +
+      (Math.floor(tick / 12) * 6 + Math.min(phase, 6)) * 210;
+    const output = Math.floor(total / 5);
+    return {
+      id: `demo-${index}`,
+      character,
+      leader: index === 0,
+      name: roles[index],
+      state,
+      task,
+      activity: ["코드 검토", "명령 실행", "파일 읽기"][index % 3],
+      tokens: {
+        total,
+        input: total - output,
+        output,
+        cached: Math.floor(total / 4),
+        scope: "session",
+      },
+    };
+  });
 }
 
 /** Pure local demo: no API calls, agents, conversations or usage writes. */
 export function CrewDemo({
   onClose,
   motion,
+  character = "cat",
 }: {
   onClose: () => void;
   motion: boolean;
+  character?: CrewCharacterKind;
 }) {
   const [frame, setFrame] = useState(0),
     [paused, setPaused] = useState(false);
@@ -96,7 +99,7 @@ export function CrewDemo({
     const timer = setInterval(() => setFrame((value) => value + 1), 2500);
     return () => clearInterval(timer);
   }, [playing]);
-  const agents = crewDemoFrame(frame);
+  const agents = crewDemoFrame(frame, character);
   return (
     <Modal
       title="Harbor Crew 미리보기"

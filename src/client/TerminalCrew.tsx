@@ -11,7 +11,6 @@ import {
   CrewCharacter,
   crewCharacters,
   crewCharacterNames,
-  agentCharacter,
   type CrewCharacterKind,
 } from "./CrewCharacter";
 import { CrewAgentFacts, crewStatus as status } from "./CrewAgentFacts";
@@ -113,26 +112,37 @@ export const TerminalCrew = memo(function TerminalCrew({
     !unavailable &&
     crew?.source === "native" &&
     (provider === "codex" || Date.now() - crew.updatedAt < 30000);
-  const row = (agent: (typeof agents)[number]) => (
-    <div
-      className="crew-agent"
-      key={agent.id}
-      data-state={agent.state}
-      data-motion={live ? "on" : "off"}
-    >
-      <CrewCharacter
-        character={agentCharacter(agent.id)}
-        state={agent.state}
-        miniature
-      />
-      <div className="crew-agent-name">
-        <strong title={agent.name}>{agent.name}</strong>
-        {agent.model && <span title={agent.model}>{agent.model}</span>}
-        <CrewAgentFacts agent={agent} />
+  const row = (agent: (typeof agents)[number]) => {
+    const title =
+      agent.task ||
+      (/^(?:general[\s_-]*purpose|agent|에이전트)$/i.test(agent.name.trim())
+        ? "작업 설명 수신 대기"
+        : agent.name);
+    const metadata = [
+      agent.name !== title ? agent.name : undefined,
+      agent.model,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <div
+        className="crew-agent"
+        key={agent.id}
+        data-state={agent.state}
+        data-motion={live ? "on" : "off"}
+      >
+        <CrewCharacter character={character} state={agent.state} miniature />
+        <div className="crew-agent-name">
+          <strong className="crew-agent-title" title={title}>
+            {title}
+          </strong>
+          {metadata && <span title={metadata}>{metadata}</span>}
+          <CrewAgentFacts agent={agent} showTask={false} />
+        </div>
+        <span className="crew-state">{status[agent.state]}</span>
       </div>
-      <span className="crew-state">{status[agent.state]}</span>
-    </div>
-  );
+    );
+  };
   return (
     <section
       className="terminal-crew"
@@ -168,7 +178,7 @@ export const TerminalCrew = memo(function TerminalCrew({
       {settings && (
         <div id={settingsId} className="crew-settings">
           <p className="crew-setting-hint">
-            메인 캐릭터 · 동료는 각자의 모습으로 표시돼요
+            메인과 모든 동료에게 같은 캐릭터를 적용해요
           </p>
           <div
             role="group"
@@ -249,7 +259,11 @@ export const TerminalCrew = memo(function TerminalCrew({
         </p>
       )}
       {demo && active && (
-        <CrewDemo onClose={closeDemo} motion={preferences.motion} />
+        <CrewDemo
+          onClose={closeDemo}
+          motion={preferences.motion}
+          character={character}
+        />
       )}
     </section>
   );

@@ -19,7 +19,7 @@ test(
       agents: [
         {
           id: "reviewer",
-          name: "코드 검토",
+          name: "general-purpose",
           state: "working",
           task: "키보드 입력과 화면 갱신을 검토해요",
           activity: "Read",
@@ -34,7 +34,7 @@ test(
         },
         {
           id: "waiting",
-          name: "자료 확인",
+          name: "general-purpose",
           state: "waiting",
           task: "검토 결과를 기다려요",
         },
@@ -89,6 +89,20 @@ test(
         errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.waitForSelector(".crew-main .crew-robot");
+      assert.equal(await page.locator(".crew-agent .crew-robot").count(), 2);
+      assert.deepEqual(
+        await page.locator(".crew-agent-title").allTextContents(),
+        ["키보드 입력과 화면 갱신을 검토해요", "검토 결과를 기다려요"],
+      );
+      assert.equal(
+        await page.locator(".crew-agent-task").count(),
+        0,
+        "task is the title, not repeated below",
+      );
+      assert.match(
+        await page.locator(".crew-agent-name > span").first().innerText(),
+        /general-purpose.*synthetic-model/,
+      );
       assert.equal(await page.locator(".crew-main .crew-crown").count(), 1);
       assert.equal(await page.locator(".crew-agent .crew-crown").count(), 0);
       assert.equal(
@@ -120,16 +134,15 @@ test(
       assert.match(await dialog.innerText(), /샘플 작업 · 가상 토큰/);
       assert.equal(await dialog.locator(".crew-demo-card").count(), 8);
       assert.equal(await dialog.locator(".crew-crown").count(), 1);
-      for (const character of [
-        "human",
-        "penguin",
-        "dog",
-        "frog",
-        "cat",
-        "robot",
-        "fox",
-      ])
-        assert.ok((await dialog.locator(".crew-" + character).count()) > 0);
+      assert.equal(
+        await dialog.locator(".crew-robot").count(),
+        8,
+        "demo follows the selected team character",
+      );
+      assert.match(
+        await dialog.locator(".crew-demo-card-heading").nth(1).innerText(),
+        /입력 성능 분석/,
+      );
       await dialog
         .getByRole("button", { name: "일시정지", exact: true })
         .click();
@@ -192,6 +205,9 @@ test(
       await page.setViewportSize({ width: 1180, height: 940 });
       await page.getByRole("button", { name: "캐릭터 설정" }).click();
       for (const [label, character] of [
+        ["고양이", "cat"],
+        ["로봇", "robot"],
+        ["여우", "fox"],
         ["사람", "human"],
         ["펭귄", "penguin"],
         ["강아지", "dog"],
@@ -202,11 +218,16 @@ test(
           await page.locator(".crew-main .crew-" + character).count(),
           1,
         );
+        assert.equal(
+          await page.locator(".crew-agent .crew-" + character).count(),
+          2,
+        );
       }
+      await page.getByRole("button", { name: "고양이", exact: true }).click();
       await page.getByRole("button", { name: "캐릭터 설정" }).click();
       await page
-        .locator(".crew-main")
-        .screenshot({ path: join(directory, "frog-coffee.png") });
+        .locator(".terminal-crew")
+        .screenshot({ path: join(directory, "cat-team-tasks.png") });
       await page.evaluate(() => (window as any).setState("working"));
       await page.waitForFunction(
         () =>
@@ -220,6 +241,7 @@ test(
         "none",
       );
       await demo.click();
+      assert.equal(await dialog.locator(".crew-cat").count(), 8);
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.waitForFunction(
         () =>
@@ -234,6 +256,15 @@ test(
         "none",
       );
       await page.keyboard.press("Escape");
+      assert.equal(
+        await page.evaluate(() => (window as any).renders),
+        parentRenders + 1,
+        "character changes never rerender the parent; only the fixture's work-state change does",
+      );
+      // Restore preferences only in this isolated fixture; never reload Harbor.
+      await page.reload();
+      await page.waitForSelector(".crew-main .crew-cat");
+      assert.equal(await page.locator(".crew-agent .crew-cat").count(), 2);
       assert.equal(apiCalls, 0);
       assert.deepEqual(errors, []);
       console.log(`Crew demo preview: ${directory}`);

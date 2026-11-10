@@ -27,8 +27,10 @@ const tools: Record<string, string> = {
 
 export const CrewAgentFacts = memo(function CrewAgentFacts({
   agent,
+  showTask = true,
 }: {
   agent: TerminalAgent;
+  showTask?: boolean;
 }) {
   const tokens = agent.tokens;
   const detail = tokens
@@ -53,9 +55,11 @@ export const CrewAgentFacts = memo(function CrewAgentFacts({
     : "CLI가 이 에이전트의 사용량을 아직 제공하지 않았습니다.";
   return (
     <div className="crew-agent-facts">
-      <p className="crew-agent-task" title={agent.task}>
-        {agent.task || "작업 설명 수신 대기"}
-      </p>
+      {showTask && (
+        <p className="crew-agent-task" title={agent.task}>
+          {agent.task || "작업 설명 수신 대기"}
+        </p>
+      )}
       {agent.activity && agent.state === "working" && (
         <span className="crew-agent-activity" title={agent.activity}>
           {tools[agent.activity] || agent.activity}

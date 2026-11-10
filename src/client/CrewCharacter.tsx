@@ -20,11 +20,6 @@ export const crewCharacterNames: Record<CrewCharacterKind, string> = {
   dog: "강아지",
   frog: "개구리",
 };
-export function agentCharacter(id: string): CrewCharacterKind {
-  let hash = 0;
-  for (const code of id) hash = (hash * 31 + code.charCodeAt(0)) >>> 0;
-  return crewCharacters[hash % crewCharacters.length];
-}
 
 /** Original SVG artwork; motion stays in CSS, independently of React and xterm. */
 export const CrewCharacter = memo(function CrewCharacter({
