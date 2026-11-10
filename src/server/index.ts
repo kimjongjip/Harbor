@@ -69,6 +69,7 @@ import { TerminalNotices } from "./terminal-notices.js";
 import { RichTerminals } from "./rich-terminal.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { Files, MAX_UPLOAD_BYTES } from "./files.js";
+import { SkillLibrary, createSkillRouter } from "./skill-library.js";
 import { sendMediaFile } from "./file-media.js";
 import { HtmlPreviews } from "./html-preview.js";
 import { UPLOAD_ENTRY_LIMIT } from "../shared/upload-tree.js";
@@ -968,7 +969,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.15" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.16" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1050,6 +1051,7 @@ app.patch("/api/hosts/:id/cli-approval", (req, res) => {
     .parse(req.body);
   res.json(hub.setCliApprovalMode(String(req.params.id), mode));
 });
+app.use("/api/hosts", createSkillRouter(new SkillLibrary({ files }), (id) => hub.host(id), passwordFor));
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));
   const { password } = z

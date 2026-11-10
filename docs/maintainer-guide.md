@@ -1,5 +1,17 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.16 서버별 스킬 라이브러리
+
+`shared/skill-catalog.ts`의 한국어 안내와 `server/skill-source.json`의 공개 Git blob 메타데이터를 함께 갱신한다. 2026-11-11 확인 커밋은 `anthropics/skills@2c5958ecac7cee2b583967a2c4981d0f4a75c579`이다. 원본 SKILL.md를 번역·변형하거나 소스 스크립트를 실행하지 않는다. 각 스킬 하위 전체 파일과 루트 THIRD_PARTY_NOTICES를 복사한다. 바이너리 글꼴·이미지를 포함하여 고정 raw URL, 파일 수·크기·경로·모드·Git blob 해시를 확인한다. 임의 저장소·URL·목적 경로를 HTTP 입력으로 받지 않는다.
+
+`SkillLibrary`는 로컬 fs 또는 기존 Files의 SSH/SFTP 연결로 설치한다. 별도 읽기 명령은 로그인 셸의 HOME·CLAUDE_CONFIG_DIR만 확인한다. Codex는 `.agents/skills`, Claude는 설정 폴더의 `skills`이며 CLI 실행·인증 파일 읽기·자격 증명 전송·PTY 입력·재시작은 없다. API는 기존 앱 출처/변경 요청 토큰 검사를 거치는 GET `/api/hosts/:id/skills`, POST `/api/hosts/:id/skills/install`이다. 모바일 게이트웨이와 에이전트 도구에는 설치 경로를 노출하지 않는다.
+
+설치는 사용자 선택 후에만 실행한다. 서버별 동시 설치를 제한하고 mkdir로 스킬 폴더를 독점 생성하여 다른 Harbor 프로세스와의 충돌도 보존한다. 파일은 배타적으로 만들고 리소스·출처 기록이 준비된 뒤 임시 SKILL을 atomic link/SFTP 표준 rename으로 게시한다. posix-rename 덮어쓰기는 사용하지 않는다. 실패 시 이번 요청이 쓴 정확한 파일만 정리하며 디렉터리를 재귀 삭제하지 않는다. 링크 경로는 거부한다. 기존 스킬은 출처와 무관하게 덮어쓰지 않는다. 같은 배치의 성공한 다른 제공자는 유지하고 결과를 각각 반환한다.
+
+라이브러리는 열 때와 사용자 새로고침·설치 완료 후에만 상태를 조회한다. 터미널 상태 스트림·키 입력과 결합하지 않는다. 구백엔드의 404/비JSON 응답에는 정상 재실행 안내를 표시하며 임의 파일 쓰기 API로 우회하지 않는다. 캐릭터 패널과 별개의 스킬 기능이다. CLI 로그인 재사용은 같은 OS/SSH 사용자 환경에 한정되며 Harbor 기기 연결을 다중 사용자 인증 격리로 설명하지 않는다.
+
+`skill-library.test.ts`, `skill-sftp.test.ts`, `skill-library.browser.test.ts`는 격리된 홈·SSH 서버·Electron 프로필에서 양쪽 경로, 바이너리·라이선스 보존, 기존 파일·동시 생성 충돌, 링크/경로 이탈/해시 실패, 부분 성공, 한국어 검색·예시·오류·구백엔드·좁은 화면과 입력 DOM 보존을 검사한다. 실제 사용자 CLI/계정·터미널은 사용하지 않는다.
+
 ## 1.18.15 IDE·모바일의 패널 숨김
 
 `App`의 IDE 상태를 `showHarborPanel`로 기존 `TerminalWorkspace`·`TerminalPane`에 전달한다. `TerminalUsageBar`는 숨긴 경우 공간과 Crew/리사이즈 자원을 해제하고 사용량 폴링을 취소하되 캐시·접힘 상태를 유지한다. 기존 터미널 DOM·입력·WebSocket은 그대로 둔다. 모바일 전용 화면은 패널을 만들지 않으며 데스크톱 페이지에서도 760px 이하 또는 hover 없는 주 터치 포인터를 감지해 숨긴다. 터미널 셀 폭 변경은 기존 resize 경로를 따른다. 기존 IDE 전환·패널 브라우저 테스트로 숨김·조회 중단·복귀·입력 보존을 확인한다.

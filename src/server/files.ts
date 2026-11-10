@@ -62,6 +62,60 @@ export class Files {
     if (host.kind !== "ssh") throw new Error("SSH 서버를 선택하세요.");
     return this.sftp(host);
   }
+  /** Read only the login user's skill locations; never run an AI CLI or read auth files. */
+  async skillLocations(
+    host: HostConfig,
+  ): Promise<{ home: string; claudeConfig: string }> {
+    if (host.kind === "local")
+      return {
+        home: homedir(),
+        claudeConfig: validateFilePath(
+          host,
+          process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"),
+        ),
+      };
+    await this.sftp(host);
+    const connection = this.connections.get(host.id)!.connection;
+    const command = `exec "\${SHELL:-/bin/sh}" -lc ${shellQuote('printf \'%s\\0%s\\0\' "$HOME" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" >&3')} 3>&1 >/dev/null`;
+    return new Promise((resolve, reject) => {
+      connection.exec(command, (error, channel) => {
+        if (error) return reject(error);
+        let output = "";
+        const timer = setTimeout(() => {
+          channel.close();
+          reject(new Error("스킬 저장 경로 확인 시간이 초과됐습니다."));
+        }, 10000);
+        channel.setEncoding("utf8");
+        channel.on("data", (chunk: string) => {
+          output += chunk;
+          if (output.length > 16000) {
+            clearTimeout(timer);
+            channel.close();
+            reject(new Error("스킬 저장 경로가 너무 깁니다."));
+          }
+        });
+        channel.stderr.resume();
+        channel.on("error", (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        channel.on("close", (code: number) => {
+          clearTimeout(timer);
+          try {
+            const values = output.split("\0");
+            if (code || values.length !== 3 || values[2] !== "")
+              throw new Error("스킬 저장 경로를 확인하지 못했습니다.");
+            resolve({
+              home: validateFilePath(host, values[0]),
+              claudeConfig: validateFilePath(host, values[1]),
+            });
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+    });
+  }
   private async sftp(host: HostConfig) {
     const existing = this.connections.get(host.id);
     if (existing) return existing.sftp;

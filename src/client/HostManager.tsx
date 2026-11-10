@@ -19,6 +19,7 @@ import { useTheme, terminalColors } from "./Theme";
 import { useHostReorderDrag, type MoveHost } from "./server-order";
 import "./server-order.css";
 import { CliApprovalSettings } from "./CliApprovalSettings";
+import { SkillLibraryButton } from "./SkillLibrary";
 
 interface Props {
   hosts: HostView[];
@@ -84,6 +85,7 @@ export default function HostManager(props: Props) {
               onDoubleClick={() => props.onConnect(host)}
             >
               <div className="host-card-top">
+                <SkillLibraryButton host={host} />
                 <CliApprovalSettings host={host} />
                 <span
                   className={`host-avatar ${host.kind}`}
