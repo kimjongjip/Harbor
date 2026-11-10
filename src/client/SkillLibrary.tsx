@@ -4,7 +4,6 @@ import {
   Check,
   Copy,
   Download,
-  ExternalLink,
   LoaderCircle,
   RefreshCw,
   Search,
@@ -12,12 +11,19 @@ import {
 import type { HostView } from "../shared/types";
 import {
   SKILL_CATALOG,
-  SKILL_SOURCE,
+  INSTALLABLE_SKILLS,
+  skillFolder,
   skillInvocation,
   type SkillProvider,
   type SkillLibraryStatus,
   type SkillInstallResult,
 } from "../shared/skill-catalog";
+import {
+  SKILL_SOURCES,
+  SKILL_CHECKED_AT,
+  skillSource,
+  skillSourceUrl,
+} from "../shared/skill-sources";
 import { Modal } from "./Dialogs";
 import { api, ApiError } from "./api";
 import "./skill-library.css";
@@ -60,6 +66,8 @@ export function SkillLibraryDialog({
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("전체");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [sort, setSort] = useState("research");
   const [target, setTarget] = useState("both");
   const [selected, setSelected] = useState<string[]>([]);
   const [status, setStatus] = useState<SkillLibraryStatus>();
@@ -100,9 +108,18 @@ export function SkillLibraryDialog({
   const filtered = SKILL_CATALOG.filter(
     (skill) =>
       (category === "전체" || skill.category === category) &&
-      `${skill.title} ${skill.id} ${skill.description}`
+      (sourceFilter === "all" ||
+        (skill.source || "anthropic") === sourceFilter) &&
+      `${skill.title} ${skill.id} ${skill.description} ${skillSource(skill.source).name}`
         .toLowerCase()
         .includes(query.toLowerCase()),
+  ).sort((a, b) =>
+    sort === "stars"
+      ? skillSource(b.source).stars - skillSource(a.source).stars
+      : sort === "name"
+        ? a.title.localeCompare(b.title, "ko")
+        : Number(b.category.includes("연구")) -
+          Number(a.category.includes("연구")),
   );
   const installable = selected.filter((id) =>
     providers.some(
@@ -149,15 +166,18 @@ export function SkillLibraryDialog({
         <section className="skill-intro">
           <BookOpen size={27} />
           <div>
-            <h3>필요한 작업 방법을 AI에게 더해보세요</h3>
+            <h3>연구부터 개발까지, 필요한 스킬을 골라보세요</h3>
             <p>
               스킬은 AI가 필요할 때 읽는 작업 설명서와 도구 모음입니다. 한국어
               설명을 보고 필요한 것만 골라 설치하세요.
             </p>
+            <p className="skill-library-counts">
+              연구{" "}
+              {SKILL_CATALOG.filter((s) => s.category.includes("연구")).length}
+              개 우선 · 설치 가능한 스킬 {INSTALLABLE_SKILLS.length}개 · 도구
+              연결 안내 {SKILL_CATALOG.length - INSTALLABLE_SKILLS.length}개
+            </p>
           </div>
-          <a href={SKILL_SOURCE.url} target="_blank" rel="noreferrer">
-            Anthropic 원본 <ExternalLink size={13} />
-          </a>
         </section>
         <details className="skill-help">
           <summary>처음 사용하시나요? 사용법·로그인 안내</summary>
@@ -334,14 +354,49 @@ export function SkillLibraryDialog({
             value={category}
             onChange={(e) => setCategory(e.target.value)}
           >
-            {["전체", "문서·데이터", "디자인", "개발", "업무·학습"].map((c) => (
+            {[
+              "전체",
+              "연구",
+              "AI·시스템 연구",
+              "문서·데이터",
+              "디자인",
+              "개발",
+              "업무·학습",
+            ].map((c) => (
               <option key={c}>{c}</option>
             ))}
           </select>
+          <select
+            aria-label="스킬 출처"
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+          >
+            <option value="all">모든 출처</option>
+            {SKILL_SOURCES.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.name}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="스킬 정렬"
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+          >
+            <option value="research">연구 우선</option>
+            <option value="stars">저장소 별 수순</option>
+            <option value="name">이름순</option>
+          </select>
           <span>{filtered.length}개</span>
         </div>
+        <p className="skill-popularity-note">
+          ★는 저장소 전체의 GitHub 별 수입니다. 개별 스킬의 사용 횟수·품질
+          평가가 아닙니다. {SKILL_CHECKED_AT} 확인.
+        </p>
         <div className="skill-cards">
           {filtered.map((skill) => {
+            const origin = skillSource(skill.source),
+              guide = skill.kind === "guide";
             const checked = selected.includes(skill.id),
               available = providers.some(
                 (provider) =>
@@ -354,95 +409,168 @@ export function SkillLibraryDialog({
                 data-skill-id={skill.id}
               >
                 <label className="skill-card-heading">
-                  <input
-                    type="checkbox"
-                    aria-label={`${skill.title} 선택`}
-                    checked={checked}
-                    disabled={busy || !available}
-                    onChange={() =>
-                      setSelected((current) =>
-                        checked
-                          ? current.filter((id) => id !== skill.id)
-                          : [...current, skill.id],
-                      )
-                    }
-                  />
+                  {!guide && (
+                    <input
+                      type="checkbox"
+                      aria-label={`${skill.title} 선택`}
+                      checked={checked}
+                      disabled={busy || !available}
+                      onChange={() =>
+                        setSelected((current) =>
+                          checked
+                            ? current.filter((id) => id !== skill.id)
+                            : [...current, skill.id],
+                        )
+                      }
+                    />
+                  )}
                   <div>
                     <h4>{skill.title}</h4>
                     <code>{skill.id}</code>
                   </div>
                   <span>{skill.category}</span>
                 </label>
+                <div className="skill-card-source">
+                  <a
+                    href={skillSourceUrl(skill.source)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {origin.name} ↗
+                  </a>
+                  <span
+                    title={`${origin.repo} · ${origin.stars.toLocaleString("en-US")} stars · ${SKILL_CHECKED_AT}`}
+                  >
+                    ★{" "}
+                    {new Intl.NumberFormat("en", {
+                      notation: "compact",
+                      maximumFractionDigits: 1,
+                    }).format(origin.stars)}
+                  </span>
+                </div>
                 <p>{skill.description}</p>
                 <div className="skill-badges">
-                  {(["claude", "codex"] as const).map((provider) => {
-                    const state = status?.skills[skill.id]?.[provider];
-                    return (
-                      <span key={provider} data-state={state}>
-                        {state === "installed" && <Check size={12} />}
-                        {provider === "claude" ? "Claude" : "Codex"} ·{" "}
-                        {state === "installed"
-                          ? "Harbor 설치됨"
-                          : state === "existing"
-                            ? "기존 폴더 있음"
-                            : state === "available"
-                              ? "설치 가능"
-                              : state === "unavailable"
-                                ? "경로 확인 필요"
-                                : "확인 전"}
-                      </span>
-                    );
-                  })}
-                </div>
-                <details className="skill-card-details">
-                  <summary>사용 예시·필요한 환경</summary>
-                  <div>
-                    {(["claude", "codex"] as const).map((provider) => (
-                      <div className="skill-example" key={provider}>
-                        <span>
-                          {provider === "claude" ? "Claude" : "Codex"}
+                  {guide ? (
+                    <span>독립 도구 · 연결 안내</span>
+                  ) : (
+                    (["claude", "codex"] as const).map((provider) => {
+                      const state = status?.skills[skill.id]?.[provider];
+                      return (
+                        <span key={provider} data-state={state}>
+                          {state === "installed" && <Check size={12} />}
+                          {provider === "claude" ? "Claude" : "Codex"} ·{" "}
+                          {state === "installed"
+                            ? "Harbor 설치됨"
+                            : state === "existing"
+                              ? "기존 폴더 있음"
+                              : state === "available"
+                                ? "설치 가능"
+                                : state === "unavailable"
+                                  ? "경로 확인 필요"
+                                  : status
+                                    ? "Harbor 업데이트 필요"
+                                    : "확인 전"}
                         </span>
-                        <code>{skillInvocation(skill, provider)}</code>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`${skill.title} ${provider} 예시 복사`}
-                          onClick={() =>
-                            void copy(
-                              skillInvocation(skill, provider),
-                              `${skill.id}-${provider}`,
-                            )
-                          }
-                        >
-                          {copied === `${skill.id}-${provider}` ? (
-                            <Check size={14} />
-                          ) : (
-                            <Copy size={14} />
-                          )}
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })
+                  )}
+                  {skill.source === "openrig" && (
+                    <span>안내 스킬 · OpenRig 실행 환경은 별도</span>
+                  )}
+                </div>
+                <details
+                  className="skill-card-details"
+                  open={guide || undefined}
+                >
+                  <summary>
+                    {guide
+                      ? "공식 연결 방법·필요한 환경"
+                      : "사용 예시·필요한 환경"}
+                  </summary>
+                  <div>
+                    {guide ? (
+                      <>
+                        <p>
+                          사용할 프로젝트의 터미널에서 아래 공식 명령을 검토해
+                          실행하세요. Harbor는 명령을 자동 실행하지 않습니다.
+                        </p>
+                        <div className="skill-example">
+                          <span>터미널</span>
+                          <code>{skill.guideCommands?.join("\n")}</code>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`${skill.title} 연결 명령 복사`}
+                            onClick={() =>
+                              void copy(
+                                skill.guideCommands?.join("\n") || "",
+                                `${skill.id}-guide`,
+                              )
+                            }
+                          >
+                            {copied === `${skill.id}-guide` ? (
+                              <Check size={14} />
+                            ) : (
+                              <Copy size={14} />
+                            )}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      (["claude", "codex"] as const).map((provider) => (
+                        <div className="skill-example" key={provider}>
+                          <span>
+                            {provider === "claude" ? "Claude" : "Codex"}
+                          </span>
+                          <code>{skillInvocation(skill, provider)}</code>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`${skill.title} ${provider} 예시 복사`}
+                            onClick={() =>
+                              void copy(
+                                skillInvocation(skill, provider),
+                                `${skill.id}-${provider}`,
+                              )
+                            }
+                          >
+                            {copied === `${skill.id}-${provider}` ? (
+                              <Check size={14} />
+                            ) : (
+                              <Copy size={14} />
+                            )}
+                          </button>
+                        </div>
+                      ))
+                    )}
                     {skill.requirements && (
                       <p>
-                        {skill.requirements} 설치 버튼은 이 프로그램들을 자동
-                        설치하지 않습니다.
+                        {skill.requirements}{" "}
+                        {!guide &&
+                          "설치 버튼은 이 프로그램들을 자동 설치하지 않습니다."}
                       </p>
                     )}
                     {skill.caveat && (
                       <p className="skill-caveat">{skill.caveat}</p>
                     )}
-                    <p>
-                      양쪽에 같은 원본 파일을 설치합니다. Claude 전용
-                      도구·명령이 포함된 부분은 Codex에서 조정이 필요할 수
-                      있습니다.
-                    </p>
+                    {!guide && (
+                      <p>
+                        양쪽에 같은 원본 파일을 설치합니다. Claude 전용
+                        도구·명령이 포함된 부분은 Codex에서 조정이 필요할 수
+                        있습니다.
+                      </p>
+                    )}
                     <a
-                      href={`${SKILL_SOURCE.url}/tree/${SKILL_SOURCE.commit}/skills/${skill.id}`}
+                      href={`${skillSourceUrl(skill.source)}/tree/${origin.commit}${guide ? "" : `/${skillFolder(skill)}`}`}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      원본 지침·라이선스 보기 ↗
+                      {guide ? "공식 연결 안내" : "원본 지침"} ↗
                     </a>
+                    <span className="skill-origin-version">
+                      {" "}
+                      · {origin.commit.slice(0, 7)} · {origin.license}
+                    </span>
                   </div>
                 </details>
               </article>
@@ -454,8 +582,8 @@ export function SkillLibraryDialog({
         )}
         <p className="skill-source-note">
           한국어 설명은 Harbor 안내입니다. 설치 파일은 원본을 유지하며, 스크립트
-          실행·인증 정보 복사는 하지 않습니다. 원본 확인:{" "}
-          {SKILL_SOURCE.checkedAt} · {SKILL_SOURCE.commit.slice(0, 7)}. 최신
+          실행·인증 정보 복사는 하지 않습니다. 원본 확인: {SKILL_CHECKED_AT}.
+          저장소별 확인된 버전을 설치하며 라이선스 파일을 함께 보존합니다. 최신
           원본은 Harbor 업데이트로 반영합니다.
         </p>
       </div>

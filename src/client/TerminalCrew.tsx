@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -101,17 +102,64 @@ export const TerminalCrew = memo(function TerminalCrew({
         : "robot"
       : preferences.character;
   const agents = crew?.agents || [];
-  const running = agents.filter(
-    (agent) => agent.state === "working" || agent.state === "waiting",
-  );
-  const finished = agents.filter(
-    (agent) => agent.state !== "working" && agent.state !== "waiting",
-  );
   // Codex delivers state transitions; Claude sends a periodic native snapshot.
   const live =
     !unavailable &&
     crew?.source === "native" &&
     (provider === "codex" || Date.now() - crew.updatedAt < 30000);
+  const previous = useRef({
+    live: false,
+    states: new Map<string, TerminalAgentState>(),
+  });
+  const [celebrations, setCelebrations] = useState<Record<string, number>>({});
+  useEffect(() => {
+    const now = Date.now(),
+      current = crew?.agents || [];
+    const completed = previous.current.live
+      ? current.filter(
+          (agent) =>
+            agent.state === "completed" &&
+            ["working", "waiting", "idle"].includes(
+              previous.current.states.get(agent.id) || "",
+            ),
+        )
+      : [];
+    previous.current = {
+      live: active && !!live,
+      states: new Map(current.map((agent) => [agent.id, agent.state])),
+    };
+    setCelebrations((existing) => {
+      const next: Record<string, number> = {};
+      if (active && live) {
+        for (const agent of current)
+          if (agent.state === "completed" && existing[agent.id] > now)
+            next[agent.id] = existing[agent.id];
+        for (const agent of completed) next[agent.id] = now + 12000;
+      }
+      return JSON.stringify(existing) === JSON.stringify(next)
+        ? existing
+        : next;
+    });
+  }, [crew, active, live]);
+  useEffect(() => {
+    const deadlines = Object.values(celebrations);
+    if (!active || !deadlines.length) return;
+    const timer = setTimeout(
+      () =>
+        setCelebrations((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(([, until]) => until > Date.now()),
+          ),
+        ),
+      Math.max(1, Math.min(...deadlines) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [celebrations, active]);
+  const onStage = (agent: (typeof agents)[number]) =>
+    ["working", "waiting", "idle"].includes(agent.state) ||
+    (live && !!celebrations[agent.id]);
+  const running = agents.filter(onStage),
+    finished = agents.filter((agent) => !onStage(agent));
   const row = (agent: (typeof agents)[number]) => {
     const title =
       agent.task ||
@@ -129,7 +177,13 @@ export const TerminalCrew = memo(function TerminalCrew({
         className="crew-agent"
         key={agent.id}
         data-state={agent.state}
-        data-motion={live ? "on" : "off"}
+        data-agent-id={agent.id}
+        data-recent-completion={!!celebrations[agent.id] || undefined}
+        data-motion={
+          live && (agent.state !== "completed" || !!celebrations[agent.id])
+            ? "on"
+            : "off"
+        }
       >
         <CrewCharacter character={character} state={agent.state} miniature />
         <div className="crew-agent-name">

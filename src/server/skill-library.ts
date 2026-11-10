@@ -5,9 +5,11 @@ import type { SFTPWrapper, Stats } from "ssh2";
 import { Router } from "express";
 import { z } from "zod";
 import source from "./skill-source.json";
+import communitySources from "./community-skill-sources.json";
+import { skillSource } from "../shared/skill-sources.js";
 import {
-  SKILL_CATALOG,
-  SKILL_SOURCE,
+  INSTALLABLE_SKILLS,
+  skillFolder,
   type SkillProvider,
   type SkillLibraryStatus,
   type SkillInstallResult,
@@ -45,6 +47,11 @@ const missing = (e: unknown) =>
   ["ENOENT", 2].includes((e as { code?: string | number }).code ?? "");
 const MAX_FILE = 8 * 1024 * 1024;
 const MARKER = ".harbor-skill.json";
+function definition(id: string) {
+  const skill = INSTALLABLE_SKILLS.find((skill) => skill.id === id);
+  if (!skill) throw new Error("설치 목록에 없는 스킬입니다.");
+  return skill;
+}
 
 export function skillTransport(sftp?: SFTPWrapper): SkillTransport {
   return {
@@ -147,9 +154,8 @@ export function validateSkillFiles(
   id: string,
   entries: SkillFile[],
 ): SkillFile[] {
-  if (!SKILL_CATALOG.some((s) => s.id === id))
-    throw new Error("목록에 없는 스킬입니다.");
-  const files = entries.filter((f) => f.path.startsWith(`skills/${id}/`));
+  const prefix = `${skillFolder(definition(id))}/`;
+  const files = entries.filter((f) => f.path.startsWith(prefix));
   if (
     !files.length ||
     files.length > 512 ||
@@ -158,7 +164,7 @@ export function validateSkillFiles(
     throw new Error("스킬 파일 수 또는 크기가 허용 범위를 넘었습니다.");
   const seen = new Set<string>();
   for (const file of files) {
-    const relative = file.path.slice(`skills/${id}/`.length);
+    const relative = file.path.slice(prefix.length);
     const parts = relative.split("/");
     if (
       parts.some(
@@ -186,13 +192,17 @@ export function validateSkillFiles(
     )
       throw new Error("지원하지 않는 스킬 파일 형식입니다.");
   }
-  if (!files.some((f) => f.path === `skills/${id}/SKILL.md`))
+  if (!files.some((f) => f.path === `${prefix}SKILL.md`))
     throw new Error("SKILL.md가 없는 스킬입니다.");
   return files;
 }
 
-async function fetchFile(file: SkillFile, fetcher: typeof fetch) {
-  const url = `https://raw.githubusercontent.com/${SKILL_SOURCE.repository}/${SKILL_SOURCE.commit}/${file.path.split("/").map(encodeURIComponent).join("/")}`;
+async function fetchFile(
+  file: SkillFile,
+  origin: ReturnType<typeof skillSource>,
+  fetcher: typeof fetch,
+) {
+  const url = `https://raw.githubusercontent.com/${origin.repo}/${origin.commit}/${file.path.split("/").map(encodeURIComponent).join("/")}`;
   const response = await fetcher(url, {
     redirect: "error",
     signal: AbortSignal.timeout(45000),
@@ -232,24 +242,43 @@ export async function downloadSkill(
   id: string,
   fetcher: typeof fetch = fetch,
 ): Promise<SkillPayload> {
+  const skill = definition(id),
+    origin = skillSource(skill.source);
+  const manifest =
+    origin.id === "anthropic"
+      ? { ...source, licenses: ["THIRD_PARTY_NOTICES.md"] }
+      : communitySources.find((source) => source.id === origin.id);
   if (
-    source.commit !== SKILL_SOURCE.commit ||
-    source.repository !== SKILL_SOURCE.repository
+    !manifest ||
+    manifest.commit !== origin.commit ||
+    manifest.repository !== origin.repo
   )
     throw new Error("스킬 목록 버전이 일치하지 않습니다.");
-  const files = validateSkillFiles(id, source.files);
-  const notice = source.files.find((f) => f.path === "THIRD_PARTY_NOTICES.md")!;
-  const selected = [...files, notice];
+  const files = validateSkillFiles(id, manifest.files);
+  const notices = manifest.licenses.map((name) => {
+    const file = manifest.files.find((file) => file.path === name);
+    if (
+      !file ||
+      !/^[\w.-]+$/.test(name) ||
+      !["100644", "100755"].includes(file.mode) ||
+      !/^[a-f0-9]{40}$/.test(file.sha) ||
+      !Number.isSafeInteger(file.size) ||
+      file.size < 0 ||
+      file.size > MAX_FILE
+    )
+      throw new Error("원본 라이선스 정보를 확인할 수 없습니다.");
+    return file;
+  });
+  const selected = [...files, ...notices];
   const payload: SkillPayload = [];
   // Six bounded requests, with all rejections observed before returning.
   for (let offset = 0; offset < selected.length; offset += 6) {
     const results = await Promise.allSettled(
       selected.slice(offset, offset + 6).map(async (file) => ({
-        path:
-          file === notice
-            ? ".harbor-origin/THIRD_PARTY_NOTICES.md"
-            : file.path.slice(`skills/${id}/`.length),
-        bytes: await fetchFile(file, fetcher),
+        path: notices.includes(file)
+          ? `.harbor-origin/${file.path}`
+          : file.path.slice(`${skillFolder(skill)}/`.length),
+        bytes: await fetchFile(file, origin, fetcher),
         executable: file.mode === "100755",
       })),
     );
@@ -292,7 +321,8 @@ export async function installSkill(
   id: string,
   payload: SkillPayload,
 ): Promise<"installed" | "existing"> {
-  if (!SKILL_CATALOG.some((s) => s.id === id) || !io.paths.isAbsolute(root))
+  const origin = skillSource(definition(id).source);
+  if (!io.paths.isAbsolute(root))
     throw new Error("올바르지 않은 설치 경로입니다.");
   const destination = io.paths.join(root, id);
   await directory(io, root, true);
@@ -312,8 +342,8 @@ export async function installSkill(
         path: MARKER,
         bytes: Buffer.from(
           JSON.stringify({
-            source: SKILL_SOURCE.repository,
-            commit: SKILL_SOURCE.commit,
+            source: origin.repo,
+            commit: origin.commit,
             id,
           }),
         ),
@@ -407,7 +437,7 @@ export class SkillLibrary {
   async status(host: HostConfig): Promise<SkillLibraryStatus> {
     const { io, roots } = await this.scope(host);
     const skills: SkillLibraryStatus["skills"] = Object.fromEntries(
-      SKILL_CATALOG.map((s) => [
+      INSTALLABLE_SKILLS.map((s) => [
         s.id,
         { claude: "available", codex: "available" },
       ]),
@@ -416,7 +446,8 @@ export class SkillLibrary {
     for (const provider of ["claude", "codex"] as const) {
       try {
         if (!(await directory(io, roots[provider], false))) continue;
-        for (const skill of SKILL_CATALOG) {
+        for (const skill of INSTALLABLE_SKILLS) {
+          const origin = skillSource(skill.source);
           const folder = io.paths.join(roots[provider], skill.id),
             stat = await io.stat(folder);
           if (!stat) continue;
@@ -428,8 +459,8 @@ export class SkillLibrary {
             );
             const entry = await io.stat(io.paths.join(folder, "SKILL.md"));
             if (
-              marker.source === SKILL_SOURCE.repository &&
-              marker.commit === SKILL_SOURCE.commit &&
+              marker.source === origin.repo &&
+              marker.commit === origin.commit &&
               marker.id === skill.id &&
               entry?.isFile() &&
               !entry.isSymbolicLink()
@@ -441,7 +472,7 @@ export class SkillLibrary {
         }
       } catch (e) {
         errors[provider] = (e as Error).message;
-        for (const skill of SKILL_CATALOG)
+        for (const skill of INSTALLABLE_SKILLS)
           skills[skill.id][provider] = "unavailable";
       }
     }
@@ -465,7 +496,7 @@ export class SkillLibrary {
         for (const provider of [...new Set(providers)]) {
           try {
             if (
-              !SKILL_CATALOG.some((s) => s.id === id) ||
+              !INSTALLABLE_SKILLS.some((s) => s.id === id) ||
               !["claude", "codex"].includes(provider)
             )
               throw new Error("올바르지 않은 스킬 선택입니다.");
@@ -515,10 +546,12 @@ export function createSkillRouter(
     .object({
       ids: z
         .array(
-          z.string().refine((id) => SKILL_CATALOG.some((s) => s.id === id)),
+          z
+            .string()
+            .refine((id) => INSTALLABLE_SKILLS.some((s) => s.id === id)),
         )
         .min(1)
-        .max(SKILL_CATALOG.length),
+        .max(INSTALLABLE_SKILLS.length),
       providers: z
         .array(z.enum(["claude", "codex"]))
         .min(1)

@@ -152,8 +152,8 @@
   background: color-mix(in srgb, var(--bg) 55%, transparent);
 }
 .crew-agent .crew-art {
-  width: calc(42px * var(--crew-scale));
-  height: calc(42px * var(--crew-scale));
+  width: calc(64px * var(--crew-scale));
+  height: calc(58px * var(--crew-scale));
   flex-shrink: 0;
 }
 .crew-agent-name {
@@ -743,6 +743,137 @@
 }
 .crew-art[data-state="working"] .crew-code-lines {
   animation: crew-code 1.8s steps(3, end) infinite;
+}
+.crew-mini-workstation {
+  display: none;
+}
+.crew-art[data-state="working"] .crew-mini-workstation {
+  display: block;
+}
+.crew-art.miniature[data-state="working"] .crew-body {
+  animation: crew-focused-work 1.25s ease-in-out infinite;
+}
+.crew-art.miniature[data-state="working"] .crew-paw-left {
+  animation: crew-type 0.32s steps(2, end) infinite;
+}
+.crew-art.miniature[data-state="working"] .crew-paw-right {
+  animation: crew-type 0.32s steps(2, end) -0.16s infinite;
+}
+.crew-celebration,
+.crew-happy-eyes {
+  display: none;
+}
+.crew-art[data-state="completed"] .crew-celebration,
+.crew-art[data-state="completed"] .crew-happy-eyes {
+  display: block;
+}
+.crew-art[data-state="completed"] .crew-eyes {
+  display: none;
+}
+.crew-art[data-state="completed"] .crew-body {
+  animation: crew-celebrate 0.75s ease-in-out 4;
+}
+.crew-art[data-state="completed"] .crew-paw {
+  opacity: 0;
+}
+.crew-happy-eyes {
+  fill: none;
+  stroke: var(--eyes, #28343d);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.crew-cheer-arm {
+  fill: var(--fur);
+  stroke: var(--fur);
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-box: view-box;
+}
+.crew-cheer-arm path {
+  fill: none;
+}
+.crew-cheer-arm circle {
+  stroke-width: 1;
+}
+.crew-cheer-left {
+  transform-origin: 48px 84px;
+  animation: crew-wave-left 0.6s ease-in-out 5;
+}
+.crew-cheer-right {
+  transform-origin: 87px 84px;
+  animation: crew-wave-right 0.6s ease-in-out 5;
+}
+.crew-confetti {
+  fill: #dfaf55;
+  opacity: 0;
+  animation: crew-confetti 1.5s ease-out 2;
+}
+.crew-confetti-blue {
+  fill: #88b8d2;
+}
+.crew-agent[data-recent-completion="true"] {
+  border-color: color-mix(in srgb, var(--success) 60%, var(--border));
+  background: color-mix(in srgb, var(--success) 7%, var(--bg));
+}
+.crew-agent[data-state="completed"] > .crew-state {
+  color: var(--success);
+}
+.crew-finished:not([open]) * {
+  animation-play-state: paused !important;
+}
+@keyframes crew-focused-work {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-2px) rotate(1deg);
+  }
+}
+@keyframes crew-celebrate {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-6px);
+  }
+  65% {
+    transform: translateY(-2px);
+  }
+}
+@keyframes crew-wave-left {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-12deg);
+  }
+}
+@keyframes crew-wave-right {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(12deg);
+  }
+}
+@keyframes crew-confetti {
+  0% {
+    opacity: 0;
+    transform: translateY(9px) scale(0.9);
+  }
+  20%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(1.05);
+  }
 }
 .crew-art[data-state="waiting"] .crew-status-bubble,
 .crew-art[data-state="completed"] .crew-status-bubble,

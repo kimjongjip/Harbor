@@ -1,8 +1,16 @@
 # Harbor 사용자 설치·실행·업데이트
 
-## 한국어 스킬 라이브러리 (1.18.16)
+## 한국어 스킬 라이브러리 (1.18.17)
 
-**내 서버 카드 또는 왼쪽 서버 이름 옆의 `스킬` 버튼**을 누릅니다. Anthropic의 공식 `anthropics/skills` 저장소에서 확인한 19개 스킬을 한국어로 살펴보고 분야·이름으로 검색할 수 있습니다. PDF, Word, PowerPoint, Excel, 웹 디자인·테스트, MCP 개발 등 필요한 항목만 선택하세요.
+**내 서버 카드 또는 왼쪽 서버 이름 옆의 `스킬` 버튼**을 누릅니다. 설치 가능한 스킬 49개와 도구 연결 안내 1개를 한국어로 살펴봅니다. 연구용 26개를 먼저 표시하며 분야·출처로 좁히거나 한국어 설명·스킬 이름을 검색할 수 있습니다.
+
+- **K-Dense**: 문헌 조사, 인용 관리, 비판적 검토, 실험 설계·검정력, 통계, 논문 그림 등 연구용 14개.
+- **Orchestra Research**: ML·시스템 논문, 연구 아이디어, 추측 디코딩, attention·양자화, LLM 평가·서빙 등 12개.
+- **Superpowers**: 근거 중심 디버깅, 완료 전 검증, 테스트 중심 개발 3개.
+- **Anthropic**: PDF, Word, PowerPoint, Excel, 웹 디자인·테스트, MCP 개발 등 기존 19개.
+- **OpenRig**: Claude·Codex 팀 구성·운영을 안내하는 원본 `rigs` 스킬 1개.
+
+카드의 **★는 저장소 전체의 GitHub 별 수**이며 개별 스킬의 다운로드·사용 횟수나 품질 점수가 아닙니다. 2026-11-11 확인값이며 출처 링크로 직접 확인할 수 있습니다. 기본은 연구 우선이며 저장소 별 수순·이름순도 제공합니다.
 
 1. 설치할 서버와 로그인 계정을 확인합니다. 다른 서버에 쓰려면 그 서버의 스킬 버튼을 엽니다.
 2. **Claude + Codex 둘 다**, Claude Code, Codex CLI 중 대상을 고릅니다.
@@ -13,7 +21,11 @@
 
 **매번 스킬을 지정할 필요는 없습니다.** AI가 작업과 스킬 설명을 보고 자동으로 고를 수 있습니다. 정확히 지정하려면 Claude에서 `/pdf 이 PDF의 표를 추출해줘`, Codex에서 `$pdf 이 PDF의 표를 추출해줘`처럼 입력합니다. 각 카드의 예시 복사 버튼도 사용할 수 있습니다. 목록은 Claude의 `/`, Codex의 `/skills`에서 확인합니다. 조직 정책·스킬 설정에 따라 자동 선택이나 호출이 제한될 수 있고, 설치 후 인식되지 않는 CLI는 작업을 저장한 뒤 새 세션을 열어 확인하세요. Harbor가 기존 대화를 종료하거나 프롬프트를 자동 전송하지 않습니다.
 
-한국어 목록은 안내이며 설치되는 SKILL.md·스크립트·리소스·라이선스는 원본 그대로입니다. 같은 Agent Skills 형식이라 양쪽에 설치할 수 있지만, Claude 전용 명령·평가 스크립트·Claude.ai 아티팩트 표시는 Codex에서 조정이 필요할 수 있습니다. 해당 항목에 제약을 표시합니다. 문서 변환용 Python·Node.js·LibreOffice·Playwright 같은 실행 환경은 별도이며 설치 버튼이 자동으로 준비하지 않습니다. 공식 원본은 확인한 커밋으로 고정하고 Harbor 업데이트로 갱신합니다. 이미 있는 스킬의 자동 덮어쓰기·삭제 기능은 제공하지 않습니다.
+한국어 목록은 안내이며 설치되는 SKILL.md·스크립트·리소스·라이선스는 원본 그대로입니다. 같은 Agent Skills 형식이라 양쪽에 설치할 수 있지만, Claude 전용 명령·평가 스크립트·Claude.ai 아티팩트 표시는 Codex에서 조정이 필요할 수 있습니다. 해당 항목에 제약을 표시합니다. Python·LaTeX·GPU·외부 API 키 같은 실행 환경은 별도이며 설치 버튼이 자동으로 준비하지 않습니다. 원본은 저장소별로 확인한 커밋에 고정하고 Harbor 업데이트로 갱신합니다. 이미 있는 스킬의 자동 덮어쓰기·삭제 기능은 제공하지 않습니다.
+
+**OpenRig는 여기서 안내 스킬만 설치합니다.** 실제 OpenRig 실행에는 Linux/macOS, Node.js 22/24, tmux와 각 CLI 로그인이 필요합니다. 스킬을 호출해 설치·팀 구성을 진행하면 설정·훅·tmux를 변경하고 에이전트를 실행할 수 있습니다. Harbor의 기존 대화가 자동으로 OpenRig 팀에 들어가는 기능은 아닙니다.
+
+**Graft는 현재 Trail-code입니다.** 코드 검색·컨텍스트를 제공하는 독립 도구라 카드의 공식 연결 안내에서 `npm install -g @trailhq/trail-code`, `trail init`을 복사해 사용할 수 있습니다. 선택한 프로젝트에서 공식 안내와 변경될 설정·훅을 확인하세요. 저장소에 남은 테스트용 SKILL.md를 실제 스킬로 설치하지 않으며 Harbor가 초기화 명령을 실행하지 않습니다.
 
 **로그인은 각 CLI에서 한 번씩 합니다.** 같은 서버의 같은 OS 계정에서 이미 로그인했다면 Harbor에 다시 등록하지 않습니다. 처음에는 해당 서버의 터미널에서 `claude auth login`, `codex login`을 각각 실행합니다. 원격 Codex는 계정에서 허용하는 경우 `codex login --device-auth`를 사용할 수 있습니다. 두 서비스의 로그인·요금제·API 사용료는 별개입니다. Harbor는 AI 인증 파일을 다른 서버나 다른 사람에게 복사하지 않습니다.
 
@@ -22,6 +34,12 @@
 구버전 백엔드가 실행 중이면 목록·사용법은 볼 수 있고 설치 버튼에는 새 버전 실행 안내가 나타납니다. 진행 중인 작업을 마친 뒤 새 버전 Harbor를 정상 실행하세요.
 
 근거: [Anthropic 공식 스킬](https://github.com/anthropics/skills), [Claude 스킬](https://code.claude.com/docs/en/skills), [Codex 스킬](https://learn.chatgpt.com/docs/build-skills), [Claude 설정 경로](https://code.claude.com/docs/en/claude-directory), [Claude 인증](https://code.claude.com/docs/en/authentication), [Codex 인증](https://learn.chatgpt.com/docs/auth).
+
+추가 출처: [K-Dense Scientific Skills](https://github.com/K-Dense-AI/scientific-agent-skills), [Orchestra Research](https://github.com/Orchestra-Research/AI-Research-SKILLs), [Superpowers](https://github.com/obra/superpowers), [OpenRig](https://github.com/mvschwarz/openrig), [Graft → Trail-code](https://github.com/trailhq/Trail-Code).
+
+## 동료의 작업·완료 동작 (1.18.17)
+
+오른쪽 Harbor 패널의 작은 동료 카드에도 노트북·키보드가 나타나고 손과 몸이 움직입니다. 실제 실시간 상태가 작업·대기에서 완료로 바뀌면 웃는 얼굴과 손 흔들기·색종이 동작을 보여주며 **12초간 카드에 남은 뒤 이전 에이전트 목록으로 이동**합니다. 이미 완료된 과거 기록이나 실패는 새 완료로 축하하지 않습니다. 실제 작업·토큰 정보와 캐릭터 통일·크기 설정은 그대로 유지합니다. 숨긴 화면·동작 끄기·운영체제 동작 줄이기 설정에서는 애니메이션을 멈춥니다.
 
 ## 패널 표시 위치와 남자 캐릭터 (1.18.15)
 

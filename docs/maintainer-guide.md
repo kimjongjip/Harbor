@@ -1,5 +1,15 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.17 커뮤니티 스킬과 동료 동작
+
+`shared/skill-sources.ts`는 출처별 고정 커밋·2026-11-11 저장소 별 수를, `community-skills.ts`는 한국어 안내·실제 frontmatter 호출 이름·원본 하위 경로를 관리한다. 별 수는 저장소 전체의 관심도이며 개별 스킬 사용량이나 품질 순위로 설명하지 않는다. 연구 26개를 기본 정렬에서 우선하며 전체 50개 중 49개만 설치 가능하다.
+
+`server/community-skill-sources.json`은 선택한 K-Dense·Orchestra·Superpowers·OpenRig 폴더의 전체 Git blob 메타데이터와 루트 라이선스를 담는다. 기존 Anthropic manifest와 함께 출처별 커밋·해시를 검증하며 루트 라이선스는 `.harbor-origin`에 보존한다. 설치 마커도 출처별로 구분하며 이전 Anthropic 설치와 호환된다. 폴더 경로가 호출 이름과 다른 Orchestra 항목을 주의한다. 외부 스크립트·패키지는 실행하지 않는다.
+
+Graft(현재 Trail-code)는 독립 CLI 연결 안내 카드다. 해당 커밋의 SKILL.md는 테스트 fixture이므로 설치 대상·상태 조회·POST 허용 목록에서 제외한다. OpenRig는 원본 `skills/rigs` 안내만 복사한다. 런타임·팀·훅·tmux 설치나 실행은 하지 않고 필요 환경과 별도 설정 변경을 안내한다. 조사 수집기·스크린샷·원본 검증 다운로드는 `.cache`에만 보관한다.
+
+`TerminalCrew`는 실시간으로 관측한 작업/대기→완료 전환에만 12초 노출 기한을 부여한다. 최초 과거 스냅샷·비활성 복귀·실패는 축하 이벤트가 아니다. 가장 가까운 만료 시점의 타이머 하나만 사용하며 프레임 동작은 SVG/CSS에 둔다. 작은 동료도 작업대와 손을 렌더링하고 완료 상태에서는 웃는 눈·손 흔들기·색종이를 표시한다. 히스토리·비활성·숨김·reduced-motion에서 동작을 멈춘다. 격리 브라우저 테스트는 실제 CSS 움직임·12초 후 이동·실패/기록 구분·부모 렌더와 입력 DOM 보존을 검증한다.
+
 ## 1.18.16 서버별 스킬 라이브러리
 
 `shared/skill-catalog.ts`의 한국어 안내와 `server/skill-source.json`의 공개 Git blob 메타데이터를 함께 갱신한다. 2026-11-11 확인 커밋은 `anthropics/skills@2c5958ecac7cee2b583967a2c4981d0f4a75c579`이다. 원본 SKILL.md를 번역·변형하거나 소스 스크립트를 실행하지 않는다. 각 스킬 하위 전체 파일과 루트 THIRD_PARTY_NOTICES를 복사한다. 바이너리 글꼴·이미지를 포함하여 고정 raw URL, 파일 수·크기·경로·모드·Git blob 해시를 확인한다. 임의 저장소·URL·목적 경로를 HTTP 입력으로 받지 않는다.

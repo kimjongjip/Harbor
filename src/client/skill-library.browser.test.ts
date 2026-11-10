@@ -7,7 +7,7 @@ import { once } from "node:events";
 import express from "express";
 import { build } from "esbuild";
 import { _electron } from "playwright";
-import { SKILL_CATALOG } from "../shared/skill-catalog.js";
+import { INSTALLABLE_SKILLS } from "../shared/skill-catalog.js";
 
 test(
   "skill library supports Korean discovery, both CLI targets, errors, old servers and responsive layout without changing terminal input",
@@ -47,7 +47,7 @@ test(
           codex: "/home/tester/.agents/skills",
         },
         skills: Object.fromEntries(
-          SKILL_CATALOG.map((s) => [
+          INSTALLABLE_SKILLS.map((s) => [
             s.id,
             {
               claude: installed.has(`${s.id}-claude`)
@@ -130,7 +130,18 @@ test(
             ) as HTMLInputElement
           )?.disabled,
       );
-      assert.equal(await dialog.locator(".skill-card").count(), 19);
+      assert.equal(await dialog.locator(".skill-card").count(), 50);
+      assert.equal(
+        await dialog
+          .locator(".skill-card")
+          .first()
+          .getAttribute("data-skill-id"),
+        "literature-review",
+      );
+      assert.match(
+        await dialog.locator(".skill-popularity-note").innerText(),
+        /개별 스킬의 사용 횟수·품질 평가가 아닙니다/,
+      );
       assert.equal(
         await page
           .getByRole("combobox", { name: "설치할 AI", exact: true })
@@ -138,6 +149,51 @@ test(
         "both",
       );
       await page.screenshot({ path: join(directory, "skills-light.png") });
+      await page
+        .getByRole("combobox", { name: "스킬 출처", exact: true })
+        .selectOption("orchestra");
+      assert.equal(await dialog.locator(".skill-card").count(), 12);
+      const flash = dialog.locator(
+        '[data-skill-id="optimizing-attention-flash"]',
+      );
+      assert.match(
+        (await flash.locator(".skill-card-details a").getAttribute("href")) ||
+          "",
+        /Orchestra-Research\/AI-Research-SKILLs\/tree\/[^/]+\/10-optimization\/flash-attention$/,
+      );
+      await page
+        .getByRole("combobox", { name: "스킬 출처", exact: true })
+        .selectOption("all");
+      await page
+        .getByRole("combobox", { name: "스킬 정렬", exact: true })
+        .selectOption("stars");
+      assert.equal(
+        await dialog
+          .locator(".skill-card")
+          .first()
+          .getAttribute("data-skill-id"),
+        "systematic-debugging",
+      );
+      await page
+        .getByRole("combobox", { name: "스킬 정렬", exact: true })
+        .selectOption("research");
+      await page.getByRole("textbox", { name: "스킬 검색" }).fill("graft");
+      const graft = dialog.locator('[data-skill-id="graft"]');
+      assert.equal(await dialog.locator(".skill-card").count(), 1);
+      assert.equal(await graft.getByRole("checkbox").count(), 0);
+      assert.match(
+        await graft.innerText(),
+        /npm install -g @trailhq\/trail-code[\s\S]*trail init/,
+      );
+      assert.doesNotMatch(await graft.innerText(), /설치 가능|\/graft|\$graft/);
+      assert.equal(
+        await page
+          .getByRole("button", { name: "선택한 스킬 설치", exact: true })
+          .isDisabled(),
+        true,
+      );
+      assert.equal(mutations.length, 0);
+      await page.screenshot({ path: join(directory, "graft-guide.png") });
       await page.getByRole("textbox", { name: "스킬 검색" }).fill("PDF");
       await page
         .getByRole("checkbox", { name: "PDF 작업 선택", exact: true })
@@ -171,9 +227,17 @@ test(
         /설치 완료.*Claude[\s\S]*설치 실패.*Codex/,
       );
       fail = false;
-      await page.getByRole("combobox", { name: "설치할 AI", exact: true }).selectOption("codex");
-      await page.getByRole("button", { name: "선택한 스킬 설치", exact: true }).click();
-      await page.waitForFunction(() => document.querySelector('.skill-results')?.textContent?.includes('설치 완료 · docx · Codex'));
+      await page
+        .getByRole("combobox", { name: "설치할 AI", exact: true })
+        .selectOption("codex");
+      await page
+        .getByRole("button", { name: "선택한 스킬 설치", exact: true })
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".skill-results")
+          ?.textContent?.includes("설치 완료 · docx · Codex"),
+      );
       assert.deepEqual(mutations[2], { ids: ["docx"], providers: ["codex"] });
       await page.getByRole("textbox", { name: "스킬 검색" }).fill("");
       await dialog.locator(".skill-help > summary").click();
@@ -213,7 +277,7 @@ test(
           .isDisabled(),
         true,
       );
-      assert.equal(await dialog.locator(".skill-card").count(), 19);
+      assert.equal(await dialog.locator(".skill-card").count(), 50);
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

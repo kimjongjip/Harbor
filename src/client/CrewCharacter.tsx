@@ -37,7 +37,7 @@ export const CrewCharacter = memo(function CrewCharacter({
     <svg
       className={`crew-art crew-${character}${miniature ? " miniature" : ""}`}
       data-state={state}
-      viewBox={miniature ? "25 12 100 100" : "0 0 200 126"}
+      viewBox={miniature ? "20 6 130 110" : "0 0 200 126"}
       data-leader={leader || undefined}
       aria-hidden="true"
       focusable="false"
@@ -242,6 +242,11 @@ export const CrewCharacter = memo(function CrewCharacter({
             d="M57 53h2v2h-2zM76 53h2v2h-2z"
           />
         </g>
+        <path
+          className="crew-happy-eyes"
+          transform={character === "frog" ? "translate(0 -6)" : undefined}
+          d="M55 56q4-7 8 0M74 56q4-7 8 0"
+        />
         {character === "robot" ? (
           <path className="crew-robot-smile" d="M64 63h8" />
         ) : character === "penguin" ? (
@@ -275,6 +280,58 @@ export const CrewCharacter = memo(function CrewCharacter({
           </g>
         )}
       </g>
+      <g className="crew-celebration">
+        <g className="crew-cheer-arm crew-cheer-left">
+          <path d="M48 84 34 69l-5-11" />
+          <circle cx="28" cy="56" r="5" />
+        </g>
+        <g className="crew-cheer-arm crew-cheer-right">
+          <path d="m87 84 14-15 6-11" />
+          <circle cx="108" cy="56" r="5" />
+        </g>
+        <g className="crew-confetti">
+          <path d="m29 24 2-6 2 6 6 2-6 2-2 6-2-6-6-2zM111 26l2-5 2 5 5 2-5 2-2 5-2-5-5-2z" />
+          <path
+            className="crew-confetti-blue"
+            d="m44 13 3 5-3 5-3-5zM127 43l4 3-4 3-4-3z"
+          />
+        </g>
+      </g>
+      {miniature && (
+        <g className="crew-mini-workstation">
+          <rect
+            className="crew-desk"
+            x="34"
+            y="98"
+            width="105"
+            height="6"
+            rx="2"
+          />
+          <g className="crew-paw crew-paw-left">
+            <rect x="70" y="87" width="14" height="8" rx="4" />
+          </g>
+          <g className="crew-paw crew-paw-right">
+            <rect x="86" y="88" width="14" height="8" rx="4" />
+          </g>
+          <path fill="#c0cbd6" d="M77 95h55l6 3H74z" />
+          <rect fill="#4d657a" x="96" y="67" width="42" height="29" rx="4" />
+          <rect
+            className="crew-screen"
+            x="100"
+            y="71"
+            width="34"
+            height="21"
+            rx="2"
+          />
+          <g className="crew-code" fill="#9fd4bb">
+            <path d="m104 75 4 3-4 3h3l4-3-4-3z" />
+            <path
+              className="crew-code-lines"
+              d="M113 79h13v2h-13zM104 85h16v2h-16zM123 85h6v2h-6z"
+            />
+          </g>
+        </g>
+      )}
       {!miniature && (
         <g>
           <rect

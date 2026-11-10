@@ -45,7 +45,7 @@ test(
     };
     await build({
       stdin: {
-        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><TerminalCrew provider="codex" state={state} active={active} crew={${JSON.stringify(initial)}}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
+        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function Team({state,active}){const[crew,setCrew]=useState(${JSON.stringify(initial)});window.updateAgent=(id,state)=>setCrew(c=>({...c,updatedAt:Date.now(),agents:c.agents.map(a=>a.id===id?{...a,state}:a)}));window.setCrewSource=source=>setCrew(c=>({...c,source}));return <TerminalCrew provider="codex" state={state} active={active} crew={crew}/>;}function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><Team state={state} active={active}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
         resolveDir: process.cwd(),
         sourcefile: "crew-fixture.tsx",
         loader: "tsx",
@@ -124,6 +124,47 @@ test(
         /수신 대기/,
       );
       const parentRenders = await page.evaluate(() => (window as any).renders);
+      const workingPaw = page.locator(
+        '[data-agent-id="reviewer"] .crew-paw-left',
+      );
+      assert.equal(
+        await page
+          .locator('[data-agent-id="reviewer"] .crew-mini-workstation')
+          .evaluate((e) => getComputedStyle(e).display),
+        "block",
+      );
+      assert.equal(
+        await workingPaw.evaluate((e) => getComputedStyle(e).animationName),
+        "crew-type",
+      );
+      const pawBefore = await workingPaw.evaluate(
+        (e) => getComputedStyle(e).transform,
+      );
+      await page.waitForFunction(
+        (before) =>
+          getComputedStyle(
+            document.querySelector(
+              '[data-agent-id="reviewer"] .crew-paw-left',
+            )!,
+          ).transform !== before,
+        pawBefore,
+      );
+      await page.evaluate(() => {
+        (window as any).visibility = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForFunction(
+        () =>
+          getComputedStyle(
+            document.querySelector(
+              '[data-agent-id="reviewer"] .crew-paw-left',
+            )!,
+          ).animationPlayState === "paused",
+      );
+      await page.evaluate(() => {
+        (window as any).visibility = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
       await page.evaluate(
         () => ((window as any).inputNode = document.querySelector("textarea")),
       );
@@ -264,6 +305,107 @@ test(
         await page.evaluate(() => (window as any).renders),
         parentRenders + 1,
         "character changes never rerender the parent; only the fixture's work-state change does",
+      );
+      assert.equal(
+        await workingPaw.evaluate((e) => getComputedStyle(e).animationName),
+        "none",
+        "reduced motion disables miniature typing too",
+      );
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await page.clock.install();
+      await page.evaluate(() =>
+        (window as any).updateAgent("reviewer", "completed"),
+      );
+      await page.waitForSelector(
+        '.terminal-crew > .crew-agent-list > [data-agent-id="reviewer"][data-recent-completion="true"]',
+      );
+      assert.equal(
+        await page
+          .locator('[data-agent-id="reviewer"] .crew-celebration')
+          .evaluate((e) => getComputedStyle(e).display),
+        "block",
+      );
+      assert.equal(
+        await page
+          .locator('[data-agent-id="reviewer"] .crew-happy-eyes')
+          .evaluate((e) => getComputedStyle(e).display),
+        "block",
+      );
+      assert.equal(
+        await page
+          .locator('[data-agent-id="reviewer"] .crew-mini-workstation')
+          .evaluate((e) => getComputedStyle(e).display),
+        "none",
+      );
+      await page
+        .locator(".terminal-crew")
+        .screenshot({ path: join(directory, "completed-team.png") });
+      await page.clock.fastForward(12050);
+      await page.waitForSelector('.crew-finished [data-agent-id="reviewer"]', {
+        state: "attached",
+      });
+      assert.equal(
+        await page
+          .locator('.crew-finished [data-agent-id="reviewer"]')
+          .getAttribute("data-recent-completion"),
+        null,
+      );
+      await page.locator(".crew-finished > summary").click();
+      assert.equal(
+        await page
+          .locator('[data-agent-id="reviewer"] .crew-cheer-left')
+          .evaluate((e) => getComputedStyle(e).animationPlayState),
+        "paused",
+        "old completed agents do not celebrate again",
+      );
+      await page.evaluate(() =>
+        (window as any).updateAgent("waiting", "failed"),
+      );
+      await page.waitForSelector('.crew-finished [data-agent-id="waiting"]', {
+        state: "attached",
+      });
+      assert.equal(
+        await page
+          .locator('[data-agent-id="waiting"]')
+          .getAttribute("data-recent-completion"),
+        null,
+      );
+      await page.evaluate(() => (window as any).setCrewSource("history"));
+      await page.evaluate(() =>
+        (window as any).updateAgent("waiting", "working"),
+      );
+      await page.waitForSelector(
+        '[data-agent-id="waiting"][data-state="working"]',
+      );
+      await page.evaluate(() =>
+        (window as any).updateAgent("waiting", "completed"),
+      );
+      await page.waitForSelector(
+        '.crew-finished [data-agent-id="waiting"][data-state="completed"]',
+        { state: "attached" },
+      );
+      assert.equal(
+        await page
+          .locator('[data-agent-id="waiting"]')
+          .getAttribute("data-recent-completion"),
+        null,
+        "history snapshots do not invent live completion",
+      );
+      assert.equal(
+        await page.evaluate(() => (window as any).renders),
+        parentRenders + 1,
+        "agent completion and expiry never rerender the terminal parent",
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            (window as any).inputNode === document.querySelector("textarea"),
+        ),
+        true,
+      );
+      assert.equal(
+        await page.getByRole("textbox").inputValue(),
+        "한글 English 작성 중",
       );
       // Restore preferences only in this isolated fixture; never reload Harbor.
       await page.reload();

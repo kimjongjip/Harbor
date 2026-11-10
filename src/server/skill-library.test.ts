@@ -15,7 +15,14 @@ import {
   type SkillPayload,
   type SkillTransport,
 } from "./skill-library.js";
-import { SKILL_CATALOG, SKILL_SOURCE } from "../shared/skill-catalog.js";
+import {
+  SKILL_CATALOG,
+  SKILL_SOURCE,
+  INSTALLABLE_SKILLS,
+  skillInvocation,
+} from "../shared/skill-catalog.js";
+import { skillSource } from "../shared/skill-sources.js";
+import communitySources from "./community-skill-sources.json";
 import source from "./skill-source.json";
 import type { HostConfig } from "../shared/types.js";
 
@@ -66,16 +73,27 @@ async function fixture() {
   return { home, host, library, options, downloads: () => downloads };
 }
 
-test("catalog is pinned and all 19 skill trees are complete, bounded and portable", () => {
+test("all curated skill trees are pinned, bounded and portable; guides are not installable", () => {
   assert.equal(source.commit, SKILL_SOURCE.commit);
-  assert.equal(SKILL_CATALOG.length, 19);
-  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 19);
-  for (const skill of SKILL_CATALOG)
+  assert.equal(SKILL_CATALOG.length, 50);
+  assert.equal(INSTALLABLE_SKILLS.length, 49);
+  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 50);
+  for (const skill of INSTALLABLE_SKILLS) {
+    const origin = skillSource(skill.source);
+    const manifest = skill.source
+      ? communitySources.find((s) => s.id === skill.source)!
+      : source;
+    assert.equal(manifest.repository, origin.repo);
+    assert.equal(manifest.commit, origin.commit);
     assert.ok(
-      validateSkillFiles(skill.id, source.files).some((f) =>
+      validateSkillFiles(skill.id, manifest.files).some((f) =>
         f.path.endsWith("/SKILL.md"),
       ),
     );
+  }
+  const graft = SKILL_CATALOG.find((skill) => skill.id === "graft")!;
+  assert.equal(skillInvocation(graft, "codex"), graft.example);
+  assert.throws(() => validateSkillFiles("graft", []));
   const file = {
     path: "skills/pdf/SKILL.md",
     mode: "100644",
@@ -101,6 +119,98 @@ test("catalog is pinned and all 19 skill trees are complete, bounded and portabl
     validateSkillFiles("pdf", [file, { ...file, path: "skills/pdf/skill.md" }]),
   );
   assert.throws(() => validateSkillFiles("../pdf", [file]));
+});
+
+test("community sources use separate provenance, preserve licenses and cannot masquerade as another source", async () => {
+  const { home, host, options } = await fixture();
+  const license = {
+    path: ".harbor-origin/LICENSE",
+    bytes: Buffer.from("Synthetic upstream license"),
+    executable: false,
+  };
+  const library = new SkillLibrary({
+    ...options,
+    download: async (id) => [
+      {
+        path: "SKILL.md",
+        bytes: Buffer.from(
+          `---\nname: ${id}\ndescription: Synthetic fixture\n---\n`,
+        ),
+        executable: false,
+      },
+      license,
+    ],
+  });
+  const ids = [
+    "literature-review",
+    "optimizing-attention-flash",
+    "systematic-debugging",
+    "rigs",
+  ];
+  const result = await library.install(host, ids, ["claude", "codex"]);
+  assert.ok(result.every((r) => r.state === "installed"));
+  const status = await library.status(host);
+  assert.equal(status.skills.graft, undefined);
+  for (const id of ids) {
+    const origin = skillSource(
+      INSTALLABLE_SKILLS.find((skill) => skill.id === id)!.source,
+    );
+    for (const root of Object.values(status.roots)) {
+      const marker = JSON.parse(
+        await fs.readFile(path.join(root, id, ".harbor-skill.json"), "utf8"),
+      );
+      assert.deepEqual(marker, {
+        id,
+        source: origin.repo,
+        commit: origin.commit,
+      });
+      assert.deepEqual(
+        await fs.readFile(path.join(root, id, license.path)),
+        license.bytes,
+      );
+      assert.deepEqual(status.skills[id], {
+        claude: "installed",
+        codex: "installed",
+      });
+    }
+  }
+  await fs.writeFile(
+    path.join(status.roots.codex, "rigs", ".harbor-skill.json"),
+    JSON.stringify({
+      id: "rigs",
+      source: SKILL_SOURCE.repository,
+      commit: SKILL_SOURCE.commit,
+    }),
+  );
+  assert.equal((await library.status(host)).skills.rigs.codex, "existing");
+  assert.equal(
+    (await library.install(host, ["graft"], ["codex"]))[0].state,
+    "error",
+  );
+  assert.equal(
+    await skillTransport().stat(path.join(home, ".agents", "skills", "graft")),
+    undefined,
+  );
+  for (const id of ids) {
+    const origin = skillSource(
+        INSTALLABLE_SKILLS.find((skill) => skill.id === id)!.source,
+      ),
+      urls: string[] = [];
+    await assert.rejects(
+      downloadSkill(id, (async (url: string) => {
+        urls.push(url);
+        return new Response("corrupt");
+      }) as typeof fetch),
+    );
+    assert.ok(
+      urls.length &&
+        urls.every((url) =>
+          url.startsWith(
+            `https://raw.githubusercontent.com/${origin.repo}/${origin.commit}/`,
+          ),
+        ),
+    );
+  }
 });
 
 test("installation is per user, covers both providers/resources, preserves existing skills and never executes scripts", async () => {
@@ -309,6 +419,7 @@ test("route validates targets and never accepts arbitrary repositories, paths or
     { ids: ["pdf"], providers: ["shell"] },
     { ids: ["pdf"], providers: ["codex"], path: home },
     { ids: [], providers: ["codex"] },
+    { ids: ["graft"], providers: ["codex"] },
   ]) {
     assert.equal(
       (

@@ -1,3 +1,5 @@
+import { COMMUNITY_SKILLS } from "./community-skills";
+import type { SkillSourceId } from "./skill-sources";
 /** Korean discovery notes, not a translation or modification of upstream instructions. */
 export const SKILL_SOURCE = {
   repository: "anthropics/skills",
@@ -9,13 +11,19 @@ export type SkillProvider = "claude" | "codex";
 export interface CatalogSkill {
   id: string;
   title: string;
-  category: "문서·데이터" | "디자인" | "개발" | "업무·학습";
+  category:
+    "연구" | "AI·시스템 연구" | "문서·데이터" | "디자인" | "개발" | "업무·학습";
+  source?: SkillSourceId;
+  folder?: string;
+  kind?: "guide";
+  guideCommands?: string[];
   description: string;
   example: string;
   requirements?: string;
   caveat?: string;
 }
 export const SKILL_CATALOG: CatalogSkill[] = [
+  ...COMMUNITY_SKILLS,
   {
     id: "pdf",
     title: "PDF 작업",
@@ -193,6 +201,11 @@ export const SKILL_CATALOG: CatalogSkill[] = [
       "다양한 답변에 검토 질문을 덧붙이는 스킬입니다. 이런 응답 방식을 원할 때 설치하세요.",
   },
 ];
+export const INSTALLABLE_SKILLS = SKILL_CATALOG.filter(
+  (skill) => skill.kind !== "guide",
+);
+export const skillFolder = (skill: CatalogSkill) =>
+  skill.folder || `skills/${skill.id}`;
 export type SkillInstallState =
   "available" | "installed" | "existing" | "unavailable";
 export interface SkillLibraryStatus {
@@ -206,5 +219,10 @@ export interface SkillInstallResult {
   state: "installed" | "existing" | "error";
   message?: string;
 }
-export const skillInvocation = (skill: CatalogSkill, provider: SkillProvider) =>
-  `${provider === "claude" ? "/" : "$"}${skill.id} ${skill.example}`;
+export const skillInvocation = (
+  skill: CatalogSkill,
+  provider: SkillProvider,
+) =>
+  skill.kind === "guide"
+    ? skill.example
+    : `${provider === "claude" ? "/" : "$"}${skill.id} ${skill.example}`;
