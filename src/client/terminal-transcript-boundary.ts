@@ -308,6 +308,28 @@ export interface LiveTranscriptLayout {
   live: boolean;
 }
 
+/** Stronger overlap for recovering a reader whose native session ID is missing.
+ * A title alone, a short generic reply, or an input draft is not identity proof.
+ * This only authorizes reading history; it never binds a peer/input session. */
+export function hasNativeCompletedAnswer(
+  turns: ConversationTurn[],
+  frame: TranscriptFrame,
+): boolean {
+  const chrome = nativeChrome(frame.lines, frame.end, frame);
+  if (!chrome || chrome.framed) return false;
+  const turn = [...turns].reverse().find((item) => item.complete);
+  const answer =
+    turn &&
+    [...turn.items]
+      .reverse()
+      .find((item) => item.kind === "assistant" && turn.finalIds.has(item.id));
+  return (
+    !!answer &&
+    comparable(answer.text).length >= 64 &&
+    answerEnd(frameLookup(frame.lines.slice(0, chrome.start)), answer, []) > 0
+  );
+}
+
 /**
  * Fullscreen CLIs keep only one repainted screen in the emulator. Every saved
  * turn — including the one still running — renders from history; the native
@@ -345,7 +367,9 @@ export function liveTranscriptLayout(
     return {
       historyCount: turns.length,
       nativeStart:
-        end >= 0 ? skipBlankRows(frame.lines, Math.min(end, limit), limit) : limit,
+        end >= 0
+          ? skipBlankRows(frame.lines, Math.min(end, limit), limit)
+          : limit,
       chromeStart: limit,
       live: true,
     };

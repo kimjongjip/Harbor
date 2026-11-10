@@ -43,6 +43,7 @@ import { useTypography } from "./Typography";
 import { terminalFontFamily } from "./typography-settings";
 import { TerminalRich, richSelectedText } from "./TerminalRich";
 import { TerminalConversation } from "./TerminalConversation";
+import { useTerminalHistorySession } from "./useTerminalHistorySession";
 import { TerminalControlStatus } from "./TerminalControlStatus";
 import { ReconnectTerminalDialog } from "./ReconnectTerminalDialog";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
@@ -122,6 +123,11 @@ export default function TerminalPane({
   const [richBlocks, setRichBlocks] = useState<RichTerminalBlock[]>([]);
   const [reconnectDialog, setReconnectDialog] = useState(false);
   const [rawOutput, setRawOutput] = useState(false);
+  const historySessionId = useTerminalHistorySession(
+    nativeTerminal,
+    info,
+    active && !rawOutput,
+  );
   const { push, isServerNoticeEnabled } = useNotifications();
   const openRef = useRef(open);
   openRef.current = open;
@@ -1765,14 +1771,15 @@ export default function TerminalPane({
           term={nativeTerminal}
           info={info}
           blocks={richBlocks}
-          covered={!rawOutput && !!(info.agentSessionId || info.resumeThreadId)}
+          covered={!rawOutput && !!historySessionId}
         />
       )}
-      {nativeTerminal && (info.agentSessionId || info.resumeThreadId) && (
+      {nativeTerminal && historySessionId && (
         <TerminalConversation
-          key={`${info.id}:${info.hostId}:${info.agentKind || info.program}:${info.agentSessionId || info.resumeThreadId}`}
+          key={`${info.id}:${info.hostId}:${info.agentKind || info.program}:${historySessionId}`}
           term={nativeTerminal}
           info={info}
+          historySessionId={historySessionId}
           mode={rawOutput ? "terminal" : "auto"}
           blocks={richBlocks}
           active={active}

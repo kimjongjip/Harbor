@@ -103,6 +103,7 @@ const WorkGroup = memo(function WorkGroup({
 export function TerminalConversation({
   term,
   info,
+  historySessionId,
   mode = "auto",
   blocks = emptyBlocks,
   active = true,
@@ -110,13 +111,16 @@ export function TerminalConversation({
 }: {
   term: Terminal;
   info: TerminalInfo;
+  /** A read-only recovery must not be mistaken for the terminal's input binding. */
+  historySessionId?: string;
   onClose?(): void;
   mode?: ConversationMode;
   blocks?: RichTerminalBlock[];
   active?: boolean;
   onLink?(text: string): void;
 }) {
-  const sessionId = info.agentSessionId || info.resumeThreadId;
+  const sessionId =
+    info.agentSessionId || info.resumeThreadId || historySessionId;
   const provider =
     info.agentKind || (info.program?.startsWith("claude") ? "claude" : "codex");
   const modSurface = useClaudeModSurface(

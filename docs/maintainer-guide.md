@@ -1,5 +1,13 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.6 공유 Codex 기록 표시 복구
+
+공유 daemon으로 재개한 Codex는 터미널별 SessionStart 훅을 다시 보내지 않을 수 있다. 이때 agentKind는 Codex인데 agentSessionId·resumeThreadId가 모두 없어 TerminalConversation이 생성되지 않았다. `useTerminalHistorySession`은 이런 활성 화면에서만 원래 alternate buffer 하단의 모델·대화 제목·shortcuts와 bracketed paste 상태를 확인한다. 기존 인증 history API로 같은 호스트의 정확한 제목을 검색하고, 결과가 하나이며 추가 페이지가 없고 완료 답변의 충분히 긴 끝부분이 실제 본문에 있을 때만 reader의 ID를 복구한다.
+
+복구 ID는 `TerminalConversation.historySessionId`에만 전달하며 TerminalInfo·입력·peer runtime을 수정하지 않는다. 원래 훅 ID가 있으면 우선한다. 제목이 잘리거나 중복되거나 답변을 확인할 수 없으면 원래 CLI를 유지한다. 제목 변경·탭 숨김·원문 보기·제공자 변경 시 이전 요청을 취소한다. 출력은 250ms 단위로 하단 6행만 확인하고 검색 재시도는 최소 30초 간격이다. 복구 후 같은 제목의 출력·입력은 추가 검색이나 React 상태 갱신을 만들지 않는다.
+
+`terminal-history-session.test.ts`는 고유 제목·완료 답변 확인, 중복·다른 호스트/제공자·잘린 제목·초안·진행 중 답변·늦은 응답 거부를 검증한다. `terminal-history-session.browser.test.ts`는 격리 Electron의 실제 TerminalPane에서 ID 없는 공유 세션의 제목·표 조판, 입력 한 번 전달, 연결·크기·초안 보존, 반복 출력 중 검색·기록 재렌더 없음과 대화 전환 취소를 검증한다. 화면 파일 교체와 사용자의 새로고침으로 기존 공유 세션에도 적용할 수 있으며 앱·CLI 재시작은 필요 없다.
+
 ## 1.18.5 Mods 옆의 Claude 하단 안내
 
 Mods dock가 열리면 `claudeModSurface`는 패널을 제외한 셀 범위에서 입력창 바로 위의 유휴 압축·업데이트 안내를 확인한다. 알려진 완전한 문구가 있는 하단 구간만 원래 xterm에 남긴다. 이 안내를 history reader에 넣으면 원래 오른쪽 정렬 공백과 문서 padding 때문에 마지막 단어가 다음 줄 왼쪽으로 밀렸다. 표시된 단어·ANSI 색·좌표를 변경하거나 PTY 크기·입력을 조작하지 않는다.
