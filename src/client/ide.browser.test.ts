@@ -367,12 +367,13 @@ const documents={
   '/home/fixture/korean.txt':{...base,path:'/home/fixture/korean.txt',content:'한글 문서\\r\\n',version:'1',encoding:'cp949',bom:false},
   '/home/fixture/unicode.txt':{...base,path:'/home/fixture/unicode.txt',content:'UTF-16 한글 😀\\r\\n',version:'1',encoding:'utf-16be',bom:true}
 };
-const names=['korean.txt','unicode.txt','image.png','archive.bin'];
+const names=['korean.txt','unicode.txt','image.png','large.pdf','archive.bin'];
 const api={
   tree:async()=>({...base,path:base.root,parent:null,truncated:false,entries:names.map(name=>({name,path:base.root+'/'+name,kind:'file',size:64,modifiedAt:0,mode:0}))}),
   read:async(terminalId,path,encoding)=>{
     window.reads.push({terminalId,path,encoding});
     if(path.endsWith('korean.txt')&&encoding!=='cp949')throw new IdeApiError('UTF-8로 읽을 수 없는 파일입니다. 인코딩을 선택하세요.','EDITOR_ENCODING_REQUIRED',undefined,{...base,path,size:12,preview:'download',encodings:['cp949']});
+    if(path.endsWith('.pdf'))throw new IdeApiError('IDE에서는 2MB 이하의 텍스트 파일을 편집할 수 있습니다.','EDITOR_TOO_LARGE',undefined,{...base,path,size:5*1024*1024,preview:'pdf'});
     if(!documents[path])throw new IdeApiError('이미지·문서 또는 바이너리 파일입니다.','EDITOR_BINARY',undefined,{...base,path,size:64,preview:path.endsWith('.png')?'image':'download'});
     return{...documents[path]};
   },
@@ -480,10 +481,16 @@ createRoot(document.getElementById('root')).render(<div style={{height:700}}><Id
       assert.equal(preview.hostId, "encoding-host");
       assert.equal(preview.terminalId, "encoding-terminal");
       assert.equal(await page.getByRole("tab").count(), 2);
+      assert.equal(await page.locator(".ide-error").count(), 0);
       await page
-        .getByRole("button", { name: "미리보기 열기", exact: true })
+        .getByRole("button", { name: "large.pdf", exact: true })
         .click();
       await page.waitForFunction(() => (window as any).previews.length === 2);
+      assert.equal(await page.locator(".ide-error").count(), 0);
+      assert.equal(
+        await page.evaluate(() => (window as any).previews.at(-1).path),
+        "/home/fixture/large.pdf",
+      );
       await page
         .getByRole("button", { name: "archive.bin", exact: true })
         .click();

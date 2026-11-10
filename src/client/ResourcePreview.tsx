@@ -136,6 +136,7 @@ interface PreviewData {
   text?: string;
   truncated?: boolean;
   resolvedFrom?: string;
+  streaming?: boolean;
 }
 function ResourcePreview({
   target,
@@ -236,7 +237,10 @@ function ResourcePreview({
   }, [target, previewCwd]);
   const [svgUrl, setSvgUrl] = useState("");
   const svgPath =
-    data && data.kind !== "directory" && /\.svg$/i.test(data.path)
+    data &&
+    !data.streaming &&
+    data.kind !== "directory" &&
+    /\.svg$/i.test(data.path)
       ? data.path
       : undefined;
   useEffect(() => {

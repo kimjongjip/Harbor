@@ -245,6 +245,9 @@ test("non-text errors include preview choices and never decode containers as CP9
   for (const [name, bytes, preview] of [
     ["image.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]), "image"],
     ["document.pdf", Buffer.from("%PDF-1.7\nplain ASCII header"), "pdf"],
+    ["large.pdf", Buffer.alloc(EDITOR_MAX_BYTES + 1, 65), "pdf"],
+    ["large.png", Buffer.alloc(EDITOR_MAX_BYTES + 1, 65), "image"],
+    ["large.svg", Buffer.alloc(EDITOR_MAX_BYTES + 1, 65), "image"],
     ["binary.dat", Buffer.from([0x61, 0, 0x62]), "download"],
     ["large.html", Buffer.alloc(EDITOR_MAX_BYTES + 1, 65), "html"],
   ] as const) {

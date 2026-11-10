@@ -32,7 +32,9 @@ test("SVG figures resolve from the Markdown directory and use the image endpoint
   assert.equal(preview.kind, "image");
   const image = await files.image(host, preview.path);
   assert.equal(image.mime, "image/svg+xml");
-  assert.equal(image.bytes.toString(), svg);
+  const chunks: Buffer[] = [];
+  for await (const chunk of image.read()) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), svg);
   await fs.writeFile(join(dir, "not-image.svg"), "<html>not an image</html>");
   await assert.rejects(
     files.image(host, join(dir, "not-image.svg")),

@@ -425,11 +425,9 @@ export default function IdeWorkspace({
     } catch (error) {
       if (generation.current !== ticket) return;
       setStatus("");
-      setError((error as Error).message);
       if (error instanceof IdeApiError && error.details) {
-        setFileIssue(error.details);
         if (
-          error.code === "EDITOR_BINARY" &&
+          ["EDITOR_BINARY", "EDITOR_TOO_LARGE"].includes(error.code || "") &&
           error.details.preview !== "download" &&
           onPreview
         ) {
@@ -439,8 +437,11 @@ export default function IdeWorkspace({
             version: "",
             binding: tree?.binding || "",
           });
+          return;
         }
+        setFileIssue(error.details);
       }
+      setError((error as Error).message);
     } finally {
       opening.current.delete(requestKey);
     }

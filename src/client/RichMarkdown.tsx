@@ -47,12 +47,20 @@ function MarkdownImage({
     }
     void (async () => {
       const cwd = await resolvePreviewBase(source.hostId, source.cwd);
-      const result = await api<{ kind: string; path: string }>(
+      const result = await api<{
+        kind: string;
+        path: string;
+        streaming?: boolean;
+      }>(
         `/hosts/${encodeURIComponent(source.hostId)}/files/preview?${new URLSearchParams({ path: link.path, cwd })}`,
         undefined,
         "GET",
       );
-      if (/\.svg$/i.test(result.path) && result.kind !== "directory") {
+      if (
+        !result.streaming &&
+        /\.svg$/i.test(result.path) &&
+        result.kind !== "directory"
+      ) {
         objectUrl = await svgImageUrl(
           source.hostId,
           result.path,

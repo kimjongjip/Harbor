@@ -1,5 +1,11 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.2 큰 PDF·이미지 미리보기
+
+IDE는 정규 경로와 세션을 확인한 뒤 `fileMediaKind`로 PDF·이미지를 먼저 분류하여 텍스트 읽기·2MiB 검사·인코딩 변환을 건너뛴다. 클라이언트는 바이너리 안내와 구버전 서버의 큰 미디어 오류를 자동 미리보기로 연결하고 오류 띠를 남기지 않는다. 텍스트 편집과 기존 미저장 모델은 유지한다.
+
+이미지는 64KiB 이하의 헤더로 MIME을 확인하고, 본문은 로컬/SFTP 스트림으로 보낸다. PDF·이미지의 인증 경로는 유지하며 `sendMediaFile`이 Content-Length, 단일 byte range, HEAD, 연결 취소를 처리한다. 응답의 no-transform은 압축으로 byte range가 달라지는 것을 막는다. SVG도 새 서버에서는 `<img>`로 직접 읽으며 HTML로 삽입하지 않는다. 기존 SVG 다운로드 호환 경로는 구버전 서버에만 사용한다. `file-media.test.ts`는 24MiB 파일·SSH 범위 읽기·취소를, `ide-media.browser.test.ts`는 별도 Electron에서 20MiB 초과 PNG/JPEG/SVG와 2MiB 초과 PDF의 실제 표시 및 미저장 초안 보존을 검증한다.
+
 ## 1.18.1 IDE 탐색기 너비
 
 `ResizableSidebar`의 IDE 설정은 별도 `harbor.ideExplorerWidth`에 너비를 저장한다. 드래그는 탐색기의 CSS 변수만 변경하고 상위 IDE·터미널 상태를 갱신하지 않는다. 화면에 맞춘 일시적인 CSS 제한은 저장된 선호 너비를 덮어쓰지 않는다. 공통 경계 스타일은 컴포넌트에서 불러와 호스트·다른 PC 연결 모두에 적용한다. 기존 `ide-terminal-switch.browser.test.ts`에서 드래그·키보드·화면 축소와 복원·새 화면의 저장 너비·초기화 및 기존 터미널 DOM·입력·연결 보존을 함께 검증한다.

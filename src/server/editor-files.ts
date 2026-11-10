@@ -11,6 +11,7 @@ import type {
   TerminalInfo,
 } from "../shared/types.js";
 import type { Files } from "./files.js";
+import { fileMediaKind } from "../shared/file-media.js";
 
 export const EDITOR_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_ENTRIES = 5000;
@@ -576,6 +577,12 @@ export class EditorFiles {
         "일반 파일만 편집할 수 있습니다.",
       );
     try {
+      // Media never enters the text-size/encoding path, regardless of its size.
+      if (fileMediaKind(filename)) {
+        if ((await scope.io.realpath(filename)) !== filename) throw forbidden();
+        await this.assertCurrent(scope);
+        throw binary();
+      }
       if (stat.size > EDITOR_MAX_BYTES) throw tooLarge();
       const bytes = await scope.io.read(filename, EDITOR_MAX_BYTES);
       if ((await scope.io.realpath(filename)) !== filename) throw forbidden();
@@ -612,15 +619,9 @@ export class EditorFiles {
             root: scope.root,
             path: filename,
             size: stat.size,
-            preview: /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico)$/.test(
-              extension,
-            )
-              ? "image"
-              : extension === ".pdf"
-                ? "pdf"
-                : /\.html?$/.test(extension)
-                  ? "html"
-                  : "download",
+            preview:
+              fileMediaKind(filename) ||
+              (/\.html?$/.test(extension) ? "html" : "download"),
             ...(error.code === "EDITOR_ENCODING_REQUIRED"
               ? { encodings: ["cp949" as const] }
               : {}),

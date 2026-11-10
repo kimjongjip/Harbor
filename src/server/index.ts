@@ -65,6 +65,7 @@ import { TerminalNotices } from "./terminal-notices.js";
 import { RichTerminals } from "./rich-terminal.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { Files, MAX_UPLOAD_BYTES } from "./files.js";
+import { sendMediaFile } from "./file-media.js";
 import { HtmlPreviews } from "./html-preview.js";
 import { UPLOAD_ENTRY_LIMIT } from "../shared/upload-tree.js";
 import { pipeline } from "node:stream/promises";
@@ -959,7 +960,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.1" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.2" }),
 );
 app.get("/api/bootstrap", (_req, res) =>
   res.json({
@@ -1953,8 +1954,7 @@ app.get("/api/hosts/:id/files/image", async (req, res) => {
     hub.host(String(req.params.id)),
     cleanPath.min(1).parse(req.query.path),
   );
-  res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
-  res.type(image.mime).send(image.bytes);
+  await sendMediaFile(req, res, image);
 });
 app.get("/api/hosts/:id/files/pdf", async (req, res) => {
   if (!validToken(req.query.token, token)) {
@@ -1962,20 +1962,11 @@ app.get("/api/hosts/:id/files/pdf", async (req, res) => {
     return;
   }
   const filename = cleanPath.min(1).parse(req.query.path);
-  if (!/\.pdf$/i.test(filename)) throw new Error("PDF 파일을 선택하세요.");
-  const file = await files.download(hub.host(String(req.params.id)), filename);
-  // Only this authenticated document may be framed by the Harbor preview.
-  res.setHeader("X-Frame-Options", "SAMEORIGIN");
-  res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Length", file.size);
-  res.setHeader(
-    "Content-Disposition",
-    `inline; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+  await sendMediaFile(
+    req,
+    res,
+    await files.pdf(hub.host(String(req.params.id)), filename),
   );
-  await pipeline(file.stream, res).catch((error) => {
-    if (!res.headersSent && !res.destroyed) throw error;
-  });
 });
 app.put("/api/hosts/:id/files/upload", async (req, res) => {
   if (Number(req.headers["content-length"]) > MAX_UPLOAD_BYTES) {

@@ -8,6 +8,7 @@ import type { Client, SFTPWrapper, Stats } from "ssh2";
 import type { DirectoryView, HostConfig } from "../shared/types.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { shellQuote } from "./ssh.js";
+import { fileMediaKind } from "../shared/file-media.js";
 import {
   uploadParts,
   validateUploadManifest,
@@ -169,7 +170,7 @@ export class Files {
       truncated: entries.length > 5000,
     };
   }
-  async download(host: HostConfig, filename: string) {
+  private async readableFile(host: HostConfig, filename: string) {
     validateFilePath(host, filename);
     const sftp = host.kind === "ssh" ? await this.sftp(host) : undefined;
     const stat = sftp
@@ -179,10 +180,15 @@ export class Files {
     return {
       size: stat.size,
       name: (host.kind === "ssh" ? path.posix : path).basename(filename),
-      stream: sftp
-        ? sftp.createReadStream(filename)
-        : createReadStream(filename),
+      read: (range?: { start: number; end: number }) =>
+        sftp
+          ? sftp.createReadStream(filename, range)
+          : createReadStream(filename, range),
     };
+  }
+  async download(host: HostConfig, filename: string) {
+    const file = await this.readableFile(host, filename);
+    return { size: file.size, name: file.name, stream: file.read() };
   }
   async resolvePath(host: HostConfig, filename: string, cwd: string) {
     if (!filename || /[\0\r\n]/.test(filename))
@@ -322,12 +328,8 @@ export class Files {
     if (stat.isDirectory()) return { ...base, kind: "directory" };
     if (!stat.isFile()) throw new Error("일반 파일만 미리볼 수 있습니다.");
     if (/\.html?$/i.test(resolved)) return { ...base, kind: "html" };
-    if (/\.pdf$/i.test(resolved)) return { ...base, kind: "pdf" };
-    if (/\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(resolved)) {
-      if (stat.size > 20 * 1024 * 1024)
-        throw new Error("20MB보다 큰 이미지는 다운로드해서 확인해 주세요.");
-      return { ...base, kind: "image" };
-    }
+    const mediaKind = fileMediaKind(resolved);
+    if (mediaKind) return { ...base, kind: mediaKind, streaming: true };
     const stream = sftp
       ? sftp.createReadStream(resolved, { start: 0, end: 256 * 1024 - 1 })
       : createReadStream(resolved, { start: 0, end: 256 * 1024 - 1 });
@@ -498,21 +500,14 @@ export class Files {
     });
   }
   async image(host: HostConfig, filename: string) {
-    const file = await this.download(host, filename);
-    if (file.size > 20 * 1024 * 1024) {
-      file.stream.destroy();
-      throw new Error("이미지 미리보기는 20MB까지 지원합니다.");
-    }
+    const file = await this.readableFile(host, filename);
+    // Sniff a bounded header; the original file is streamed only on demand.
+    const header = file.read({ start: 0, end: 64 * 1024 - 1 });
     const chunks = [];
-    let size = 0;
     try {
-      for await (const chunk of file.stream) {
-        size += chunk.length;
-        if (size > 20 * 1024 * 1024) throw new Error("이미지가 너무 큽니다.");
-        chunks.push(Buffer.from(chunk));
-      }
+      for await (const chunk of header) chunks.push(Buffer.from(chunk));
     } finally {
-      file.stream.destroy();
+      header.destroy();
     }
     const bytes = Buffer.concat(chunks);
     const mime = bytes
@@ -528,16 +523,25 @@ export class Files {
             ? "image/webp"
             : bytes.subarray(0, 2).toString() === "BM"
               ? "image/bmp"
-              : bytes.subarray(4, 12).toString() === "ftypavif"
+              : bytes.subarray(4, 8).toString() === "ftyp" &&
+                  /avif|avis/.test(bytes.subarray(8, 80).toString("ascii"))
                 ? "image/avif"
-                : /\.svg$/i.test(filename) &&
-                    /^\s*(?:<\?xml[^>]*>\s*)?(?:(?:<!--[\s\S]*?-->|<!DOCTYPE\s+svg[^>]*>)\s*)*<svg(?:\s|>)/i.test(
-                      bytes.toString("utf8"),
-                    )
-                  ? "image/svg+xml"
-                  : undefined;
+                : bytes.subarray(0, 4).equals(Buffer.from([0, 0, 1, 0]))
+                  ? "image/x-icon"
+                  : /\.svg$/i.test(filename) &&
+                      /^\s*(?:<\?xml[^>]*>\s*)?(?:(?:<!--[\s\S]*?-->|<!DOCTYPE\s+svg[^>]*>)\s*)*<svg(?:\s|>)/i.test(
+                        bytes.toString("utf8"),
+                      )
+                    ? "image/svg+xml"
+                    : undefined;
     if (!mime) throw new Error("미리보기를 지원하는 이미지 형식이 아닙니다.");
-    return { bytes, mime };
+    return { ...file, mime };
+  }
+  async pdf(host: HostConfig, filename: string) {
+    if (fileMediaKind(filename) !== "pdf")
+      throw new Error("PDF 파일을 선택하세요.");
+    const file = await this.readableFile(host, filename);
+    return { ...file, mime: "application/pdf" };
   }
   async prepareUpload(
     host: HostConfig,
