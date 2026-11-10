@@ -25,15 +25,16 @@ window.inputs=[];window.writes=0;window.resizes=0;window.markdownRenders=0;
 function Fixture(){const mount=useRef(null);const[term,setTerm]=useState(null),[mode,setMode]=useState('auto');window.setMode=setMode;
 useEffect(()=>{const t=new Terminal({cols:160,rows:40,fontSize:14,lineHeight:1.25,allowProposedApi:true,theme:{background:'#ffffff',foreground:'#20242c'}});t.open(mount.current);window.term=t;t.onData(d=>window.inputs.push(d));setTerm(t);
 const write=t.write.bind(t),resize=t.resize.bind(t);t.write=(...a)=>{window.writes++;return write(...a)};t.resize=(...a)=>{window.resizes++;return resize(...a)};
-window.paint=(kind='dock',frame=0)=>{const cols=t.cols,lines=Array(40).fill(''),dock=kind==='dock'?109:undefined;
+window.paint=(kind='dock',frame=0,commit=true)=>{const cols=t.cols,lines=Array(40).fill(''),dock=(kind==='dock'||kind==='slash')?109:undefined;
 lines[0]='SAVED ANSWER CONFIRMED FINAL OUTPUT.';lines[2]='NEW NATIVE OUTPUT';
 if(kind==='dock'&&frame===99){lines[28]='● Compacted while idle, before the prompt cache expired · turn off with';lines[29]='  "idleCompaction": false in settings.json';lines[33]=' '.repeat(70)+'✔ Update installed · /restart to apply';}
 if(dock!==undefined)for(let r=0;r<34;r++)lines[r]+='\\x1b['+(r+1)+';'+(dock+1)+'H│'+(r===0?' '.repeat(cols-dock-3)+'✕ ':'\\x1b[33mCREW FRAME '+frame+' CONTEXT 42%\\x1b[0m');
 if(kind==='inline'){lines[15]='╭'+'─'.repeat(cols-4)+'✕─╮';for(let r=16;r<33;r++)lines[r]='│'+('CREW FRAME '+frame+' CONTEXT 42%').padEnd(cols-2)+'│';lines[33]='╰'+'─'.repeat(cols-2)+'╯';}
 if(kind==='band'){lines[28]='PET FRAME '+frame;lines[28]=lines[28].padEnd(cols-4)+'[-] ';lines[29]='  (=^.^=)';lines[32]='CONTEXT 42%';}
 const prompt=kind==='inline'?35:34;lines[prompt]='─'.repeat(cols);lines[prompt+1]='❯ UNSENT DRAFT';lines[prompt+2]='─'.repeat(cols);lines[prompt+3]='  ? for shortcuts';
+if(kind==='slash'){for(let r=28;r<34;r++)lines[r]='';lines[29]='  ❯ /help     Show help';lines[30]='    /theme    Change theme';lines[31]='    /doctor   Check installation';lines[35]='❯\u00a0/he ';}
 if(kind==='approval'){lines[34]='─'.repeat(cols);lines[35]='Allow this command?';lines[36]='❯ 1. Yes';lines[37]='  2. No';}
-t.write('\\x1b[?1049h\\x1b[?2004h\\x1b[?1000h\\x1b[?1006h\\x1b[?2026h\\x1b[2J'+lines.map((line,r)=>'\\x1b['+(r+1)+';1H'+line).join('')+'\\x1b['+(prompt+2)+';15H\\x1b[?2026l');};window.paint();return()=>t.dispose();},[]);
+t.write('\\x1b[?1049h\\x1b[?2004h\\x1b[?1000h\\x1b[?1006h\\x1b[?2026h\\x1b[2J'+lines.map((line,r)=>'\\x1b['+(r+1)+';1H'+line).join('')+'\\x1b['+(prompt+2)+';15H'+(commit?'\\x1b[?2026l':''));};window.paint();return()=>t.dispose();},[]);
 const info={id:'fixture',hostId:'fixture',cwd:'/fixture',title:'Synthetic crew',agentKind:'claude',agentSessionId:'synthetic-crew',agentState:'idle'};
 return <div className="terminal-instance active" style={{height:800}}><div ref={mount} className="terminal-mount" style={{position:'relative'}}/>{term&&<><TerminalRich term={term} info={info} blocks={[]} covered={mode!=='terminal'}/><TerminalConversation term={term} info={info} mode={mode}/></>}</div>}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
@@ -243,6 +244,28 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate(() => (window as any).markdownRenders),
         0,
       );
+      await page.evaluate(() => (window as any).paint("slash"));
+      await page.waitForTimeout(150);
+      bounds = await measure();
+      assert.equal(await page.locator('[data-native-mods="preserved"]').count(), 1);
+      assert.ok(Math.abs(bounds.overlay.right -
+        (bounds.screen.left + bounds.screen.width * 109 / 160)) < 1,
+        "opening slash commands keeps the live right dock visible");
+      assert.ok(Math.abs(bounds.overlay.bottom -
+        (bounds.screen.top + bounds.screen.height * 28 / 40)) < 1,
+        "the reader stops above the native slash picker");
+      assert.doesNotMatch(await page.locator(".terminal-conversation").innerText(), /Show help|Change theme|CREW FRAME/);
+      await page.screenshot({ path: join(root, "mods-slash-picker.png") });
+      // The CLI can leave sync output open; xterm's safety timeout commits
+      // without another parsed write. The reader must recover with that paint.
+      await page.evaluate(() => (window as any).paint("dock", 0, false));
+      await page.waitForFunction(() => !(window as any).term.modes.synchronizedOutputMode,
+        undefined, { timeout: 2500 });
+      await page.waitForTimeout(100);
+      bounds = await measure();
+      assert.ok(Math.abs(bounds.overlay.bottom -
+        (bounds.screen.top + bounds.screen.height * 34 / 40)) < 1,
+        "closing the picker restores the full document height");
       const x = bounds.screen.left + (bounds.screen.width * 114.5) / 160,
         y = bounds.screen.top + (bounds.screen.height * 2.5) / 40;
       assert.equal(

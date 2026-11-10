@@ -1,5 +1,15 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.7 입력·완료 표시와 Mods 메뉴
+
+`WorkGroup`은 펼쳤을 때 하단 접기 버튼을 제공하고 접힌 제목으로 스크롤·포커스를 돌린다. `TranscriptItems`는 동일한 항목 참조와 표시 속성을 비교해 레이아웃 변화만으로 목록을 다시 만들지 않는다. 기록 응답은 transition으로 적용하되 최신 기록 ref는 비동기 React commit과 별개로 유지한다. 실제 입력은 남은 기록 선택을 해제하여 멈춘 native projection을 재개하며 마우스 프로토콜 응답으로 선택을 해제하지 않는다.
+
+완료 관찰은 Codex `Worked for`와 Claude `Cooked for … · done …` 같은 네이티브 완료 줄을 인식한다. 새 표시는 즉시·750ms·2초·5초의 제한된 기록 조회를 요청하며 실제 완료 판정은 저장 상태와 기존 화면 검증을 따른다. 작업 중 2초 조회는 마지막 저장 턴이 이미 완료되어도 계속한다. 원격 Claude 기록의 256KiB 읽기는 `readSftpRange`에서 최대 8개의 32KiB 요청으로 처리하고 짧은 패킷·EOF를 보존하며 오류 시에도 진행 중 요청이 끝난 뒤 handle을 닫는다.
+
+Codex 배경 보완은 `cursorComposer`로 실제 커서·입력 모드·들여쓰기·하단 상태줄을 확인하여 wrap 플래그 없는 다중 행 입력도 지원한다. Claude dock의 연속 경계가 슬래시 메뉴에서 끝나면 원래 닫기 버튼·입력창·메뉴 행까지 확인한 뒤 그 위의 패널과 아래 선택 목록을 네이티브로 남긴다. DEC 2026 timeout으로 parsed 이벤트 없이 paint된 경우 `useClaudeModSurface`는 해당 대기 중 프레임만 다시 검사한다.
+
+검증은 저장된 셀 배치·headless xterm·격리 Electron과 합성 HTTP/WebSocket으로 수행한다. 185개 작업의 위/아래 접기, 긴 기록의 선택 후 입력·IME, 커서로 배치한 프롬프트의 균일한 배경, 슬래시 메뉴의 dock 보존·복원과 sync timeout, 두 제공자의 완료·새 턴 조회를 포함한다. 합성 에코의 측정치를 실제 CLI·SSH 지연으로 보고하지 않는다. 실행 중 Harbor·백엔드·사용자 PTY는 종료하거나 재시작하지 않는다. 화면 패치와 다음 실행용 패키지를 따로 적용하며 원격 읽기 개선은 새 백엔드 실행부터 활성화된다.
+
 ## 1.18.6 공유 Codex 기록 표시 복구
 
 공유 daemon으로 재개한 Codex는 터미널별 SessionStart 훅을 다시 보내지 않을 수 있다. 이때 agentKind는 Codex인데 agentSessionId·resumeThreadId가 모두 없어 TerminalConversation이 생성되지 않았다. `useTerminalHistorySession`은 이런 활성 화면에서만 원래 alternate buffer 하단의 모델·대화 제목·shortcuts와 bracketed paste 상태를 확인한다. 기존 인증 history API로 같은 호스트의 정확한 제목을 검색하고, 결과가 하나이며 추가 페이지가 없고 완료 답변의 충분히 긴 끝부분이 실제 본문에 있을 때만 reader의 ID를 복구한다.

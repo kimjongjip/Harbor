@@ -59,21 +59,42 @@ export function claudeModPanels(
   const prompt = prompts[0];
   const panels: NativePanelRectangle[] = [];
   const docks: number[] = [];
+  const dockEnds = new Map<number, number>();
   if (cell(0, columns - 2) === "✕" && cell(0, columns - 1) === " ")
     for (let column = Math.ceil(columns / 2); column < columns - 10; column++) {
       if (cell(0, column) !== "│") continue;
-      let complete = true;
-      for (let row = 1; row < prompt; row++)
-        if (cell(row, column) !== "│") {
-          complete = false;
-          break;
-        }
-      if (complete) docks.push(column);
+      let bottom = 1;
+      while (bottom < prompt && cell(bottom, column) === "│") bottom++;
+      // The native slash picker overlays the bottom of a dock. Its upper
+      // border/close control and continuous sides remain intact. Keep both
+      // that native dock and the picker instead of covering them with history.
+      const menu = Array.from({ length: prompt - bottom }, (_, i) =>
+        text(bottom + i, 0, column),
+      );
+      const slashMenu =
+        bottom >= 3 &&
+        /^❯[ \u00a0]\/\S*\s*$/.test(text(prompt + 1)) &&
+        menu.some((line) => /^ {2}[❯›] \/[\w:-]+\s/.test(line)) &&
+        menu.every(
+          (line) =>
+            !line.trim() ||
+            /^ {2}[❯›] \/[\w:-]+\s/.test(line) ||
+            /^ {4}\S/.test(line),
+        );
+      if (bottom === prompt || slashMenu) {
+        docks.push(column);
+        dockEnds.set(column, bottom);
+      }
     }
   if (docks.length > 1) return [];
   const mainWidth = docks[0] ?? columns;
   if (docks.length)
-    panels.push({ top: 0, bottom: prompt, left: mainWidth, right: columns });
+    panels.push({
+      top: 0,
+      bottom: dockEnds.get(mainWidth)!,
+      left: mainWidth,
+      right: columns,
+    });
 
   // The native band sits immediately above one blank spacer and the prompt.
   const bands: number[] = [];

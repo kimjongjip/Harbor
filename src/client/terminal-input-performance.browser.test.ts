@@ -300,6 +300,21 @@ createRoot(document.getElementById('root')).render(<div style={{height:'100vh',d
         word.repeat(2),
         "each actual key travels through the existing WebSocket once, without submit",
       );
+      await page.evaluate(() => {
+        const question = document.querySelector('[data-rich-block="conversation-user-q0"]')!;
+        const range = document.createRange();
+        range.selectNodeContents(question);
+        window.getSelection()!.removeAllRanges();
+        window.getSelection()!.addRange(range);
+      });
+      await page.waitForTimeout(60);
+      await page.keyboard.type("z");
+      await page.waitForFunction(target =>
+        document.querySelector(".terminal-native-flow")?.textContent?.includes(target),
+        "TAIL " + word + "z", { timeout: 2000 });
+      assert.equal(await page.evaluate(() => window.getSelection()!.isCollapsed), true,
+        "actual native input releases a frozen history selection immediately");
+      assert.equal(received.join(""), word.repeat(2) + "z");
       const ime = await page.context().newCDPSession(page);
       const beforeComposition = received.join("");
       for (const text of ["ㅎ", "하", "한"]) {

@@ -1,8 +1,9 @@
 import type { Terminal } from "@xterm/xterm";
 import type { NativeFlowFrame } from "./terminal-native-flow";
+import { cursorComposer } from "./terminal-native-chrome";
 
 /** A presentation fallback for Codex instances that emit no composer fill.
- * The live cursor owns the prompt; only genuine terminal wraps may extend it.
+ * The live cursor owns the prompt; wraps or validated positioned draft rows extend it.
  * Native colors, inverse selections and non-input output always take priority.
  */
 export function nativeComposerFill(term: Terminal, frame: NativeFlowFrame) {
@@ -10,6 +11,9 @@ export function nativeComposerFill(term: Terminal, frame: NativeFlowFrame) {
   const buffer = term.buffer.active;
   let first = frame.cursorRow;
   while (first > frame.baseY && frame.wrapped[first]) first--;
+  // Fullscreen Codex positions multiline drafts with cursor moves, so these
+  // rows have no terminal wrap flags. The live cursor + footer identify them.
+  first = cursorComposer(frame.lines, frame.end - 1, frame) ?? first;
   const prefix = /^( {0,2})[›❯»>](?: |$)/.exec(frame.lines[first] || "");
   if (
     !prefix ||

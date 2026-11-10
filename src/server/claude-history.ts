@@ -8,6 +8,7 @@ import { passwordConnection } from './ssh-connect.js';
 import { claudeHistoryFingerprint, decodeClaudePageCursor, encodeClaudePageCursor, readClaudeRecordsBackwards } from './claude-history-pages.js';
 import { assembleClaudeHistory, belongsToClaudeSession, projectClaudeRecord, type ClaudeHistoryRecord } from './claude-history-items.js';
 import { historyActivities } from './history-activity.js';
+import { readSftpRange } from './sftp-range.js';
 
 const SAMPLE = 64 * 1024;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,150}$/.test(id);
@@ -38,7 +39,7 @@ async function connect(host: HostConfig, password?: string): Promise<ClaudeHisto
       root: path.posix.join(root, 'projects'), join: path.posix.join,
       async entries(dir) { return (await call<any[]>(cb => sftp.readdir(dir, cb))).map(d => ({ name: d.filename, directory: d.attrs.isDirectory(), size: d.attrs.size, modified: d.attrs.mtime * 1000 })); },
       async stat(file) { const s = await call<import('ssh2').Stats>(cb => sftp.stat(file, cb)); return { directory: !s.isFile(), size: s.size, modified: s.mtime * 1000 }; },
-      async read(file, start, length) { const h = await call<Buffer>(cb => sftp.open(file, 'r', cb)); try { const b = Buffer.alloc(length); let count = 0; while (count < length) { const n = await call<number>(cb => sftp.read(h, b, count, Math.min(32768, length - count), start + count, (e, bytes) => cb(e, bytes))); if (!n) break; count += n; } return b.subarray(0, count); } finally { await call<void>(cb => sftp.close(h, cb)); } },
+      async read(file, start, length) { const h = await call<Buffer>(cb => sftp.open(file, 'r', cb)); try { return await readSftpRange((buffer, offset, size, position) => call<number>(cb => sftp.read(h, buffer, offset, size, position, (e, bytes) => cb(e, bytes))), start, length); } finally { await call<void>(cb => sftp.close(h, cb)); } },
       close() { connection.end(); },
     };
   } catch (e) { connection.end(); throw e; }

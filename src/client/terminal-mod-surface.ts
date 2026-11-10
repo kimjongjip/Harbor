@@ -51,6 +51,7 @@ export function claudeModSurface(term: Terminal) {
   const before = Math.min(
     buffer.baseY + chrome.start,
     ...panels.filter((panel) => panel.left === 0).map((panel) => panel.top),
+    ...panels.filter((panel) => panel.left > 0).map((panel) => panel.bottom),
   );
   const columns = Math.min(
     term.cols,

@@ -440,6 +440,26 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
         (before) => (window as any).frames > before,
         publishedFrames,
       );
+      await page.evaluate(async () => {
+        (window as any).setStart(0);
+        (window as any).setComposer(true);
+        (window as any).setBlocks([]);
+        await (window as any).push("\x1b[?1049h\x1b[2J\x1b[?2004h\x1b[4;1H› 직접 배치한 프롬프트\x1b[5;1H  두 번째 줄 입력 유지\x1b[8;1H  GPT-6-Astra max\x1b[9;1H  ? for shortcuts\x1b[5;24H");
+      });
+      await page.waitForFunction(() => document.querySelector('[data-native-row="4"]')?.textContent?.includes("두 번째 줄"));
+      const positioned = await page.evaluate(() => [3, 4].map(index => {
+        const row = document.querySelector(`[data-native-row="${index}"]`)!;
+        return {
+          color: getComputedStyle(row).backgroundColor,
+          right: row.getBoundingClientRect().right,
+          wrapped: (window as any).term.buffer.active.getLine(index).isWrapped,
+        };
+      }));
+      assert.equal(positioned[0].color, positioned[1].color);
+      assert.notEqual(positioned[0].color, "rgba(0, 0, 0, 0)");
+      assert.equal(positioned[0].right, positioned[1].right);
+      assert.ok(positioned.every(row => !row.wrapped));
+      await page.screenshot({ path: join(parent, "codex-positioned-composer.png") });
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

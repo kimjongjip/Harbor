@@ -96,6 +96,15 @@
   font-size: 13px;
   user-select: none;
 }
+.conversation-work-collapse {
+  margin: 8px 0 2px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
 .conversation-work .history-message {
   color: var(--text);
 }

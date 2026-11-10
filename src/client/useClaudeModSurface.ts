@@ -24,11 +24,17 @@ export function useClaudeModSurface(term: Terminal, enabled: boolean) {
     if (!screen || !mount) return;
     let disposed = false,
       scheduled = false,
+      pendingSync = false,
       previousKey = "";
     let geometry = { left: 0, top: 0, width: 0, height: 0 };
     const update = () => {
       scheduled = false;
-      if (disposed || term.modes.synchronizedOutputMode) return;
+      if (disposed) return;
+      if (term.modes.synchronizedOutputMode) {
+        pendingSync = true;
+        return;
+      }
+      pendingSync = false;
       const native = claudeModSurface(term);
       const next =
         native && geometry.width && geometry.height
@@ -70,12 +76,17 @@ export function useClaudeModSurface(term: Terminal, enabled: boolean) {
     observer.observe(screen);
     observer.observe(mount);
     const parsed = term.onWriteParsed(schedule);
+    // xterm's sync timeout can commit a frame without another parsed write.
+    const rendered = term.onRender(() => {
+      if (pendingSync && !term.modes.synchronizedOutputMode) schedule();
+    });
     const resized = term.onResize(measure);
     measure();
     return () => {
       disposed = true;
       observer.disconnect();
       parsed.dispose();
+      rendered.dispose();
       resized.dispose();
     };
   }, [term, enabled]);

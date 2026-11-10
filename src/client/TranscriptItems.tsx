@@ -57,71 +57,84 @@ const TranscriptMessage = memo(function TranscriptMessage({
 });
 
 /** Display existing records only. Folding changes DOM visibility, never the data or AI context. */
-export function TranscriptItems({
-  items,
-  provider,
-  hostId,
-  cwd,
-  sessionId,
-  selectionActive = false,
-  stepsOpen = false,
-}: TranscriptItemsProps) {
-  const entries = useMemo(() => transcriptEntries(items), [items]);
-  const context = useMemo(
-    () => ({ provider, hostId, cwd, sessionId, selectionActive }),
-    [provider, hostId, cwd, sessionId, selectionActive],
-  );
-  return (
-    <div className="transcript-items">
-      {entries.map((entry) => {
-        switch (entry.kind) {
-          case "message":
-            return (
-              <TranscriptMessage
-                key={`${entry.item.kind}:${entry.item.id}`}
-                item={entry.item}
-                provider={provider}
-                hostId={hostId}
-                cwd={cwd}
-              />
-            );
-          case "system":
-            return (
-              <SystemLine
-                key={`system:${entry.item.id}`}
-                item={entry.item}
-                outputs={entry.outputs}
-              />
-            );
-          case "commentary":
-            return (
-              <CommentaryLine
-                key={`commentary:${entry.item.id}`}
-                item={entry.item}
-                context={context}
-              />
-            );
-          case "step":
-            return (
-              <WorkStep
-                key={entry.key}
-                call={entry.call}
-                result={entry.result}
-                context={context}
-                defaultOpen={stepsOpen}
-              />
-            );
-          case "item":
-            return (
-              <WorkStep
-                key={`${entry.item.kind}:${entry.item.id}`}
-                item={entry.item}
-                context={context}
-                defaultOpen={stepsOpen}
-              />
-            );
-        }
-      })}
-    </div>
-  );
-}
+export const TranscriptItems = memo(
+  function TranscriptItems({
+    items,
+    provider,
+    hostId,
+    cwd,
+    sessionId,
+    selectionActive = false,
+    stepsOpen = false,
+  }: TranscriptItemsProps) {
+    const entries = useMemo(() => transcriptEntries(items), [items]);
+    const context = useMemo(
+      () => ({ provider, hostId, cwd, sessionId, selectionActive }),
+      [provider, hostId, cwd, sessionId, selectionActive],
+    );
+    return (
+      <div className="transcript-items">
+        {entries.map((entry) => {
+          switch (entry.kind) {
+            case "message":
+              return (
+                <TranscriptMessage
+                  key={`${entry.item.kind}:${entry.item.id}`}
+                  item={entry.item}
+                  provider={provider}
+                  hostId={hostId}
+                  cwd={cwd}
+                />
+              );
+            case "system":
+              return (
+                <SystemLine
+                  key={`system:${entry.item.id}`}
+                  item={entry.item}
+                  outputs={entry.outputs}
+                />
+              );
+            case "commentary":
+              return (
+                <CommentaryLine
+                  key={`commentary:${entry.item.id}`}
+                  item={entry.item}
+                  context={context}
+                />
+              );
+            case "step":
+              return (
+                <WorkStep
+                  key={entry.key}
+                  call={entry.call}
+                  result={entry.result}
+                  context={context}
+                  defaultOpen={stepsOpen}
+                />
+              );
+            case "item":
+              return (
+                <WorkStep
+                  key={`${entry.item.kind}:${entry.item.id}`}
+                  item={entry.item}
+                  context={context}
+                  defaultOpen={stepsOpen}
+                />
+              );
+          }
+        })}
+      </div>
+    );
+  },
+  (previous, next) =>
+    previous.provider === next.provider &&
+    previous.hostId === next.hostId &&
+    previous.cwd === next.cwd &&
+    previous.sessionId === next.sessionId &&
+    previous.completed === next.completed &&
+    previous.historical === next.historical &&
+    previous.selectionActive === next.selectionActive &&
+    previous.stepsOpen === next.stepsOpen &&
+    previous.items.length === next.items.length &&
+    previous.items.every((item, index) => item === next.items[index]),
+);

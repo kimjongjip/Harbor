@@ -2,6 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TerminalCompletionCue } from "./terminal-completion-cue";
 
+test("Claude native completion requests a read even when no Stop event reaches Harbor", () => {
+  const cue = new TerminalCompletionCue();
+  cue.observe(["✻ Thinking…"], "claude");
+  assert.equal(
+    cue.observe(
+      ["Saved answer", "✻ Cooked for 39s · done Monday 7:58 PM", "❯ "],
+      "claude",
+    ),
+    true,
+  );
+  assert.equal(
+    cue.observe(
+      ["Saved answer", "✻ Cooked for 39s · done Monday 7:58 PM", "❯ /help"],
+      "claude",
+    ),
+    false,
+  );
+  assert.equal(cue.observe(["❯ * Cooked for 39s"], "claude"), false);
+});
+
 test("initial replay and subsequent draft edits do not reread old completion", () => {
   const cue = new TerminalCompletionCue();
   assert.equal(cue.observe([""]), false);

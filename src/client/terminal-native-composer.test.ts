@@ -48,6 +48,15 @@ test("Codex composer fallback belongs only to the live default-background prompt
       [0, 1],
       "genuine wrapped draft stays together",
     );
+    await reset(
+      "\x1b[?1049h\x1b[?2004h\x1b[4;1H› 직접 배치한 입력\x1b[5;1H  두 번째 줄 한글\x1b[7;1H  GPT-6-Astra max\x1b[8;1H  ? for shortcuts\x1b[5;18H",
+    );
+    assert.deepEqual(
+      [fill()?.first, fill()?.last],
+      [3, 4],
+      "cursor-positioned multiline drafts receive one continuous fill",
+    );
+    assert.equal(term.buffer.active.getLine(4)?.isWrapped, false);
     await reset("\x1b[?2004h› previous\r\nTool output");
     assert.equal(
       fill(),

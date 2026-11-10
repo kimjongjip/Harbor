@@ -1,5 +1,6 @@
 import {
   memo,
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -67,6 +68,21 @@ const WorkGroup = memo(function WorkGroup({
   props: Omit<TranscriptItemsProps, "items">;
 }) {
   const count = useMemo(() => transcriptEntries(items).length, [items]);
+  const summary = useRef<HTMLElement>(null);
+  const collapse = () => {
+    const node = summary.current;
+    if (node) {
+      const body = node.closest<HTMLElement>(".terminal-conversation-body");
+      if (
+        body &&
+        node.getBoundingClientRect().top < body.getBoundingClientRect().top
+      )
+        body.scrollTop +=
+          node.getBoundingClientRect().top - body.getBoundingClientRect().top;
+      node.focus({ preventScroll: true });
+    }
+    onToggle(false);
+  };
   return (
     <details
       className={`conversation-work${state === "live" ? " live" : ""}`}
@@ -74,6 +90,8 @@ const WorkGroup = memo(function WorkGroup({
       open={open}
     >
       <summary
+        ref={summary}
+        aria-expanded={open}
         onClick={(event) => {
           event.preventDefault();
           onToggle(!open);
@@ -95,6 +113,15 @@ const WorkGroup = memo(function WorkGroup({
         <TranscriptItems items={items} {...props} stepsOpen />
       )}
       {target && <div className="conversation-live-work" ref={target} />}
+      {open && (
+        <button
+          type="button"
+          className="conversation-work-collapse"
+          onClick={collapse}
+        >
+          작업 과정 접기
+        </button>
+      )}
     </details>
   );
 });
@@ -148,7 +175,6 @@ export function TerminalConversation({
   const olderQueued = useRef(false);
   const olderCursors = useRef(new Set<string>());
   const latest = useRef(detail);
-  latest.current = detail;
   const pending = useRef<HistoryDetail | null>(null);
   const selectedPrepend = useRef<{
     detail: HistoryDetail;
@@ -209,7 +235,8 @@ export function TerminalConversation({
           ? "bottom"
           : null;
     latest.current = next;
-    setDetail(next);
+    // Saved Markdown can be expensive; native echo remains the urgent update.
+    startTransition(() => setDetail(next));
   };
   const load = useRef<(more?: boolean, automatic?: boolean) => Promise<void>>(
     async () => {},
@@ -377,7 +404,17 @@ export function TerminalConversation({
     if (body.current) body.current.scrollTop = body.current.scrollHeight;
   };
   useEffect(() => {
-    const input = term.onData?.(() => {
+    const input = term.onData?.((data) => {
+      // A real edit ends a frozen history selection. Mouse/protocol replies
+      // must not do this; otherwise text is silently held until a later click.
+      if (
+        data &&
+        (!data.startsWith("\x1b") || data === "\x1b") &&
+        hasSelection()
+      ) {
+        body.current?.ownerDocument.getSelection()?.removeAllRanges();
+        setSelected(false);
+      }
       // Already following: nothing to restore. Reading scrollHeight here would
       // force a synchronous layout of the whole transcript on every key.
       if (followingRef.current && !pending.current) return;
@@ -522,13 +559,18 @@ export function TerminalConversation({
   const updateNativeFrame = useCallback(
     (frame: NativeFlowFrame) => {
       nativeFrame.current = frame;
-      // Some existing Codex sessions have no peer event transport. A new native
+      // Some existing sessions have no peer event transport. A new native
       // footer merely asks for a read; saved turn status still decides folding.
-      if (provider === "codex" && completionCue.detector.observe(frame.lines)) {
+      if (
+        completionCue.detector.observe(
+          frameWithoutModPanels(term, frame, modSurface?.native).lines,
+          provider,
+        )
+      ) {
         completionCue.timers.forEach(clearTimeout);
         // The footer can arrive before the persisted turn becomes completed.
         // Retry a bounded number of times without requiring more native output.
-        completionCue.timers = [200, 1200, 3000].map((delay) =>
+        completionCue.timers = [0, 750, 2000, 5000].map((delay) =>
           setTimeout(() => void load.current(false, true), delay),
         );
       }
@@ -551,7 +593,7 @@ export function TerminalConversation({
           .some((line) => line.includes("esc to interrupt"));
       setNativeBusy((value) => (value === busy ? value : busy));
     },
-    [layoutForFrame, completionCue, provider],
+    [layoutForFrame, completionCue, provider, term, modSurface],
   );
   // A completed answer the CLI reserved rows for is typeset at once from its
   // received text, instead of raw Markdown until history catches up.
@@ -596,7 +638,9 @@ export function TerminalConversation({
   const running = layout.live && turns.length > 0 && !turns.at(-1)!.complete;
   // Saved steps of a running turn stream in while its CLI works.
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
-  const refreshing = visible && agentBusy && running;
+  // A newly started turn may not exist in history yet. Keep reading even if
+  // the last saved turn is complete; otherwise it can wait for the 30s poll.
+  const refreshing = visible && agentBusy;
   useEffect(() => {
     if (!refreshing) return;
     const timer = setInterval(() => void load.current(false, true), 2000);

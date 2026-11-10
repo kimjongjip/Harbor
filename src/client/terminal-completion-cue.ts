@@ -1,13 +1,15 @@
 /** A terminal footer is only a reason to reread history, never proof of completion. */
 const workedFooter =
   /^\s*(?:(?:[•·*]|[─━]+)\s*)?Worked for\s+\d+(?:\.\d+)?(?:ms|s|m|h|d)(?:\s*\d+(?:\.\d+)?(?:ms|s|m|h|d))*(?:\s*[·•]\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*(?:[─━]+)?\s*$/i;
+const claudeFooter =
+  /^\s*[*✻✢✳✶✽✦✧·]\s+[A-Za-z]+(?: [A-Za-z]+)? for\s+\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s*\d+(?:\.\d+)?(?:ms|s|m|h))*(?:\s*·\s*done(?:\s+.*)?)?\s*$/;
 
 /** Deduplicate the native Codex footer without including the editable prompt below it. */
 export class TerminalCompletionCue {
   private initialized = false;
   private previous: string | undefined;
 
-  observe(lines: readonly string[]): boolean {
+  observe(lines: readonly string[], provider: string = "codex"): boolean {
     // Initial empty frames precede replay. The first populated snapshot is a
     // baseline, already covered by the normal initial history read.
     if (!this.initialized && !lines.some((line) => line.trim())) return false;
@@ -17,7 +19,10 @@ export class TerminalCompletionCue {
       row >= Math.max(0, lines.length - 80);
       row--
     ) {
-      if (!workedFooter.test(lines[row])) continue;
+      if (
+        !(provider === "claude" ? claudeFooter : workedFooter).test(lines[row])
+      )
+        continue;
       // A repeated duration can belong to a new answer. Take a bounded visible
       // suffix before the footer, not subsequent cursor/draft/status changes.
       const answer = lines

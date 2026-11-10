@@ -39,7 +39,7 @@ const codexFooterRow =
  * flags, so those additionally need the Codex footer and input parser mode.
  * Never walk into scrollback, across unindented output, or from a footer cursor.
  */
-function cursorComposer(
+export function cursorComposer(
   lines: readonly string[],
   last: number,
   frame: NativeChromeFrame | undefined,

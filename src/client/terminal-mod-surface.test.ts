@@ -96,6 +96,13 @@ test("Claude idle notices above the composer stay native beside a Mods dock", as
       40,
       "reader space returns when notices disappear",
     );
+    await new Promise<void>(done=>terminal.write("\x1b[35;1H\x1b[2K\x1b[36;1H\x1b[2K  ❯ /help     Show help\x1b[37;1H\x1b[2K    /theme    Change theme\x1b[38;1H\x1b[2K    /doctor   Check setup\x1b[39;1H\x1b[2K\x1b[40;1H\x1b[2K\x1b[42;1H\x1b[2K❯\u00a0/he ",done));
+    const menu=claudeModSurface(term);
+    assert.equal(menu?.columns,180);
+    assert.equal(menu?.end,34,"slash picker remains native below the reader");
+    assert.equal(menu?.panels[0].bottom,34,"dock is preserved above the picker overlay");
+    await new Promise<void>(done=>terminal.write("\x1b[36;1H\x1b[2K  Ordinary transcript output",done));
+    assert.equal(claudeModSurface(term),undefined,"a broken dock without a native picker still fails closed");
   } finally {
     terminal.dispose();
   }

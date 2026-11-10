@@ -31,6 +31,7 @@ const message=(id,kind,text,turnId,extra={})=>({id,kind,text,turnId,...extra});
 window.fetch=async(input,options={})=>{const url=new URL(String(input),location.href),sessionId=url.pathname.split('/').at(-1);window.requests.push({url:url.href,method:options.method,stage:window.stage});
 if(!url.pathname.startsWith('/api/hosts/fixture/history/'))throw Error('Unexpected non-history operation '+url.pathname);
 const first=[message('q1','user','QUESTION ONE','one'),message('thought1','assistant','INTERMEDIATE THOUGHT ONE','one',{phase:'commentary',turnStatus:'completed'}),message('tool1','command','SECRET TOOL ONE','one',{turnStatus:'completed'}),message('a1','assistant','ANSWER ONE middle message','one',{phase:'final_answer',turnStatus:'completed'})];
+first.splice(3,0,...Array.from({length:183},(_,i)=>message('extra'+i,'command','SYNTHETIC STEP '+i,'one',{turnStatus:'completed'})));
 const second=[message('q2','user','QUESTION TWO','two'),message('tool2','change','SECRET TOOL TWO','two',{turnStatus:window.stage?'completed':'inProgress'}),message('a2','assistant',window.stage===0?'PARTIAL ANSWER TWO':window.stage===2?'UPDATED FINAL ANSWER TWO':'FINAL ANSWER TWO','two',{phase:'final_answer',turnStatus:window.stage?'completed':'inProgress'})];
 const legacy=[message('legacy-q','user','LEGACY QUESTION'),message('legacy-tool','command','LEGACY WORK STILL SELECTED'),message('legacy-a','assistant','LEGACY FINAL ANSWER',undefined,{turnStatus:'unknown'})];
 const timeline=window.stage===5?[message('wrong','user','WRONG SESSION RESPONSE')]:sessionId==='next'?[message('next-q','user','NEXT SESSION ONLY')]:sessionId==='legacy'?legacy.map(item=>({...item,turnId:undefined})):[...first,...second];
@@ -175,6 +176,20 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       });
       assert.equal(await page.locator(".conversation-work").count(), 2);
       assert.equal(await page.locator(".conversation-work[open]").count(), 0);
+      const firstGroup = page.locator('[data-turn-id="one"] > .conversation-work');
+      const firstSummary = firstGroup.locator(":scope > summary");
+      assert.match(await firstSummary.innerText(), /185개/);
+      await firstSummary.click();
+      assert.equal(await firstSummary.getAttribute("aria-expanded"), "true");
+      const collapse = firstGroup.getByRole("button", { name: "작업 과정 접기" });
+      await collapse.scrollIntoViewIfNeeded();
+      await collapse.click();
+      assert.equal(await firstSummary.getAttribute("aria-expanded"), "false");
+      assert.equal(await firstSummary.evaluate(node => node === document.activeElement), true);
+      assert.equal(await firstSummary.evaluate(node => {
+        const body = node.closest(".terminal-conversation-body")!;
+        return node.getBoundingClientRect().top >= body.getBoundingClientRect().top - 1;
+      }), true, "collapsing 185 steps returns to the top control");
       // A folded completed group keeps no hidden step DOM.
       assert.equal(await secondWork.count(), 0);
       await page
