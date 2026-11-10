@@ -46,7 +46,7 @@ import React,{useState}from'react';import{createRoot}from'react-dom/client';impo
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/terminal-layout.css';import'./src/client/workspace.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
 window.mounts=0;window.renders=0;const open=Terminal.prototype.open;Terminal.prototype.open=function(...args){window.term=this;window.mounts++;return open.apply(this,args);};
-function Fixture(){const[kind,setKind]=useState('codex');window.setKind=setKind;return <div style={{height:'100vh',display:'flex',flexDirection:'column'}}><TerminalPane info={{id:'${id}',hostId:'fixture',title:'Shared Codex',cwd:'/fixture',exited:false,program:'shell',agentKind:kind,agentConnected:true,agentState:'idle',integration:'ready',peerDelivery:'poll'}} active={true}/></div>;}
+function Fixture(){const[kind,setKind]=useState('codex'),[active,setActive]=useState(true);window.setKind=setKind;window.setActive=setActive;return <div style={{height:'100vh',display:'flex',flexDirection:'column'}}><TerminalPane info={{id:'${id}',hostId:'fixture',title:'Shared Codex',cwd:'/fixture',exited:false,program:'shell',agentKind:kind,agentConnected:true,agentState:'idle',integration:'ready',peerDelivery:'poll'}} active={active}/></div>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "shared-session-fixture.tsx",
@@ -270,9 +270,37 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate(() => (window as any).renders),
         baseline.renders,
       );
+      await page.evaluate(() => {
+        (window as any).savedReader = document.querySelector(".terminal-conversation");
+        (window as any).savedTable = document.querySelector(".terminal-conversation table");
+      });
+      for (let i = 0; i < 3; i++) {
+        await page.evaluate(() => (window as any).setActive(false));
+        await page.waitForTimeout(300);
+        assert.equal(await page.locator(".terminal-conversation table").count(), 1,
+          "hiding a terminal retains its verified reader and saved Markdown");
+        hold = true;
+        await page.evaluate(() => (window as any).setActive(true));
+        await page.waitForTimeout(500);
+        assert.equal(await page.evaluate(() =>
+          document.querySelector(".terminal-conversation") === (window as any).savedReader &&
+          document.querySelector(".terminal-conversation table") === (window as any).savedTable), true,
+          "the rendered conversation returns immediately while history refresh is held");
+        release();
+        await page.waitForTimeout(150);
+      }
+      assert.equal(requests.filter(r => r.path === "/api/hosts/fixture/history").length, baseline.reads,
+        "switching tabs never repeats the title search for a verified session");
+      assert.equal(socketsOpened, baseline.sockets);
+      assert.equal(await page.evaluate(() => (window as any).mounts), 1);
+      assert.equal(sizes.length, baseline.sizes);
+      // A different conversation while hidden must invalidate the retained ID.
+      await page.evaluate(() => (window as any).setActive(false));
       hold = true;
       title = "Delayed replacement conversation";
       repaint();
+      await page.waitForTimeout(300);
+      await page.evaluate(() => (window as any).setActive(true));
       await page
         .locator(".terminal-conversation")
         .waitFor({ state: "detached" });

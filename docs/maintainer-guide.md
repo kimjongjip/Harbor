@@ -1,5 +1,11 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.8 공유 Codex 화면 유지
+
+`useTerminalHistorySession`의 복구 대상 판정과 활성 표시를 분리한다. 비활성 탭·원문 보기는 조회 구독만 정지하고 검증한 ID 및 `TerminalConversation`을 유지한다. 복구 값은 terminal 객체·host/terminal scope·대화 제목과 함께 보관하며, 활성화 layout effect에서 현재 제목을 확인해 다른 대화가 이전 조판으로 한 프레임 보이지 않게 한다. 종료·제공자/터미널 교체·원래 세션 ID 도착은 기존 우선순위와 취소 규칙을 따른다.
+
+`terminal-history-session.browser.test.ts`는 응답을 보류한 채 세 번의 탭 왕복에서 같은 reader·표 DOM이 즉시 남는지, 제목 검색·PTY 크기 변경·연결 재생성이 없는지 검사한다. 숨긴 동안 대화를 바꾸는 경우에는 이전 ID가 폐기되고 늦은 응답도 거부하는지 확인한다. 실제 사용자 앱·CLI를 재시작하지 않는 화면 변경이다.
+
 ## 1.18.7 입력·완료 표시와 Mods 메뉴
 
 `WorkGroup`은 펼쳤을 때 하단 접기 버튼을 제공하고 접힌 제목으로 스크롤·포커스를 돌린다. `TranscriptItems`는 동일한 항목 참조와 표시 속성을 비교해 레이아웃 변화만으로 목록을 다시 만들지 않는다. 기록 응답은 transition으로 적용하되 최신 기록 ref는 비동기 React commit과 별개로 유지한다. 실제 입력은 남은 기록 선택을 해제하여 멈춘 native projection을 재개하며 마우스 프로토콜 응답으로 선택을 해제하지 않는다.

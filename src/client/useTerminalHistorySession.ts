@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { TerminalInfo } from "../shared/types";
 import { api } from "./api";
@@ -16,19 +16,30 @@ export function useTerminalHistorySession(
   active: boolean,
 ) {
   const known = info.agentSessionId || info.resumeThreadId;
-  const eligible =
-    active && !info.exited && info.agentKind === "codex" && !known;
+  const eligible = !info.exited && info.agentKind === "codex" && !known;
   const scope = `${info.id}:${info.hostId}`;
   const [recovered, setRecovered] = useState<{
     scope: string;
     id: string;
+    title: string;
+    term: Terminal;
   } | null>(null);
-  useEffect(() => {
-    setRecovered(null);
-    if (!term || !eligible) return;
+  useLayoutEffect(() => {
+    if (!term || !eligible) {
+      setRecovered(null);
+      return;
+    }
+    // Visibility suspends reads, not the verified identity or reader DOM.
+    // Revalidate before painting on return in case the hidden CLI changed sessions.
+    if (!active) return;
+    const retained =
+      recovered?.scope === scope &&
+      recovered.term === term &&
+      recovered.title === codexHistoryTitle(term);
+    if (!retained) setRecovered(null);
     let stopped = false,
-      title: string | undefined,
-      found = false,
+      title: string | undefined = retained ? recovered.title : undefined,
+      found = !!retained,
       attemptedAt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let request: AbortController | undefined;
@@ -70,7 +81,7 @@ export function useTerminalHistorySession(
           codexHistoryTitle(term) === expected
         ) {
           found = true;
-          setRecovered({ scope, id });
+          setRecovered({ scope, id, title: expected, term });
         }
       } catch {
         // Unavailable/ambiguous history leaves the original CLI visible.
@@ -96,8 +107,11 @@ export function useTerminalHistorySession(
       resized.dispose();
       document.removeEventListener("visibilitychange", schedule);
     };
-  }, [term, eligible, scope, info.hostId]);
+  }, [term, eligible, active, scope, info.hostId]);
   return (
-    known || (eligible && recovered?.scope === scope ? recovered.id : undefined)
+    known ||
+    (eligible && recovered?.scope === scope && recovered.term === term
+      ? recovered.id
+      : undefined)
   );
 }
