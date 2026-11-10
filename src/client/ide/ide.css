@@ -36,14 +36,17 @@
   outline-offset: -2px;
 }
 .ide-explorer {
+  position: relative;
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   min-width: 160px;
-  width: 210px;
-  max-width: 32%;
+  width: clamp(
+    160px,
+    var(--harbor-sidebar-width, 210px),
+    min(520px, calc(100% - 240px))
+  );
   border-right: 1px solid var(--border, #dce1ea);
-  resize: horizontal;
-  overflow: hidden;
 }
 .ide-explorer-title {
   display: flex;

@@ -1,5 +1,9 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.1 IDE 탐색기 너비
+
+`ResizableSidebar`의 IDE 설정은 별도 `harbor.ideExplorerWidth`에 너비를 저장한다. 드래그는 탐색기의 CSS 변수만 변경하고 상위 IDE·터미널 상태를 갱신하지 않는다. 화면에 맞춘 일시적인 CSS 제한은 저장된 선호 너비를 덮어쓰지 않는다. 공통 경계 스타일은 컴포넌트에서 불러와 호스트·다른 PC 연결 모두에 적용한다. 기존 `ide-terminal-switch.browser.test.ts`에서 드래그·키보드·화면 축소와 복원·새 화면의 저장 너비·초기화 및 기존 터미널 DOM·입력·연결 보존을 함께 검증한다.
+
 ## 1.18.0 IDE 터미널 유지와 Mods 설치
 
 PC IDE의 기존 세션은 같은 `TerminalWorkspace` DOM·xterm·WebSocket을 CSS grid로 오른쪽에 배치한다. `singleTerminalId`는 표시만 한 세션으로 제한하고 저장된 분할 tree는 유지한다. 새 AI 대화는 명시적 선택이며 숨길 때 작성 중 초안을 언마운트하지 않는다. `ide-terminal-switch.browser.test.ts`는 전체 앱에서 입력·DOM·연결·분할·새 대화 초안 보존과 불필요한 대화 생성 방지를 검증한다.

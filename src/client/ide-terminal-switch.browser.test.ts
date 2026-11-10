@@ -218,7 +218,11 @@ test(
     );
     let desktop: Awaited<ReturnType<typeof _electron.launch>> | undefined;
     try {
-    const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
+        ),
+      );
       delete env.ELECTRON_RUN_AS_NODE;
       desktop = await _electron.launch({ args: [main], env });
       const page = await desktop.firstWindow();
@@ -250,6 +254,12 @@ test(
       });
       const connections = socketsOpened,
         beforeInput = input.length;
+      await page
+        .getByRole("separator", { name: "왼쪽 패널 너비 조절", exact: true })
+        .press("ArrowRight");
+      const workspaceWidth = await page.evaluate(() =>
+        localStorage.getItem("harbor.sidebarWidth"),
+      );
       await page.getByRole("button", { name: "IDE", exact: true }).click();
       await page.getByLabel("IDE 작업 공간", { exact: true }).waitFor();
       await page.waitForFunction(() => {
@@ -266,6 +276,57 @@ test(
           terminal.height > 500
         );
       });
+      const explorer = page.locator(".ide-explorer");
+      const resize = page.getByRole("separator", {
+        name: "IDE 파일 탐색기 너비 조절",
+        exact: true,
+      });
+      const handle = (await resize.boundingBox())!;
+      const originalWidth = (await explorer.boundingBox())!.width;
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + 100);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + handle.width / 2 + 90, handle.y + 100, {
+        steps: 6,
+      });
+      await page.mouse.up();
+      assert.equal(
+        Math.round((await explorer.boundingBox())!.width - originalWidth),
+        90,
+      );
+      await resize.press("ArrowLeft");
+      const preferredWidth = Math.round((await explorer.boundingBox())!.width);
+      assert.equal(preferredWidth, Math.round(originalWidth) + 90 - 16);
+      assert.equal(
+        await page.evaluate(() =>
+          localStorage.getItem("harbor.ideExplorerWidth"),
+        ),
+        String(preferredWidth),
+      );
+      assert.equal(
+        await page.evaluate(() => localStorage.getItem("harbor.sidebarWidth")),
+        workspaceWidth,
+        "IDE and terminal sidebars keep separate widths",
+      );
+      await page.setViewportSize({ width: 900, height: 950 });
+      await page.waitForFunction(
+        () =>
+          document.querySelector(".harbor-ide")!.getBoundingClientRect().width <
+          500,
+      );
+      assert.ok((await explorer.boundingBox())!.width < preferredWidth);
+      assert.ok(
+        (await page.locator(".ide-main").boundingBox())!.width >= 239,
+        "Narrow IDE retains usable editor space",
+      );
+      await page.setViewportSize({ width: 1500, height: 950 });
+      await page.waitForFunction(
+        (width) =>
+          Math.round(
+            document.querySelector(".ide-explorer")!.getBoundingClientRect()
+              .width,
+          ) === width,
+        preferredWidth,
+      );
       assert.equal(
         await page
           .getByRole("button", { name: "터미널에서 입력", exact: true })
@@ -382,6 +443,23 @@ test(
         "Mods install must not type into the current terminal",
       );
       await page.screenshot({ path: join(root, "mods-installed.png") });
+      // Reload only this isolated fixture, never the user's running Harbor.
+      await page.reload();
+      await page.getByRole("button", { name: "IDE", exact: true }).click();
+      await resize.waitFor();
+      assert.equal(
+        Math.round((await explorer.boundingBox())!.width),
+        preferredWidth,
+        "Explorer preference survives a fresh app view",
+      );
+      await resize.dblclick();
+      assert.equal(Math.round((await explorer.boundingBox())!.width), 210);
+      assert.equal(
+        await page.evaluate(() =>
+          localStorage.getItem("harbor.ideExplorerWidth"),
+        ),
+        null,
+      );
       assert.deepEqual(errors, []);
     } finally {
       await desktop

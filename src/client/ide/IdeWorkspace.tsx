@@ -34,6 +34,7 @@ import {
   type IdeTree,
 } from "./types";
 import "./ide.css";
+import ResizableSidebar from "../ResizableSidebar";
 import {
   MarkdownReading,
   isMarkdownFile,
@@ -571,7 +572,7 @@ export default function IdeWorkspace({
       hidden={!visible}
       data-testid="harbor-ide"
     >
-      <aside className="ide-explorer">
+      <ResizableSidebar className="ide-explorer" variant="ide">
         <div className="ide-explorer-title">
           <strong title={tree?.root}>{hostLabel || "파일"}</strong>
           <button
@@ -617,7 +618,7 @@ export default function IdeWorkspace({
             <p className="ide-muted">열려 있는 터미널을 선택하세요.</p>
           )}
         </div>
-      </aside>
+      </ResizableSidebar>
       <div className="ide-main">
         <div className="ide-tabs" role="tablist" aria-label="열린 파일">
           {documents.map((doc) => (

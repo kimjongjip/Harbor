@@ -13,35 +13,6 @@
     min(600px, calc(100vw - 320px))
   );
 }
-.harbor-sidebar-resizer {
-  position: absolute;
-  z-index: 20;
-  top: 0;
-  bottom: 0;
-  right: -4px;
-  width: 8px;
-  cursor: col-resize;
-  touch-action: none;
-}
-.harbor-sidebar-resizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 3px;
-  background: transparent;
-}
-.harbor-sidebar-resizer:hover::after,
-.harbor-sidebar-resizer:focus-visible::after,
-.harbor-sidebar-resizing .harbor-sidebar-resizer::after {
-  background: var(--accent);
-}
-.harbor-sidebar-resizer:focus-visible {
-  outline: none;
-}
-.harbor-sidebar-resizing,
-.harbor-sidebar-resizing * {
-  cursor: col-resize !important;
-  user-select: none !important;
-}
 .harbor-app .harbor-brand {
   height: 48px;
   min-height: 48px;
