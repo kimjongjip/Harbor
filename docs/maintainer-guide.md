@@ -1,5 +1,11 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.5 Mods 옆의 Claude 하단 안내
+
+Mods dock가 열리면 `claudeModSurface`는 패널을 제외한 셀 범위에서 입력창 바로 위의 유휴 압축·업데이트 안내를 확인한다. 알려진 완전한 문구가 있는 하단 구간만 원래 xterm에 남긴다. 이 안내를 history reader에 넣으면 원래 오른쪽 정렬 공백과 문서 padding 때문에 마지막 단어가 다음 줄 왼쪽으로 밀렸다. 표시된 단어·ANSI 색·좌표를 변경하거나 PTY 크기·입력을 조작하지 않는다.
+
+최대 12행의 하단 범위에서 안내 하나당 최대 6행을 읽어 CLI가 직접 배치한 줄바꿈도 지원한다. 일반 출력·인용문에서는 경계를 넓히지 않고, 안내가 사라지면 원래 reader 높이로 돌아간다. `terminal-mod-surface.test.ts`는 실제 253×44 셀 배치와 단독·여러 줄 안내·인용 오인 방지·소멸을, `terminal-conversation-mods.browser.test.ts`는 합성 화면의 원래 canvas 노출·중복 조판 없음·높이 복원과 Mods 클릭·입력·기록 렌더 보존을 검증한다.
+
 ## 1.18.4 다크 팔레트
 
 `theme-palettes.ts`가 다섯 다크 테마의 UI 변수·xterm ANSI 색·Monaco 색을 공유한다. 기존 저장값 `dark`는 차콜로 유지하고 새 ID도 저장·별도 창 동기화에서 검증한다. `data-theme`는 선택값, `data-appearance`는 명암 구분이다. 라이트·페이퍼로 돌아갈 때 다크 팔레트의 인라인 변수를 제거한다. 테마 선택은 터미널이나 편집기 모델을 다시 만들지 않는다.

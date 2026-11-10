@@ -23,10 +23,11 @@ import{TerminalConversation}from'./src/client/TerminalConversation';import{Termi
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/terminal-layout.css';
 window.inputs=[];window.writes=0;window.resizes=0;window.markdownRenders=0;
 function Fixture(){const mount=useRef(null);const[term,setTerm]=useState(null),[mode,setMode]=useState('auto');window.setMode=setMode;
-useEffect(()=>{const t=new Terminal({cols:160,rows:40,fontSize:14,lineHeight:1.25,allowProposedApi:true});t.open(mount.current);window.term=t;t.onData(d=>window.inputs.push(d));setTerm(t);
+useEffect(()=>{const t=new Terminal({cols:160,rows:40,fontSize:14,lineHeight:1.25,allowProposedApi:true,theme:{background:'#ffffff',foreground:'#20242c'}});t.open(mount.current);window.term=t;t.onData(d=>window.inputs.push(d));setTerm(t);
 const write=t.write.bind(t),resize=t.resize.bind(t);t.write=(...a)=>{window.writes++;return write(...a)};t.resize=(...a)=>{window.resizes++;return resize(...a)};
 window.paint=(kind='dock',frame=0)=>{const cols=t.cols,lines=Array(40).fill(''),dock=kind==='dock'?109:undefined;
 lines[0]='SAVED ANSWER CONFIRMED FINAL OUTPUT.';lines[2]='NEW NATIVE OUTPUT';
+if(kind==='dock'&&frame===99){lines[28]='● Compacted while idle, before the prompt cache expired · turn off with';lines[29]='  "idleCompaction": false in settings.json';lines[33]=' '.repeat(70)+'✔ Update installed · /restart to apply';}
 if(dock!==undefined)for(let r=0;r<34;r++)lines[r]+='\\x1b['+(r+1)+';'+(dock+1)+'H│'+(r===0?' '.repeat(cols-dock-3)+'✕ ':'\\x1b[33mCREW FRAME '+frame+' CONTEXT 42%\\x1b[0m');
 if(kind==='inline'){lines[15]='╭'+'─'.repeat(cols-4)+'✕─╮';for(let r=16;r<33;r++)lines[r]='│'+('CREW FRAME '+frame+' CONTEXT 42%').padEnd(cols-2)+'│';lines[33]='╰'+'─'.repeat(cols-2)+'╯';}
 if(kind==='band'){lines[28]='PET FRAME '+frame;lines[28]=lines[28].padEnd(cols-4)+'[-] ';lines[29]='  (=^.^=)';lines[32]='CONTEXT 42%';}
@@ -197,6 +198,51 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         { renders: 0, writes: 8, resizes: 0 },
       );
       await page.screenshot({ path: join(root, "default-with-crew-dock.png") });
+      await page.evaluate(() => (window as any).paint("dock", 99));
+      await page.waitForTimeout(150);
+      bounds = await measure();
+      await page.screenshot({ path: join(root, "mods-idle-notices.png") });
+      assert.ok(
+        Math.abs(
+          bounds.overlay.bottom -
+            (bounds.screen.top + (bounds.screen.height * 28) / 40),
+        ) < 1,
+        "idle compaction and right-aligned update notice remain in the native footer",
+      );
+      assert.doesNotMatch(
+        await page.locator(".terminal-conversation").innerText(),
+        /Compacted while idle|Update installed|restart to apply/,
+      );
+      assert.equal(
+        await page.evaluate(() => {
+          const t = (window as any).term,
+            r = t.element
+              .querySelector(".xterm-screen")
+              .getBoundingClientRect();
+          return !!document
+            .elementFromPoint(
+              r.left + (r.width * 100) / 160,
+              r.top + (r.height * 33.5) / 40,
+            )
+            ?.closest(".xterm-screen");
+        }),
+        true,
+        "the update notice is visible directly on the native canvas",
+      );
+      await page.evaluate(() => (window as any).paint("dock"));
+      await page.waitForTimeout(150);
+      bounds = await measure();
+      assert.ok(
+        Math.abs(
+          bounds.overlay.bottom -
+            (bounds.screen.top + (bounds.screen.height * 34) / 40),
+        ) < 1,
+        "reader expands when the footer notices disappear",
+      );
+      assert.equal(
+        await page.evaluate(() => (window as any).markdownRenders),
+        0,
+      );
       const x = bounds.screen.left + (bounds.screen.width * 114.5) / 160,
         y = bounds.screen.top + (bounds.screen.height * 2.5) / 40;
       assert.equal(

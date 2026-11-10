@@ -3,6 +3,38 @@ import { claudeModPanels, nativeKeptSpans } from "./mobile/claude-mod-panels";
 import { nativeChrome } from "./terminal-native-chrome";
 import type { NativeFlowFrame } from "./terminal-native-flow";
 
+// These CLI notices belong to the footer, even when they precede the prompt
+// frame. Reflowing their native indentation inside the padded history reader
+// can push the last words of a right-aligned update notice onto the next line.
+const footerNotice =
+  /^(?:●Compactedwhileidle,beforethepromptcacheexpired·turnoffwith"idleCompaction":falseinsettings\.json|[✔✓]Updateinstalled·\/restarttoapply)$/;
+
+function noticeStart(text: (row: number) => string, before: number) {
+  let start = before,
+    end = before;
+  const floor = Math.max(0, before - 12);
+  while (end > floor) {
+    while (end > floor && !text(end - 1).trim()) end--;
+    if (end <= floor) break;
+    let joined = "",
+      found = false;
+    // A narrow CLI may position a notice across several rows without wrap
+    // flags. Require the complete known text; stop at ordinary transcript rows.
+    for (let row = end - 1; row >= Math.max(floor, end - 6); row--) {
+      const line = text(row);
+      if (!line.trim()) break;
+      joined = line.replace(/[\s\uFE0E\uFE0F]/g, "") + joined;
+      if (footerNotice.test(joined)) {
+        start = end = row;
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+  }
+  return start;
+}
+
 /** Leave the native panel, its mouse targets, images and composer uncovered. */
 export function claudeModSurface(term: Terminal) {
   const buffer = term.buffer.active;
@@ -16,7 +48,7 @@ export function claudeModSurface(term: Terminal) {
   );
   const chrome = nativeChrome(lines);
   if (!chrome?.framed) return;
-  const end = Math.min(
+  const before = Math.min(
     buffer.baseY + chrome.start,
     ...panels.filter((panel) => panel.left === 0).map((panel) => panel.top),
   );
@@ -24,6 +56,15 @@ export function claudeModSurface(term: Terminal) {
     term.cols,
     ...panels.filter((panel) => panel.left > 0).map((panel) => panel.left),
   );
+  const end =
+    buffer.baseY +
+    noticeStart(
+      (row) =>
+        buffer
+          .getLine(buffer.baseY + row)
+          ?.translateToString(true, 0, columns) || "",
+      before - buffer.baseY,
+    );
   return { panels, end, columns, baseY: buffer.baseY };
 }
 
