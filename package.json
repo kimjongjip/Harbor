@@ -1,6 +1,6 @@
 {
   "name": "codex-harbor",
-  "version": "1.18.20",
+  "version": "1.18.21",
   "private": true,
   "main": "desktop/main.cjs",
   "productName": "Harbor",
@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
-    "build": "tsc --noEmit && vite build && esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs",
+    "build": "tsc --noEmit && vite build && esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs && esbuild src/server/pty-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/pty-worker.mjs",
     "start": "node dist/server.mjs",
     "desktop": "electron .",
     "build:desktop": "npm run build && node scripts/package-desktop.mjs",

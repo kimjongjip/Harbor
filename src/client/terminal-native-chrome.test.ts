@@ -1,10 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lastNativeBlock, nativeChrome } from "./terminal-native-chrome";
+import {
+  lastNativeBlock,
+  nativeChrome,
+  nativeTranscriptRepaint,
+} from "./terminal-native-chrome";
 
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("only transcript redraws are retained; interactive replacements remain visible", () => {
+  assert.equal(
+    nativeTranscriptRepaint(["› update", "184 - old line", "184 + new line"]),
+    true,
+  );
+  assert.equal(
+    nativeTranscriptRepaint(["184 -- old bullet", "184 +- new bullet"]),
+    true,
+  );
+  assert.equal(
+    nativeTranscriptRepaint(["• Called example.tool", "  completed"]),
+    true,
+  );
+  assert.equal(
+    nativeTranscriptRepaint(["Bash(python3 sample.py)", "  output"]),
+    true,
+  );
+  assert.equal(nativeTranscriptRepaint(["", ""]), true);
+  for (const screen of [
+    ["Allow this command?", "› 1. Yes", "  2. No"],
+    ["• Ran example", "PS C:\\fixture> "],
+    ["• Ran example", "$ "],
+    ["• Called example.tool", "Press Enter to continue"],
+    ["vim", "~", ":wq"],
+  ])
+    assert.equal(nativeTranscriptRepaint(screen), false);
+});
 const claudeIdle = [
   "",
   "  턴 1060의 설명입니다. Harbor 터미널 출력과 대화 기록이 같은 화면에서 이어지는지 확인하기 위한 합성 문장입니다.",

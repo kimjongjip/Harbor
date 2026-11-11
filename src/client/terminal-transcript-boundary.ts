@@ -4,6 +4,7 @@ import { typedPrompt } from "./user-origin";
 import {
   lastNativeBlock,
   nativeChrome,
+  nativeChoiceDialog,
   type NativeChromeFrame,
 } from "./terminal-native-chrome";
 
@@ -339,19 +340,28 @@ export function liveTranscriptLayout(
   turns: ConversationTurn[],
   frame: TranscriptFrame,
   blocks: RichTerminalBlock[],
-  state: { waiting: boolean },
+  state: { waiting: boolean; pendingHistory?: boolean },
 ): LiveTranscriptLayout {
   const chrome = nativeChrome(frame.lines, frame.end, frame);
-  // An unframed (Codex-style) prompt row can be a dialog choice whose question
-  // sits above it; approvals keep the whole native tail.
-  if (!chrome || (state.waiting && !chrome.framed)) {
+  // A hook's waiting state includes idle composers, tool waits and approvals.
+  // Keep the question above actual choices, but do not use the hook as a
+  // display-mode switch (it can lag the native terminal by several seconds).
+  if (
+    !chrome ||
+    (!chrome.framed && nativeChoiceDialog(frame.lines, frame.end))
+  ) {
     const legacy = transcriptBoundary(turns, frame, blocks, false);
     return { ...legacy, chromeStart: frame.end, live: false };
   }
   const limit = chrome.start;
   const last = turns.at(-1);
   if (!last)
-    return { historyCount: 0, nativeStart: 0, chromeStart: limit, live: true };
+    return {
+      historyCount: 0,
+      nativeStart: state.pendingHistory ? limit : 0,
+      chromeStart: limit,
+      live: true,
+    };
   const lookup = frameLookup(frame.lines.slice(0, limit));
   const ending = (turn: ConversationTurn) => {
     if (!turn.complete) return -1;

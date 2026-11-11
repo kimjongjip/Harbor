@@ -39,6 +39,7 @@ import {
 import "./terminal-conversation.css";
 import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
+import { nativeTranscriptRepaint } from "./terminal-native-chrome";
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -162,7 +163,6 @@ export function TerminalConversation({
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(following);
   followingRef.current = following;
-  const nativeFrame = useRef<NativeFlowFrame | undefined>(undefined);
   const [, setBoundaryRevision] = useState(0);
   const [proofRevision, setProofRevision] = useState(0);
   const verifiedHistory = useRef(new Map<string, string>());
@@ -511,6 +511,7 @@ export function TerminalConversation({
   // Completion is verified from the saved turn, never inferred from an idle
   // composer or an approval dialog waiting for input.
   const waiting = info.agentState === "waiting";
+  const pendingHistory = !detail && !error;
   // Echoed keystrokes belong to the native tail. They must not rerender every
   // saved Markdown/tool block or schedule a second full native capture.
   const layoutForFrame = useMemo(() => {
@@ -523,12 +524,12 @@ export function TerminalConversation({
           turns,
           frameWithoutModPanels(term, frame, modSurface?.native),
           blocks,
-          { waiting },
+          { waiting, pendingHistory },
         );
       }
       return cachedLayout;
     };
-  }, [turns, blocks, waiting, term, modSurface]);
+  }, [turns, blocks, waiting, pendingHistory, term, modSurface]);
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
@@ -542,7 +543,12 @@ export function TerminalConversation({
         // its footer briefly must not unmount saved work and expose the raw
         // screen on every animation/status refresh. The native reader commits
         // the replacement and its boundary together after a bounded grace.
-        defer: !!publishedLayout.current?.live && !next.live,
+        defer:
+          publishedLayout.current?.live && !next.live
+            ? nativeTranscriptRepaint(frame.lines, frame.end)
+              ? ("repaint" as const)
+              : true
+            : false,
       };
     },
     [layoutForFrame, modSurface],
@@ -563,7 +569,6 @@ export function TerminalConversation({
   );
   const updateNativeFrame = useCallback(
     (frame: NativeFlowFrame) => {
-      nativeFrame.current = frame;
       // Some existing sessions have no peer event transport. A new native
       // footer merely asks for a read; saved turn status still decides folding.
       if (
@@ -616,18 +621,15 @@ export function TerminalConversation({
   const lastLayout = useRef<
     (LiveTranscriptLayout & { turnCount: number }) | undefined
   >(undefined);
-  const nextLayout: LiveTranscriptLayout = nativeFrame.current
-    ? layoutForFrame(nativeFrame.current)
-    : {
-        historyCount: Math.max(
-          0,
-          turns.length - (turns.at(-1)?.complete ? 0 : 1),
-        ),
-        nativeStart: 0,
-        chromeStart: 0,
-        live: false,
-      };
-  publishedLayout.current = nextLayout;
+  // Only the native reader publishes a new boundary. Recomputing it during a
+  // history/status render would pair new history with the previous native view
+  // (or bypass a held repaint), visibly alternating two complete documents.
+  const nextLayout: LiveTranscriptLayout = publishedLayout.current || {
+    historyCount: Math.max(0, turns.length - (turns.at(-1)?.complete ? 0 : 1)),
+    nativeStart: 0,
+    chromeStart: 0,
+    live: false,
+  };
   const layout =
     frozen && lastLayout.current
       ? {
@@ -730,6 +732,11 @@ export function TerminalConversation({
         }}
       >
         <div className="terminal-conversation-document">
+          {pendingHistory && (
+            <p className="muted" role="status">
+              대화를 불러오는 중…
+            </p>
+          )}
           {detail?.nextCursor && (
             <button
               className="button secondary small"

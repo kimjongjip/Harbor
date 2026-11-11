@@ -34,6 +34,56 @@ const codexPromptRow = /^ {0,2}[›»](?: |$)/;
 const codexFooterRow =
   /^ {2,}(?:.*(?:\? for shortcuts|← for agents|tab to queue(?: message)?|\d+% context left)(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?|gpt-[\w.-]+\b.*)$/i;
 
+/** Waiting hooks also describe an ordinary idle composer. Only visible choices
+ * identify a dialog; activity state alone must never switch the transcript. */
+export function nativeChoiceDialog(
+  lines: readonly string[],
+  end = lines.length,
+) {
+  const tail = lines.slice(Math.max(0, end - 30), end);
+  return (
+    tail.some((line) => /^\s*[›❯»>]\s*\d+[.)]\s+\S/.test(line)) &&
+    tail.filter((line) => /^\s*(?:[›❯»>]\s*)?\d+[.)]\s+\S/.test(line)).length >=
+      2
+  );
+}
+
+/** A CLI can spend multiple transport chunks redrawing saved commands/diffs.
+ * Those recognizable transcript fragments are not a new interactive surface.
+ * Unknown screens, actual dialogs and shell prompts still take the fallback. */
+export function nativeTranscriptRepaint(
+  lines: readonly string[],
+  end = lines.length,
+) {
+  const tail = lines
+    .slice(Math.max(0, end - 80), end)
+    .filter((line) => line.trim());
+  if (!tail.length) return true;
+  if (nativeChoiceDialog(tail)) return false;
+  if (
+    tail
+      .slice(-12)
+      .some((line) =>
+        /(?:press (?:enter|return|any key)|(?:enter|return) to (?:confirm|continue)|(?:esc|escape) to cancel|do you want to proceed\?|would you like to run)/i.test(
+          line,
+        ),
+      )
+  )
+    return false;
+  const last = tail.at(-1)!;
+  if (
+    /^(?:\s*(?:PS\s+[^>]*>|[\w.-]+@[^\s]+.*[#$]|[$#%])\s*$|.*(?:Process exited\.|[\\/]\S*>\s*$))/i.test(
+      last,
+    )
+  )
+    return false;
+  return tail.some((line) =>
+    /^(?:\s*\d+\s+[-+]|\s*(?:[●⏺•]\s*)?(?:Bash|Read|Edit|Write|Update|Task)\(|\s*[●⏺•]\s+(?:Ran|Called|Edited|Added|Deleted|Explored)\b)/.test(
+      line,
+    ),
+  );
+}
+
 /** A long composer can extend above the small footer search window. Follow the
  * live cursor's genuine wraps first. Cursor-positioned TUI rows have no wrap
  * flags, so those additionally need the Codex footer and input parser mode.

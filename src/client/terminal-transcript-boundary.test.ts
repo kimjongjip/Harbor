@@ -620,7 +620,12 @@ test("list-looking code remains literal when matching rendered answers", () => {
 // Fullscreen CLIs: saved turns render from history; only rows newer than the
 // saved transcript and the CLI's live area stay native.
 const rule = "─".repeat(40);
-const composer = [rule, "❯ draft", rule, "  ⏸ manual mode on · esc to interrupt"];
+const composer = [
+  rule,
+  "❯ draft",
+  rule,
+  "  ⏸ manual mode on · esc to interrupt",
+];
 const liveFrame = (lines: string[]): TranscriptFrame => ({
   lines,
   cursorRow: lines.length - 3,
@@ -696,9 +701,14 @@ test("a running turn with no saved text yet starts after its typed prompt", () =
     ...composer,
   ];
   assert.equal(
-    liveTranscriptLayout(conversationTurns(records(false)), liveFrame(lines), [], {
-      waiting: false,
-    }).nativeStart,
+    liveTranscriptLayout(
+      conversationTurns(records(false)),
+      liveFrame(lines),
+      [],
+      {
+        waiting: false,
+      },
+    ).nativeStart,
     3,
   );
 });
@@ -712,9 +722,14 @@ test("nothing saved on screen keeps the newest native block, and unknown screens
     ...composer,
   ];
   assert.equal(
-    liveTranscriptLayout(conversationTurns(records(false)), liveFrame(lines), [], {
-      waiting: false,
-    }).nativeStart,
+    liveTranscriptLayout(
+      conversationTurns(records(false)),
+      liveFrame(lines),
+      [],
+      {
+        waiting: false,
+      },
+    ).nativeStart,
     1,
   );
   const unknown = liveTranscriptLayout(
@@ -727,7 +742,12 @@ test("nothing saved on screen keeps the newest native block, and unknown screens
   // An unframed choice list during an approval keeps the whole native tail.
   const codexApproval = liveTranscriptLayout(
     conversationTurns(records(false)),
-    liveFrame(["Would you like to run the following command?", "$ rm -rf build", "› 1. Yes", "  2. No"]),
+    liveFrame([
+      "Would you like to run the following command?",
+      "$ rm -rf build",
+      "› 1. Yes",
+      "  2. No",
+    ]),
     [],
     { waiting: true },
   );
@@ -781,10 +801,10 @@ test("typing a long Korean draft never expands the live tail to thousands of sav
         });
         assert.equal(
           approval.live,
-          false,
-          "approval state still keeps the full native tail",
+          true,
+          "waiting state with a normal composer preserves typesetting",
         );
-        assert.equal(approval.nativeStart, 0);
+        assert.equal(approval.nativeStart, prefix.length);
       }
     }
   }

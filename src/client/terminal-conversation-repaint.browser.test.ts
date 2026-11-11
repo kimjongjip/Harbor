@@ -25,12 +25,13 @@ import{Terminal}from'@xterm/xterm';import{TerminalConversation}from'./src/client
 import'@xterm/xterm/css/xterm.css';import'./src/client/styles.css';import'./src/client/themes.css';
 Object.defineProperty(document,'visibilityState',{get:()=> 'visible'});
 window.inputs=[];window.requests=[];
-window.fetch=async(url,options)=>{window.requests.push({url:String(url),method:options?.method});
+window.historyReady=new Promise(resolve=>window.releaseHistory=resolve);
+window.fetch=async(url,options)=>{window.requests.push({url:String(url),method:options?.method});await window.historyReady;
 const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn'},
 {id:'command',kind:'command',text:'python3 sample.py',detail:'SAVED COMMAND OUTPUT',turnId:'turn',status:'completed'}];
 return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json'}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
-window.setWaiting=()=>setInfo(v=>({...v,agentState:'waiting'}));
+window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
 window.refreshHistory=()=>document.dispatchEvent(new Event('visibilitychange'));
 useEffect(()=>{const t=new Terminal({cols:90,rows:24,fontSize:14,allowProposedApi:true});t.open(document.getElementById('native'));t.onData(data=>window.inputs.push(data));window.term=t;
 window.write=data=>new Promise(done=>t.write(data,done));
@@ -80,6 +81,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         page.on("pageerror", (error) => errors.push(error.message));
         const surface = page.getByRole("region", { name: "터미널 출력" });
         const work = page.locator('[data-work-item="command"]');
+        // The initial history read must not first expose the entire raw
+        // transcript. Keep the real composer usable during that read.
+        await surface
+          .getByText(`${prompt} UNSENT DRAFT`, { exact: true })
+          .waitFor();
+        assert.equal(await surface.getByText(/OLD RAW DIFF/).count(), 0);
+        assert.equal(await surface.getByText("대화를 불러오는 중…").count(), 1);
+        await page.evaluate(() => (window as any).releaseHistory());
         await work.waitFor();
         await page.waitForTimeout(200);
         await page.evaluate(() => {
@@ -103,7 +112,11 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
             (window as any).refreshHistory();
             return (window as any).partial();
           });
-          await page.waitForTimeout(80);
+          // SSH redraws can span much longer than the old 160ms grace. Also
+          // refresh saved history while the native footer is still absent.
+          await page.waitForTimeout(cycle === 0 ? 1000 : 240);
+          await page.evaluate(() => (window as any).refreshHistory());
+          await page.waitForTimeout(160);
           assert.equal(
             await work.count(),
             1,
@@ -134,6 +147,24 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           0,
           "no intermediate DOM update may flash the raw screen",
         );
+        // A hook's waiting state is not evidence of an approval dialog. A
+        // normal composer must keep the same saved work, even on a quiet CLI.
+        await page.evaluate(() => (window as any).setWaiting());
+        await page.waitForTimeout(300);
+        assert.equal(
+          await work.count(),
+          1,
+          "waiting with a composer stays typeset",
+        );
+        assert.equal(
+          await page.evaluate(
+            () =>
+              (window as any).savedWork ===
+              document.querySelector('[data-work-item="command"]'),
+          ),
+          true,
+        );
+        await page.evaluate(() => (window as any).setWaiting(false));
         // A real prompt echo must still appear immediately, without the repaint
         // grace period applying to ordinary text/cursor changes.
         await page.evaluate(

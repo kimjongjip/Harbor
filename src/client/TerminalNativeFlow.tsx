@@ -44,7 +44,7 @@ export interface NativeFlowRange {
   panels?: readonly NativePanelRectangle[];
   /** A previously recognized surface disappeared mid-repaint. Keep the last
    * committed frame briefly; a persistent replacement still becomes visible. */
-  defer?: boolean;
+  defer?: boolean | "repaint";
 }
 interface View {
   frame: NativeFlowFrame;
@@ -152,6 +152,7 @@ export function TerminalNativeFlow({
     startRow,
     onFrame,
     onInput,
+    workTarget,
   });
   latest.current = {
     blocks,
@@ -161,6 +162,7 @@ export function TerminalNativeFlow({
     startRow,
     onFrame,
     onInput,
+    workTarget,
   };
   const previous = useRef<View | null>(null);
   const refresh = useRef(() => {});
@@ -181,7 +183,7 @@ export function TerminalNativeFlow({
     const inside = (node: Node | null | undefined) =>
       !!node &&
       (!!root.current?.contains(node) ||
-        !!(workTarget && workTarget.contains(node)));
+        !!latest.current.workTarget?.contains(node));
     const selected = () => {
       const selection = root.current?.ownerDocument.getSelection();
       return (
@@ -222,6 +224,11 @@ export function TerminalNativeFlow({
       const range =
         typeof requested === "number" ? { start: requested } : requested;
       if (range.defer && previous.current) {
+        // A saved command/diff repaint is not an interactive replacement.
+        // Wait for its footer instead of alternating views after a deadline.
+        // New parsed output/resize still runs capture immediately; no polling
+        // loop is needed while a known partial screen remains unchanged.
+        if (range.defer === "repaint") return;
         incompleteSince ??= performance.now();
         const remaining =
           incompleteFrameGraceMs - (performance.now() - incompleteSince);
@@ -259,7 +266,6 @@ export function TerminalNativeFlow({
             ).runs
           : runs;
       });
-      const old = previous.current;
       const next: View = {
         frame: displayFrame,
         start,
@@ -283,19 +289,9 @@ export function TerminalNativeFlow({
       };
       previous.current = next;
       setView(next);
-      if (
-        !old ||
-        old.frame.cursorRow !== frame.cursorRow ||
-        old.frame.cursorColumn !== frame.cursorColumn ||
-        old.frame.columns !== frame.columns ||
-        old.frame.baseY !== frame.baseY ||
-        old.frame.bufferType !== frame.bufferType ||
-        old.frame.bracketedPasteMode !== frame.bracketedPasteMode ||
-        old.frame.lines.length !== frame.lines.length ||
-        old.frame.lines.some((line, row) => line !== frame.lines[row]) ||
-        old.frame.wrapped.some((wrapped, row) => wrapped !== frame.wrapped[row])
-      )
-        latest.current.onFrame?.(frame);
+      // History can change the range even when no native bytes changed. Commit
+      // both halves in the same React batch, including these quiet updates.
+      latest.current.onFrame?.(frame);
     };
     function schedule() {
       if (disposed) return;
@@ -321,7 +317,7 @@ export function TerminalNativeFlow({
       if (urgent) queueMicrotask(capture);
       else timer = setTimeout(capture, outputCoalesceMs - (now - lastCapture));
     }
-    refresh.current = schedule;
+    refresh.current = capture;
     const geometry = new ResizeObserver((entries) => {
       const height = entries[0]?.contentRect.height || 0;
       if (height === screenHeight) return;
@@ -355,7 +351,7 @@ export function TerminalNativeFlow({
       listeners.forEach((listener) => listener.dispose());
       document.removeEventListener("selectionchange", selectionChanged);
     };
-  }, [term, workTarget]);
+  }, [term]);
   useLayoutEffect(() => {
     refresh.current();
   }, [active, frozen, codexComposer, startRow, blocks]);

@@ -8,7 +8,8 @@ import { isAbsolute, resolve } from "node:path";
 import { connect as tcpConnect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import type { PeerRuntime } from "./peer-delivery.js";
-import * as pty from "node-pty";
+import type * as pty from "node-pty";
+import { spawnLocalPty } from "./local-pty.js";
 import type { Client, ClientChannel } from "ssh2";
 import type {
   HostConfig,
@@ -547,7 +548,7 @@ export class Terminals extends EventEmitter {
           remoteTerminalCommand(host, cwd, program, options.resumeThreadId),
         ];
       }
-      const child = pty.spawn(command, args, {
+      const child = await spawnLocalPty(command, args, {
         useConptyDll: process.platform === "win32",
         name: "xterm-256color",
         cols: 100,
