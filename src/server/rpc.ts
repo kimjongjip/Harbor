@@ -11,6 +11,15 @@ export interface RpcMessage {
   error?: { code: number; message: string };
 }
 
+/** The reader can retry a smaller page; this is not a CLI/session failure. */
+export class RpcResponseSizeError extends Error {
+  constructor() {
+    super("Codex 응답 크기가 제한을 초과했습니다.");
+    this.name = "RpcResponseSizeError";
+  }
+}
+const maxFrameLength = 32 * 1024 * 1024;
+
 export class RpcClient extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private buffer = "";
@@ -98,16 +107,23 @@ export class RpcClient extends EventEmitter {
     }
   }
   consume(chunk: string) {
-    this.buffer += chunk;
-    if (this.buffer.length > 32 * 1024 * 1024) {
-      this.closed(new Error("Codex 응답 크기가 제한을 초과했습니다."));
-      this.stop();
-      return;
-    }
-    let newline: number;
-    while ((newline = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, newline).trim();
-      this.buffer = this.buffer.slice(newline + 1);
+    if (!this.alive) return;
+    // Enforce the limit per JSONL message, not per transport batch. A single
+    // stdout/SSH chunk can contain several individually valid responses.
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf("\n", offset);
+      const end = newline < 0 ? chunk.length : newline;
+      if (this.buffer.length + end - offset > maxFrameLength) {
+        this.closed(new RpcResponseSizeError());
+        this.stop();
+        return;
+      }
+      this.buffer += chunk.slice(offset, end);
+      if (newline < 0) return;
+      const line = this.buffer.trim();
+      this.buffer = "";
+      offset = newline + 1;
       if (!line) continue;
       let message: RpcMessage;
       try {
@@ -161,6 +177,7 @@ export class RpcClient extends EventEmitter {
       this.input.write(JSON.stringify(value) + "\n");
   }
   private closed(error: Error) {
+    this.buffer = "";
     if (!this.alive) return;
     this.alive = false;
     for (const { reject, timer } of this.pending.values()) {

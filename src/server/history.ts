@@ -1,4 +1,4 @@
-import { RpcClient } from "./rpc.js";
+import { RpcClient, RpcResponseSizeError } from "./rpc.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { historyItem } from "./history-items.js";
@@ -72,6 +72,8 @@ async function connect(host: HostConfig, password?: string): Promise<Reader> {
 /** Reads the host's Codex index across projects, never starts/resumes a conversation. */
 export class History {
   private leases = new Map<string, Lease>();
+  private pageSizes = new Map<string, number>();
+  private oversizedTurns = new Map<string, string>();
   private stopped = false;
   constructor(
     private readonly create: Connect = connect,
@@ -261,6 +263,86 @@ export class History {
     cursor?: string,
     options: HistoryReadOptions = {},
   ): Promise<HistoryDetail> {
+    const scope = JSON.stringify([
+      host.id,
+      host.kind,
+      host.address,
+      host.username,
+      host.port,
+      host.identityFile,
+      host.codexPath,
+      threadId,
+    ]);
+    const pageKey = `${scope}\0${cursor || ""}`;
+    const oversized = this.oversizedTurns.get(pageKey);
+    if (oversized) {
+      const summary = await this.readPage(
+        host,
+        password,
+        threadId,
+        cursor,
+        options,
+        1,
+        true,
+      );
+      // A growing thread eventually has a new latest turn. Do not permanently
+      // suppress its work because the previous turn exceeded the RPC limit.
+      if (summary.items.some((item) => item.turnId === oversized))
+        return summary;
+      this.oversizedTurns.delete(pageKey);
+    }
+    // Twenty full turns can be tens of megabytes even though their display
+    // previews are small. Preserve native cursors while shrinking only the
+    // number of turns in a page; never increase the transport memory limit.
+    let limit = this.pageSizes.get(scope) || 4;
+    for (;;) {
+      try {
+        return await this.readPage(
+          host,
+          password,
+          threadId,
+          cursor,
+          options,
+          limit,
+        );
+      } catch (error) {
+        if (!(error instanceof RpcResponseSizeError)) throw error;
+        if (limit > 1) {
+          limit = Math.max(1, Math.floor(limit / 2));
+          this.remember(this.pageSizes, scope, limit);
+          continue;
+        }
+        // A single huge tool payload must not make its question/final answer
+        // unreadable. Summary view is native saved text, not an AI summary.
+        const summary = await this.readPage(
+          host,
+          password,
+          threadId,
+          cursor,
+          options,
+          1,
+          true,
+        );
+        const turnId = summary.items.find((item) => item.turnId)?.turnId;
+        if (turnId) this.remember(this.oversizedTurns, pageKey, turnId);
+        return summary;
+      }
+    }
+  }
+  private remember<T>(map: Map<string, T>, key: string, value: T) {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > 256) map.delete(map.keys().next().value!);
+  }
+  private async readPage(
+    host: HostConfig,
+    password: string | undefined,
+    threadId: string,
+    cursor: string | undefined,
+    options: HistoryReadOptions,
+    limit: number,
+    summaryOnly = false,
+  ): Promise<HistoryDetail> {
     return this.using(host, password, async (client) => {
       const summary = await client.call(
         "thread/read",
@@ -294,9 +376,9 @@ export class History {
             {
               threadId,
               cursor: cursor || null,
-              limit: 20,
+              limit,
               sortDirection: "desc",
-              itemsView: "full",
+              itemsView: summaryOnly ? "summary" : "full",
             },
             25000,
           );
@@ -306,6 +388,7 @@ export class History {
       } catch (error) {
         // Older CLI versions lack the paginated read method. Never resume as fallback.
         if (
+          summaryOnly ||
           cursor ||
           !/unknown|unsupported|not found|method|not initialized|does not support|not loaded|persisted|pagination/i.test(
             String(error),
@@ -349,6 +432,12 @@ export class History {
         thread,
         items,
         nextCursor,
+        ...(summaryOnly
+          ? {
+              notice:
+                "작업 출력이 매우 큰 구간은 질문과 답변을 먼저 표시합니다. 전체 작업 원문은 Codex 기록에 보존되어 있습니다.",
+            }
+          : {}),
         ...(options.includeActivity ? { timeline: previews } : {}),
       };
     });
@@ -380,6 +469,8 @@ export class History {
   }
   shutdown() {
     this.stopped = true;
+    this.pageSizes.clear();
+    this.oversizedTurns.clear();
     for (const id of this.leases.keys()) this.close(id);
   }
 }
