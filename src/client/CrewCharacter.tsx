@@ -15,7 +15,7 @@ export const crewCharacterNames: Record<CrewCharacterKind, string> = {
   cat: "고양이",
   robot: "로봇",
   fox: "여우",
-  human: "남자",
+  human: "사람",
   penguin: "펭귄",
   dog: "강아지",
   frog: "개구리",
@@ -127,18 +127,36 @@ export const CrewCharacter = memo(function CrewCharacter({
         ) : character === "human" ? (
           <g>
             <path className="crew-hair" d="M45 49V39q0-13 23-13t23 13v10z" />
-            <path className="crew-fur" d="M42 51h7v12h-7zM87 51h7v12h-7z" />
+            <rect
+              className="crew-fur"
+              x="42"
+              y="51"
+              width="9"
+              height="12"
+              rx="4"
+            />
+            <rect
+              className="crew-fur"
+              x="85"
+              y="51"
+              width="9"
+              height="12"
+              rx="4"
+            />
             <path
               className="crew-fur"
-              d="M47 39h42v24l-6 10-7 4H60l-7-4-6-10z"
+              d="M47 42q0-10 21-10t21 10v18c0 10-9 17-21 17S47 70 47 60z"
             />
             <path
               className="crew-hair"
-              d="M46 49V35l9-7 14 2 8-5 13 10v17h-5V41l-7-4-12 7-14-3v8z"
+              d="M45 48v-9c0-11 9-15 23-15 15 0 23 6 23 16v8l-5-2-1-9-8-4c-5 7-14 10-25 7l-2 8z"
             />
-            <path className="crew-hair-shine" d="m54 34 11 2 11-5" />
-            <path className="crew-human-brows" d="m54 49 9-1m10 0 9 1" />
-            <path className="crew-human-jaw" d="m53 66 4 6 7 3h8l7-3 4-6" />
+            <path className="crew-hair-shine" d="M54 33q10 2 19-3" />
+            <path
+              className="crew-human-brows"
+              d="M54 48q4-2 8 0m12 0q4-2 8 0"
+            />
+            <path className="crew-human-nose" d="M68 59v3h2" />
           </g>
         ) : character === "penguin" ? (
           <g>
@@ -253,7 +271,7 @@ export const CrewCharacter = memo(function CrewCharacter({
           <path className="crew-beak" d="m61 63 7-4 8 4-8 6z" />
         ) : (
           <g>
-            {character !== "frog" && (
+            {character !== "frog" && character !== "human" && (
               <path className="crew-nose" d="M65 62h6l-3 3z" />
             )}
             <path

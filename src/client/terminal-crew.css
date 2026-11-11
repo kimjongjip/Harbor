@@ -509,14 +509,15 @@
 .crew-human-brows {
   fill: none;
   stroke: #584740;
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
 }
-.crew-human-jaw {
+.crew-human-nose {
   fill: none;
   stroke: #9f7867;
-  stroke-width: 2.5;
+  stroke-width: 1.2;
   stroke-linecap: round;
+  stroke-linejoin: round;
   opacity: 0.5;
 }
 .crew-penguin-belly {
