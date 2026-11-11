@@ -42,6 +42,9 @@ export interface NativeFlowRange {
   /** Native widgets and their composer remain visible in xterm outside the reader. */
   end?: number;
   panels?: readonly NativePanelRectangle[];
+  /** A previously recognized surface disappeared mid-repaint. Keep the last
+   * committed frame briefly; a persistent replacement still becomes visible. */
+  defer?: boolean;
 }
 interface View {
   frame: NativeFlowFrame;
@@ -59,6 +62,7 @@ interface View {
 // output) are coalesced so other sessions and typing keep the main thread.
 const typingWindowMs = 250;
 const outputCoalesceMs = 40;
+const incompleteFrameGraceMs = 160;
 
 type RowView = ComponentProps<typeof NativeRow>;
 // Keep every row in the DOM for continuous selection, but don't ask React to
@@ -167,6 +171,7 @@ export function TerminalNativeFlow({
       timer: ReturnType<typeof setTimeout> | undefined,
       lastInput = 0,
       lastCapture = 0;
+    let incompleteSince: number | undefined;
     let disposed = false;
     const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
     // Read geometry once, then consume ResizeObserver's already-computed size.
@@ -216,6 +221,20 @@ export function TerminalNativeFlow({
           : latest.current.startRow;
       const range =
         typeof requested === "number" ? { start: requested } : requested;
+      if (range.defer && previous.current) {
+        incompleteSince ??= performance.now();
+        const remaining =
+          incompleteFrameGraceMs - (performance.now() - incompleteSince);
+        if (remaining > 0) {
+          // Do not publish either half: replacing native rows before their
+          // history boundary would still flash the raw diff beneath saved work.
+          // More chunks may complete the repaint sooner. This timer also admits
+          // a real dialog/shell transition with no subsequent output.
+          timer = setTimeout(capture, remaining);
+          return;
+        }
+      }
+      incompleteSince = undefined;
       const end = Math.min(
         frame.end,
         Math.max(0, Math.floor(range.end ?? frame.end)),

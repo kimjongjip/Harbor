@@ -1,5 +1,5 @@
 // Only public app code is persisted. Never cache APIs, terminal data or credentials.
-const APP_VERSION = "1.18.18";
+const APP_VERSION = "1.18.19";
 const APP_CACHE = `harbor-mobile-shell-${APP_VERSION}`;
 const publicAsset = (path) =>
   /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2?|ttf|svg|png)$/.test(path) ||

@@ -529,6 +529,7 @@ export function TerminalConversation({
       return cachedLayout;
     };
   }, [turns, blocks, waiting, term, modSurface]);
+  const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
       const next = layoutForFrame(frame);
@@ -537,11 +538,15 @@ export function TerminalConversation({
         split: next.live ? next.chromeStart : next.nativeStart,
         end: modSurface?.native.end,
         panels: modSurface?.native.panels,
+        // SSH/PTY chunks need not align with a complete CLI repaint. Losing
+        // its footer briefly must not unmount saved work and expose the raw
+        // screen on every animation/status refresh. The native reader commits
+        // the replacement and its boundary together after a bounded grace.
+        defer: !!publishedLayout.current?.live && !next.live,
       };
     },
     [layoutForFrame, modSurface],
   );
-  const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   // A running CLI shows "esc to interrupt" in its live area even when no
   // native event reported working (poll-only sessions).
   const [nativeBusy, setNativeBusy] = useState(false);
