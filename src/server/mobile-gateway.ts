@@ -4,6 +4,8 @@ import { constants as zlibConstants } from "node:zlib";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import type { Duplex } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
@@ -33,6 +35,11 @@ import type { MobileState, MobileConversationPage } from "../shared/mobile.js";
 import type { TerminalReplayMetadata } from "../shared/types.js";
 
 export interface MobileOperations {
+  desktop?: {
+    http: express.RequestHandler;
+    upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
+    revoke(id?: string): void;
+  };
   editor?: EditorFiles;
   ide?: IdeConversations;
   ideChat?: IdeChats;
@@ -158,6 +165,7 @@ export class MobileGateway {
   revoke(id: string) {
     this.controls.revoke(id);
     this.access.revoke(id);
+    this.operations.desktop?.revoke(id);
     for (const [socket, v] of this.views)
       if (v.deviceId === id) socket.close(4001, "Device revoked");
   }
@@ -328,7 +336,13 @@ export class MobileGateway {
       }
       if (
         !this.validHost(req.headers.host) ||
-        (req.headers.origin && req.headers.origin !== this.access.config.origin)
+        (req.headers.origin &&
+          req.headers.origin !== this.access.config.origin &&
+          !(
+            req.path.startsWith("/html-preview/") &&
+            req.headers.origin === "null" &&
+            ["GET", "HEAD"].includes(req.method)
+          ))
       ) {
         res.sendStatus(403);
         return;
@@ -338,17 +352,35 @@ export class MobileGateway {
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         "X-Frame-Options": "DENY",
-        "Content-Security-Policy": `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ${this.access.config.origin.replace("https:", "wss:")}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; img-src 'self' https: data: blob:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; connect-src 'self' ${this.access.config.origin.replace("https:", "wss:")}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
       });
       if (
         !["GET", "HEAD"].includes(req.method) &&
         (req.headers.origin !== this.access.config.origin ||
-          req.headers["x-harbor-mobile"] !== "1")
+          (req.path.startsWith("/api/")
+            ? req.headers["x-harbor-token"] !== "desktop"
+            : req.headers["x-harbor-mobile"] !== "1"))
       ) {
         res.sendStatus(403);
         return;
       }
       next();
+    });
+    // Use the very same workbench APIs as the host, behind desktop-only pairing.
+    // Do this before the smaller mobile JSON parser (uploads must remain streams).
+    app.use((req, res, next) => {
+      if (
+        !req.path.startsWith("/api/") &&
+        !req.path.startsWith("/html-preview/")
+      )
+        return next();
+      if (!this.operations.desktop) {
+        res
+          .status(404)
+          .json({ error: "호스트 Harbor를 업데이트한 뒤 정상 재실행하세요." });
+        return;
+      }
+      this.operations.desktop.http(req, res, next);
     });
     app.use((req, res, next) =>
       express.json({
@@ -707,7 +739,9 @@ export class MobileGateway {
         throw new Error("텍스트 또는 특수키 하나를 보내세요.");
       if (this.pendingInputs.has(input.terminalId))
         throw Object.assign(
-          new Error("이전 메시지를 전송 중입니다. 전송 결과를 확인한 뒤 다시 입력하세요."),
+          new Error(
+            "이전 메시지를 전송 중입니다. 전송 결과를 확인한 뒤 다시 입력하세요.",
+          ),
           { status: 409 },
         );
       // Do not allow paste text to break out of bracketed paste into terminal control sequences.
@@ -725,7 +759,9 @@ export class MobileGateway {
         input.submit &&
         !!text &&
         ["codex", "claude"].includes(terminal.agentKind || "") &&
-        state.hosts.some((host) => host.id === terminal.hostId && host.kind === "local");
+        state.hosts.some(
+          (host) => host.id === terminal.hostId && host.kind === "local",
+        );
       const data =
         input.raw !== undefined
           ? input.raw
@@ -736,19 +772,27 @@ export class MobileGateway {
       const server = this.server;
       // Pin the lease even for legacy mobile senders. Releasing and claiming
       // the same terminal again must not authorize this pending submit.
-      const legacyLease = separatedSubmit && !input.clientId && !input.controlToken
-        ? this.controls.change(input.terminalId, res.locals.deviceId, "휴대폰", {
-            clientId: "legacy",
-            action: "renew",
-          }).token
-        : undefined;
+      const legacyLease =
+        separatedSubmit && !input.clientId && !input.controlToken
+          ? this.controls.change(
+              input.terminalId,
+              res.locals.deviceId,
+              "휴대폰",
+              {
+                clientId: "legacy",
+                action: "renew",
+              },
+            ).token
+          : undefined;
       // Reserve before writing: an uncertain acknowledgement is never replayed automatically.
       let settle!: () => void;
       const reserved = {
         body,
         at: Date.now(),
         written: false,
-        settled: new Promise<void>((resolve) => { settle = resolve; }),
+        settled: new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
       };
       this.receipts.set(receiptKey, reserved);
       this.pendingInputs.add(input.terminalId);
@@ -759,11 +803,19 @@ export class MobileGateway {
           // delivered in the same write as the pasted text. Let that burst end,
           // then revalidate every authority before sending the one submit key.
           await new Promise<void>((resolve) => setTimeout(resolve, 200));
-          if (this.server !== server || !server?.listening || !this.deviceActive(res.locals.deviceId))
-            throw new Error("기기 연결이 변경되어 제출을 중단했습니다. 터미널의 입력 내용을 확인하세요.");
+          if (
+            this.server !== server ||
+            !server?.listening ||
+            !this.deviceActive(res.locals.deviceId)
+          )
+            throw new Error(
+              "기기 연결이 변경되어 제출을 중단했습니다. 터미널의 입력 내용을 확인하세요.",
+            );
           this.checkIdentity(input.terminalId, input);
           if (this.readerBinding(input.terminalId) !== binding)
-            throw new Error("세션이 변경되어 제출을 중단했습니다. 터미널의 입력 내용을 확인하세요.");
+            throw new Error(
+              "세션이 변경되어 제출을 중단했습니다. 터미널의 입력 내용을 확인하세요.",
+            );
           this.controls.assert(
             input.terminalId,
             res.locals.deviceId,
@@ -835,7 +887,9 @@ export class MobileGateway {
         throw Object.assign(new Error("현재 열린 대화만 조회할 수 있습니다."), {
           status: 409,
         });
-      const result = await this.operations.conversation(id, sessionId, cursor, { includeActivity: includeActivity === "1" });
+      const result = await this.operations.conversation(id, sessionId, cursor, {
+        includeActivity: includeActivity === "1",
+      });
       this.authenticated(req, res.locals.deviceId);
       if (this.readerBinding(id) !== binding)
         throw Object.assign(new Error("조회 중 세션이 변경되었습니다."), {
@@ -933,6 +987,10 @@ export class MobileGateway {
         redirect: true,
       }),
     );
+    app.get("/", (_req, res) => res.redirect("/desktop/"));
+    app.get("/harbor.svg", (_req, res) =>
+      res.sendFile(resolve(this.assets, "harbor.svg")),
+    );
     app.use(
       "/mobile",
       express.static(resolve(this.assets, "mobile"), { redirect: true }),
@@ -956,6 +1014,7 @@ export class MobileGateway {
           res.setHeader("Cache-Control", "public, max-age=86400"),
       }),
     );
+    app.use("/pdfjs", express.static(resolve(this.assets, "pdfjs")));
     app.use((_req, res) => res.sendStatus(404));
     app.use(
       (
@@ -991,6 +1050,18 @@ export class MobileGateway {
     server.headersTimeout = 10000;
     server.on("upgrade", (req, socket, head) => {
       const device = this.access.authenticate(req.headers.cookie);
+      if (
+        new URL(req.url || "/", this.access.config.origin).pathname === "/ws" &&
+        this.operations.desktop &&
+        device?.kind === "desktop" &&
+        this.validHost(req.headers.host) &&
+        req.headers.origin === this.access.config.origin &&
+        (!req.headers["tailscale-funnel-request"] ||
+          this.access.config.mode === "funnel")
+      ) {
+        this.operations.desktop.upgrade(req, socket, head);
+        return;
+      }
       if (
         (req.headers["tailscale-funnel-request"] &&
           this.access.config.mode !== "funnel") ||
@@ -1138,6 +1209,7 @@ export class MobileGateway {
     this.heartbeat.unref();
   }
   async stop() {
+    this.operations.desktop?.revoke();
     this.controls.clear();
     this.completions.dispose();
     clearInterval(this.heartbeat);

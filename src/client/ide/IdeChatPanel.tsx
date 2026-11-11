@@ -33,7 +33,7 @@ import type {
   IdeChatSend,
 } from "../../shared/ide-chat";
 import type { IdeSelection } from "./types";
-import { getToken } from "../api";
+import { apiHeaders } from "../api";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
 import { userMessageView, userOriginLabel } from "../user-origin";
@@ -48,7 +48,7 @@ const localRequest: IdeChatRequest = (path, init) =>
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "X-Harbor-Token": getToken(),
+      ...apiHeaders(),
       ...init?.headers,
     },
   });

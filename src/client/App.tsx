@@ -33,6 +33,8 @@ import { useHarbor } from "./useHarbor";
 import { BackendStatus } from "./BackendStatus";
 import { version } from "../../package.json";
 import { api } from "./api";
+import { remoteDesktop } from "./desktop-session";
+import { useDesktopWorkspace } from "./desktop-workspace";
 import type { HostView, TerminalInfo } from "../shared/types";
 import TerminalWorkspace, { NewTerminalDialog } from "./TerminalWorkspace";
 import CloseTerminalDialog from "./CloseTerminalDialog";
@@ -56,7 +58,12 @@ import RuntimeUpdateNotice from "./RuntimeUpdateNotice";
 import type { DropEdge, DropScope, TerminalPlacement } from "./terminal-tree";
 import { PreviewProvider } from "./ResourcePreview";
 import { useNotifications } from "./Notifications";
-import { useTheme, terminalColors, themeOptions, type ThemeName } from "./Theme";
+import {
+  useTheme,
+  terminalColors,
+  themeOptions,
+  type ThemeName,
+} from "./Theme";
 import TypographySettingsDialog from "./TypographySettings";
 import MobileSettings from "./MobileSettings";
 import IdeBoundary from "./ide/IdeBoundary";
@@ -92,6 +99,7 @@ export default function App() {
     state,
     connected,
     ready,
+    workspace,
     credentialStorageAvailable,
     terminalColorsSupported,
     terminalInputOptimized,
@@ -170,6 +178,29 @@ export default function App() {
   >([]);
   const active = state.terminals.find((item) => item.id === activeId);
   const detached = useDetachedTerminals();
+  useDesktopWorkspace(
+    ready,
+    { activeId, page, workspaceView, sidebar, sidebarVisible },
+    !!popoutId,
+  );
+  const workspaceApplied = useRef(false);
+  useEffect(() => {
+    if (
+      !ready ||
+      !remoteDesktop ||
+      workspaceApplied.current ||
+      popoutId ||
+      initialFocusId
+    )
+      return;
+    workspaceApplied.current = true;
+    if (!workspace) return;
+    setPage(workspace.page);
+    setSidebar(workspace.sidebar);
+    setSidebarVisible(workspace.sidebarVisible);
+    setWorkspaceView(workspace.workspaceView);
+    if (workspace.workspaceView === "ide") setIdeLoaded(true);
+  }, [ready, workspace]);
   useEffect(() => {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
@@ -177,9 +208,19 @@ export default function App() {
     const available = state.terminals.filter(
       (t) => !t.exited && !detached.includes(t.id),
     );
-    const selected = available.find((t) => t.id === activeId) || available[0];
-    if (selected) void focus(selected.id);
-    else if (!state.terminals.some((t) => !t.exited)) {
+    const selected =
+      available.find(
+        (t) =>
+          t.id ===
+          (remoteDesktop && !initialFocusId
+            ? workspace?.activeId || activeId
+            : activeId),
+      ) || available[0];
+    if (selected) {
+      void focus(selected.id);
+      if (remoteDesktop && workspace && !initialFocusId)
+        setPage(workspace.page);
+    } else if (!remoteDesktop && !state.terminals.some((t) => !t.exited)) {
       const local = state.hosts.find((h) => h.kind === "local");
       if (local) void connect(local, true);
     }
@@ -1015,9 +1056,11 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <Suspense fallback={null}>
-                <RemoteConnectButton />
-              </Suspense>
+              {!remoteDesktop && (
+                <Suspense fallback={null}>
+                  <RemoteConnectButton />
+                </Suspense>
+              )}
               <RuntimeUpdateNotice
                 ready={ready}
                 optimized={terminalInputOptimized && terminalReplayState}
@@ -1048,14 +1091,23 @@ export default function App() {
               >
                 <Type size={17} />
               </button>
-              <button
-                className="icon-button"
-                aria-label="휴대폰 · 다른 PC 연결"
-                title="Tailscale 설치·로그인 · 기기 연결"
-                onClick={() => setMobileOpen(true)}
-              >
-                <Smartphone size={17} />
-              </button>
+              {remoteDesktop ? (
+                <span
+                  className="desktop-viewer"
+                  title="호스트 PC와 같은 터미널·IDE에 연결됨"
+                >
+                  PC 연결
+                </span>
+              ) : (
+                <button
+                  className="icon-button"
+                  aria-label="휴대폰 · 다른 PC 연결"
+                  title="Tailscale 설치·로그인 · 기기 연결"
+                  onClick={() => setMobileOpen(true)}
+                >
+                  <Smartphone size={17} />
+                </button>
+              )}
               {!ideMode && (
                 <button
                   className="icon-button"

@@ -1,3 +1,4 @@
+import { remoteDesktop } from "./desktop-session";
 import {
   useEffect,
   useRef,
@@ -100,7 +101,7 @@ export async function detachTerminal(id: string) {
   }
   // Keep this synchronous with the click/drag gesture for popup permissions.
   const popup = window.open(
-    `/?terminal=${encodeURIComponent(id)}`,
+    `${remoteDesktop ? "/desktop/" : "/"}?terminal=${encodeURIComponent(id)}`,
     `harbor-terminal-${id}`,
   );
   if (!popup) return false;

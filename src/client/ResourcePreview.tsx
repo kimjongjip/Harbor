@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { Modal } from "./Dialogs";
 import { api, getToken } from "./api";
+import { remoteDesktop } from "./desktop-session";
 import { classifyLink, fileParentDirectory } from "../shared/links";
 import type { HostView } from "../shared/types";
 import { Markdown } from "./RichMarkdown";
@@ -80,7 +81,10 @@ export function PreviewProvider({
   const open = useCallback(
     (href: string, location?: ResourceLocation, forceImage?: boolean) => {
       const openFile = (next: Target) => {
-        const url = new URL(window.location.origin + "/");
+        const url = new URL(
+          remoteDesktop ? "/desktop/" : "/",
+          window.location.origin,
+        );
         url.searchParams.set("preview", "1");
         url.hash = new URLSearchParams({
           target: JSON.stringify(next),
@@ -293,7 +297,10 @@ function ResourcePreview({
             className="button secondary small"
             title="별도 창으로 열어 다른 모니터로 옮기기"
             onClick={() => {
-              const url = new URL(window.location.origin + "/");
+              const url = new URL(
+                remoteDesktop ? "/desktop/" : "/",
+                window.location.origin,
+              );
               url.searchParams.set("preview", "1");
               url.hash = new URLSearchParams({
                 target: JSON.stringify({

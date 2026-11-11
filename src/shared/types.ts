@@ -67,7 +67,8 @@ export interface MessageItem {
   phase?: string;
   status?: string;
   /** Native turn outcome. Unknown/absent is never evidence that work finished. */
-  turnStatus?: "completed" | "inProgress" | "failed" | "interrupted" | "unknown";
+  turnStatus?:
+    "completed" | "inProgress" | "failed" | "interrupted" | "unknown";
   imageCount?: number;
   /** A user-kind record the person did not type (slash command, notice, channel…). */
   origin?: import("./user-message-origin.js").UserMessageOrigin;
@@ -212,6 +213,7 @@ export interface TerminalReplayMetadata {
   truncated?: boolean;
 }
 export type ServerEvent =
+  | { type: "terminal-resize"; id: string; cols: number; rows: number }
   | { type: "connection-heartbeat" }
   | import("./rich-terminal.js").RichTerminalEvent
   | { type: "state"; state: AppState }

@@ -1,6 +1,13 @@
 import express from "express";
 import { MobileAccess } from "./mobile-access.js";
 import { MobileGateway } from "./mobile-gateway.js";
+import { DesktopAccess } from "./desktop-access.js";
+import {
+  desktopPreferenceKeys,
+  type DesktopWorkspace,
+} from "../shared/desktop-workspace.js";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { MobileNetwork } from "./mobile-network.js";
 import { TailscaleSetup } from "./tailscale-setup.js";
 import {
@@ -38,12 +45,12 @@ import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
-import { createBridgeRouter } from './bridge-router.js';
-import { claudeUsageSnapshot } from '../shared/terminal-usage.js';
+import { createBridgeRouter } from "./bridge-router.js";
+import { claudeUsageSnapshot } from "../shared/terminal-usage.js";
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
 import { TerminalUsageStore } from "./terminal-usage.js";
-import { CodexUsageHistory } from './codex-usage-history.js';
-import { CodexAgentTelemetry } from './codex-agent-telemetry.js';
+import { CodexUsageHistory } from "./codex-usage-history.js";
+import { CodexAgentTelemetry } from "./codex-agent-telemetry.js";
 import {
   ResearchLabs,
   researchCreateSchema,
@@ -120,7 +127,8 @@ let research: ResearchLabs;
 const peerGenerations = new Map<string, number>();
 const codexPeers = new CodexPeerRuntime({
   onUsage: (id, usage) => terminalUsage.put(id, usage),
-  onCrew: (id, sessionId, crew) => terminalUsage.putCrew(id, "codex", sessionId, crew),
+  onCrew: (id, sessionId, crew) =>
+    terminalUsage.putCrew(id, "codex", sessionId, crew),
   onCompacted: (id) => terminalUsage.compact(id),
   connect: (id, peerPort) => terminals.connectPeerRuntime(id, peerPort),
   onSession: (id, sessionId) => {
@@ -257,11 +265,20 @@ const bridge = new AgentBridge(mailbox, {
     mobile.completions.continued(id);
   },
   onClaudeEvent: (id, event) => {
-    if (event.hook_event_name === "SessionStart" || event.hook_event_name === "SessionEnd") terminalUsage.clear(id);
+    if (
+      event.hook_event_name === "SessionStart" ||
+      event.hook_event_name === "SessionEnd"
+    )
+      terminalUsage.clear(id);
     terminals.markClaudeEvent(id, event);
     if (event.transcript_path) {
-      const terminal = terminals.list().find(t => t.id === id);
-      if (terminal) claudeHistory.noteTranscript(terminal.hostId, event.session_id, event.transcript_path);
+      const terminal = terminals.list().find((t) => t.id === id);
+      if (terminal)
+        claudeHistory.noteTranscript(
+          terminal.hostId,
+          event.session_id,
+          event.transcript_path,
+        );
     }
     mobile.completions.claudeEvent(id, event);
     if (event.hook_event_name === "Notification") {
@@ -371,9 +388,19 @@ const files = new Files((id) => hub.passwords.get(id));
 const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
+let desktopWorkspace: DesktopWorkspace | undefined;
+const desktop: DesktopAccess = new DesktopAccess(
+  () => mobile.access,
+  () => mobile.controls,
+);
 const server = createServer(app);
 app.disable("x-powered-by");
 app.use((req, res, next) => {
+  if (desktop.device(req)) {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+    return;
+  }
   if (
     !allowedHost(req.headers.host, port) ||
     (!req.path.startsWith("/html-preview/") &&
@@ -541,10 +568,9 @@ const editorFiles = new EditorFiles({
 app.use(
   "/api/editor",
   createEditorRouter(editorFiles, {
-    authorize: (_req, id, write) => {
-      if (!write) return;
+    authorize: (req, id, write) => {
       try {
-        mobile.controls.local(id);
+        desktop.authorize(req, id, write);
       } catch {
         throw new EditorError(
           403,
@@ -555,53 +581,69 @@ app.use(
     },
   }),
 );
-const mobile = new MobileGateway(new MobileAccess(store.directory), {
-  editor: editorFiles,
-  ideChat: ideChats,
-  resize: (id, cols, rows) => terminals.resize(id, cols, rows),
-  annotate: (id, text, comment) => {
-    const terminal = annotationTerminal(id);
-    const capture = bridge.annotations.capture(id, {
-      text,
-      source: {
-        hostName: hub.host(terminal.hostId).name,
-        title: terminal.title,
-        ...(terminal.cwd ? { cwd: terminal.cwd } : {}),
+const mobile: MobileGateway = new MobileGateway(
+  new MobileAccess(store.directory),
+  {
+    desktop: {
+      http: desktop.http(app),
+      upgrade: (request, socket, head) => {
+        try {
+          desktop.upgrade(request);
+          upgradeWorkbench(request, socket, head);
+        } catch {
+          socket.destroy();
+        }
       },
-    });
-    bridge.annotations.attach(id, [
-      { number: capture.number, annotation: comment },
-    ]);
-    return { reference: annotationReference(capture.number) };
+      revoke: (id) => desktop.revoke(id),
+    },
+    editor: editorFiles,
+    ideChat: ideChats,
+    resize: (id, cols, rows) => terminals.resize(id, cols, rows),
+    annotate: (id, text, comment) => {
+      const terminal = annotationTerminal(id);
+      const capture = bridge.annotations.capture(id, {
+        text,
+        source: {
+          hostName: hub.host(terminal.hostId).name,
+          title: terminal.title,
+          ...(terminal.cwd ? { cwd: terminal.cwd } : {}),
+        },
+      });
+      bridge.annotations.attach(id, [
+        { number: capture.number, annotation: comment },
+      ]);
+      return { reference: annotationReference(capture.number) };
+    },
+    state: () => ({
+      runtimeId: mobileRuntimeId,
+      hosts: store.data.hosts.map(({ id, name, kind }) => ({ id, name, kind })),
+      terminals: terminals
+        .list()
+        .map((t) => ({ ...t, autoApproval: autoApproval.state(t.id) })),
+      requests: requests.list(),
+      labs: [],
+    }),
+    snapshot: (id) => terminals.bufferSnapshot(id),
+    write: (id, data) => terminals.write(id, data),
+    answer: (id, answer) => requests.respond(id, answer),
+    answers: (id) => richTerminals.list(id),
+    conversation: (id, sessionId, cursor, options) =>
+      mobileConversations.read(id, sessionId, cursor, options),
+    upload: async (id, name, input) => {
+      const target = await attachmentTarget(id);
+      return files.upload(target.host, target.path, name, input, 0o600);
+    },
   },
-  state: () => ({
-    runtimeId: mobileRuntimeId,
-    hosts: store.data.hosts.map(({ id, name, kind }) => ({ id, name, kind })),
-    terminals: terminals
-      .list()
-      .map((t) => ({ ...t, autoApproval: autoApproval.state(t.id) })),
-    requests: requests.list(),
-    labs: [],
-  }),
-  snapshot: (id) => terminals.bufferSnapshot(id),
-  write: (id, data) => terminals.write(id, data),
-  answer: (id, answer) => requests.respond(id, answer),
-  answers: (id) => richTerminals.list(id),
-  conversation: (id, sessionId, cursor, options) =>
-    mobileConversations.read(id, sessionId, cursor, options),
-  upload: async (id, name, input) => {
-    const target = await attachmentTarget(id);
-    return files.upload(target.host, target.path, name, input, 0o600);
-  },
-});
+);
 app.use(
   "/api/ide-chat",
   createIdeChatRouter(ideChats, {
-    authorize: (_request, { hostId, terminalId, write }) => {
+    authorize: (request, { hostId, terminalId, write }) => {
+      desktop.device(request);
       hub.host(hostId);
       if (write && terminalId) {
         try {
-          mobile.controls.local(terminalId);
+          desktop.authorize(request, terminalId, true);
         } catch (error) {
           throw new IdeChatError(
             error instanceof Error
@@ -612,10 +654,9 @@ app.use(
         }
       }
     },
-    actor: () => "local",
+    actor: (request) => desktop.device(request)?.id || "local",
   }),
 );
-await mobile.start();
 terminals.on("data", (id, data) => mobile.output(id, data));
 terminals.on("resize", (id, cols, rows) => mobile.resize(id, cols, rows));
 terminals.on("change", () => mobile.changed());
@@ -691,7 +732,33 @@ app.post("/api/mobile/pair", (req, res) => {
 app.get("/api/terminals/:id/control", (req, res) =>
   res.json({ control: mobile.controls.view(req.params.id) }),
 );
+app.use("/api/terminals/:id", (req, _res, next) => {
+  if (
+    desktop.device(req) &&
+    !["GET", "HEAD"].includes(req.method) &&
+    !["/control", "/rename", "/close", "/reconnect"].includes(req.path) &&
+    !/^\/rich\/[^/]+\/layout$/.test(req.path)
+  )
+    desktop.authorize(req, String(req.params.id), true);
+  next();
+});
 app.post("/api/terminals/:id/control", (req, res) => {
+  const device = desktop.device(req);
+  if (device) {
+    const input = z
+      .object({
+        action: z.enum(["claim", "renew", "release"]),
+        clientId: z.string().uuid(),
+        token: z.string().uuid().optional(),
+        takeover: z.boolean().optional(),
+      })
+      .strict()
+      .parse(req.body);
+    res.json(
+      mobile.controls.change(req.params.id, device.id, device.name, input),
+    );
+    return;
+  }
   z.object({ action: z.literal("claim") })
     .strict()
     .parse(req.body);
@@ -731,7 +798,8 @@ const subscriptions = new Map<
   }
 >();
 function send(socket: WebSocket, event: ServerEvent | string) {
-  if (socket.readyState !== WebSocket.OPEN) return;
+  if (socket.readyState !== WebSocket.OPEN || !desktop.validSocket(socket))
+    return;
   if (socket.bufferedAmount > 4 * 1024 * 1024) {
     viewConnections.trace({ reason: "slow-client" });
     socket.close(1013, "Client too slow; reconnect");
@@ -783,6 +851,10 @@ terminals.on("data", (id, data) => {
   for (const socket of subscriptions.keys())
     sendTerminal(socket, id, { type: "terminal-data", id, data });
 });
+terminals.on("resize", (id, cols, rows) => {
+  for (const socket of subscriptions.keys())
+    sendTerminal(socket, id, { type: "terminal-resize", id, cols, rows });
+});
 terminals.on("exit", (id, exitCode) => {
   notices.close(id);
   const terminal = terminals.list().find((item) => item.id === id);
@@ -796,22 +868,28 @@ terminals.on("exit", (id, exitCode) => {
       persistent: terminal?.persistent,
     });
 });
-server.on("upgrade", (request, socket, head) => {
+function upgradeWorkbench(
+  request: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+) {
   const url = new URL(request.url || "/", `http://127.0.0.1:${port}`);
   if (url.pathname !== "/ws") return; // Vite handles its own HMR upgrade in development.
   if (
-    !allowedHost(request.headers.host, port) ||
-    !allowedOrigin(request.headers.origin, port) ||
-    !validToken(url.searchParams.get("token"), token)
+    !desktop.device(request) &&
+    (!allowedHost(request.headers.host, port) ||
+      !allowedOrigin(request.headers.origin, port) ||
+      !validToken(url.searchParams.get("token"), token))
   ) {
     socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
     socket.destroy();
     return;
   }
   wsServer.handleUpgrade(request, socket, head, (ws) =>
-    wsServer.emit("connection", ws),
+    wsServer.emit("connection", ws, request),
   );
-});
+}
+server.on("upgrade", upgradeWorkbench);
 const terminalColorsInput = z.object({
   foreground: z.string().regex(/^#[a-fA-F0-9]{6}$/),
   background: z.string().regex(/^#[a-fA-F0-9]{6}$/),
@@ -827,20 +905,27 @@ const clientMessage = z.discriminatedUnion("type", [
     type: z.literal("terminal-input"),
     id: z.string(),
     data: z.string().max(64000),
+    clientId: z.string().uuid().optional(),
+    controlToken: z.string().uuid().optional(),
   }),
   z.object({
     type: z.literal("terminal-resize"),
     id: z.string(),
     cols: z.number().int().min(10).max(500),
     rows: z.number().int().min(3).max(200),
+    clientId: z.string().uuid().optional(),
+    controlToken: z.string().uuid().optional(),
   }),
   z.object({
     type: z.literal("terminal-colors"),
     id: z.string().uuid(),
     colors: terminalColorsInput,
+    clientId: z.string().uuid().optional(),
+    controlToken: z.string().uuid().optional(),
   }),
 ]);
-wsServer.on("connection", (socket: WebSocket) => {
+wsServer.on("connection", (socket: WebSocket, request: IncomingMessage) => {
+  desktop.socket(request, socket);
   subscriptions.set(socket, {
     sessions: new Set(),
     terminals: new Set(),
@@ -852,6 +937,7 @@ wsServer.on("connection", (socket: WebSocket) => {
   send(socket, { type: "state", state: state() });
   socket.on("message", (data) => {
     try {
+      if (!desktop.validSocket(socket)) return;
       const message = clientMessage.parse(JSON.parse(data.toString()));
       if (message.type === "subscribe") {
         const prev = subscriptions.get(socket)!;
@@ -906,15 +992,42 @@ wsServer.on("connection", (socket: WebSocket) => {
         }
       } else if (message.type === "terminal-input") {
         if (isTerminalProtocolResponse(message.data)) {
-          if (mobile.controls.canResizeLocally(message.id))
+          if (
+            desktop.canResize(
+              request,
+              message.id,
+              message.clientId,
+              message.controlToken,
+            )
+          )
             terminals.write(message.id, message.data);
           return;
         }
-        mobile.controls.local(message.id);
+        desktop.assert(
+          request,
+          message.id,
+          message.clientId,
+          message.controlToken,
+        );
         terminals.write(message.id, message.data);
-      } else if (message.type === "terminal-colors")
-        terminals.setColors(message.id, message.colors);
-      else if (mobile.controls.canResizeLocally(message.id))
+      } else if (message.type === "terminal-colors") {
+        if (
+          desktop.canResize(
+            request,
+            message.id,
+            message.clientId,
+            message.controlToken,
+          )
+        )
+          terminals.setColors(message.id, message.colors);
+      } else if (
+        desktop.canResize(
+          request,
+          message.id,
+          message.clientId,
+          message.controlToken,
+        )
+      )
         terminals.resize(message.id, message.cols, message.rows);
     } catch (error) {
       send(socket, { type: "error", message: errorText(error) });
@@ -969,11 +1082,15 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.21" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.22" }),
 );
-app.get("/api/bootstrap", (_req, res) =>
+app.get("/api/bootstrap", (req, res) =>
   res.json({
-    token,
+    token: desktop.device(req) ? "desktop" : token,
+    viewer: desktop.device(req)
+      ? { name: desktop.device(req)!.name, kind: "desktop" }
+      : undefined,
+    workspace: desktop.device(req) ? desktopWorkspace : undefined,
     state: state(),
     sshAliases: sshAliases(),
     localCwd: process.cwd(),
@@ -983,15 +1100,46 @@ app.get("/api/bootstrap", (_req, res) =>
       terminalInputOptimized: true,
       terminalReplayState: true,
       claudeIntegration: true,
-      connectionMonitoring: true,
+      connectionMonitoring: !desktop.device(req),
     },
   }),
 );
+app.put("/api/desktop/workspace", (req, res) => {
+  if (desktop.device(req)) {
+    res
+      .status(403)
+      .json({ error: "호스트의 화면 선택은 호스트 PC에서 변경하세요." });
+    return;
+  }
+  desktopWorkspace = z
+    .object({
+      activeId: z.string().max(128),
+      page: z.enum(["hosts", "terminals", "files"]),
+      workspaceView: z.enum(["terminal", "ide"]),
+      sidebar: z.enum(["servers", "files", "activity", "research"]),
+      sidebarVisible: z.boolean(),
+      preferences: z.partialRecord(
+        z.enum(desktopPreferenceKeys),
+        z.string().max(4096),
+      ),
+    })
+    .strict()
+    .parse(req.body);
+  res.json({ ok: true });
+});
 app.post("/api/diagnostics/view-connection", (req, res) => {
   viewConnections.trace(viewConnectionEvent.parse(req.body));
   res.json({ ok: true });
 });
 app.get("/api/mailbox", (_req, res) => res.json(mailbox.list()));
+app.use("/api/requests/:id", (req, _res, next) => {
+  if (desktop.device(req) && !["GET", "HEAD"].includes(req.method)) {
+    const record = requests.list().find((item) => item.id === req.params.id);
+    if (record?.terminal.terminalId)
+      desktop.authorize(req, record.terminal.terminalId, true);
+  }
+  next();
+});
 app.post("/api/requests/:id/respond", (req, res) =>
   res.json(
     requests.respond(
@@ -1051,7 +1199,14 @@ app.patch("/api/hosts/:id/cli-approval", (req, res) => {
     .parse(req.body);
   res.json(hub.setCliApprovalMode(String(req.params.id), mode));
 });
-app.use("/api/hosts", createSkillRouter(new SkillLibrary({ files }), (id) => hub.host(id), passwordFor));
+app.use(
+  "/api/hosts",
+  createSkillRouter(
+    new SkillLibrary({ files }),
+    (id) => hub.host(id),
+    passwordFor,
+  ),
+);
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));
   const { password } = z
@@ -1221,7 +1376,10 @@ app.post("/api/discussions/:id/cancel", (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/hosts/:id/research-models", async (req, res) => {
-  if (!validToken(req.headers["x-harbor-token"], token)) {
+  if (
+    !desktop.device(req) &&
+    !validToken(req.headers["x-harbor-token"], token)
+  ) {
     res
       .status(403)
       .json({ error: "화면을 새로고침한 뒤 모델 목록을 다시 불러오세요." });
@@ -1676,7 +1834,10 @@ app.post("/api/terminals/:id/rename", (req, res) => {
 });
 const historyThreadId = z.string().uuid();
 app.use("/api/hosts/:id/history", (req, res, next) => {
-  if (!validToken(req.headers["x-harbor-token"], token)) {
+  if (
+    !desktop.device(req) &&
+    !validToken(req.headers["x-harbor-token"], token)
+  ) {
     res
       .status(403)
       .json({ error: "화면을 새로고침한 뒤 대화 기록을 다시 열어주세요." });
@@ -1707,20 +1868,35 @@ app.get("/api/hosts/:id/history/:threadId/activity/:ref", (req, res) => {
   const host = hub.host(String(req.params.id));
   const provider = historyProvider.parse(req.query.provider);
   const sessionId = historyThreadId.parse(req.params.threadId);
-  const ref = z.string().regex(/^[a-f0-9]{64}$/).parse(req.params.ref);
-  const offset = z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).parse(req.query.offset);
+  const ref = z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .parse(req.params.ref);
+  const offset = z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(0)
+    .parse(req.query.offset);
   res.json(historyActivities.read(host, provider, sessionId, ref, offset));
 });
 app.get("/api/hosts/:id/history/:threadId", async (req, res) => {
   const host = hub.host(String(req.params.id));
   res.json(
-    serializeHistoryDetailForRead(await historyReader(historyProvider.parse(req.query.provider)).read(
-      host,
-      await passwordFor(host.id),
-      historyThreadId.parse(req.params.threadId),
-      z.string().max(4000).optional().parse(req.query.cursor),
-      { includeActivity: z.enum(["0", "1"]).optional().parse(req.query.includeActivity) === "1" },
-    )),
+    serializeHistoryDetailForRead(
+      await historyReader(historyProvider.parse(req.query.provider)).read(
+        host,
+        await passwordFor(host.id),
+        historyThreadId.parse(req.params.threadId),
+        z.string().max(4000).optional().parse(req.query.cursor),
+        {
+          includeActivity:
+            z.enum(["0", "1"]).optional().parse(req.query.includeActivity) ===
+            "1",
+        },
+      ),
+    ),
   );
 });
 const historyResumer = new HistoryResumer(
@@ -1760,33 +1936,74 @@ app.post("/api/terminals/:id/reconnect", async (req, res) => {
   }
 });
 app.get("/api/terminals/:id/usage", async (req, res) => {
-  if (!validToken(req.headers["x-harbor-token"], token)) {
+  if (
+    !desktop.device(req) &&
+    !validToken(req.headers["x-harbor-token"], token)
+  ) {
     res.status(403).json({ error: "화면을 새로고침해 주세요." });
     return;
   }
-  const terminal = terminals.list().find(t => t.id === req.params.id && !t.exited);
-  if (!terminal || !terminal.agentKind) { res.json({ usage: null }); return; }
+  const terminal = terminals
+    .list()
+    .find((t) => t.id === req.params.id && !t.exited);
+  if (!terminal || !terminal.agentKind) {
+    res.json({ usage: null });
+    return;
+  }
   const sessionId = z.string().uuid().parse(req.query.sessionId);
   const bound = terminal.agentSessionId || terminal.resumeThreadId;
-  if (bound && bound !== sessionId) { res.json({ usage: null }); return; }
+  if (bound && bound !== sessionId) {
+    res.json({ usage: null });
+    return;
+  }
   const host = hub.host(terminal.hostId);
-  const usage = await terminalUsage.read(terminal.id, terminal.agentKind, sessionId, async () => {
-    const password = await passwordFor(host.id);
-    if (terminal.agentKind === "claude") {
-      const native = await files.usageSnapshot(host, `~/.cache/harbor/usage/claude-${sessionId}.json`).then(text=>claudeUsageSnapshot(text,sessionId)).catch(()=>null);
-      const saved = await claudeHistory.usage(host, password, sessionId, terminal.cwd).catch(error => {
-        if (native) return null;
-        throw error;
-      });
-      return native && (!saved || native.updatedAt >= saved.updatedAt) ? native : saved;
-    }
-    const file = await history.usagePath(host, password, sessionId);
-    return file ? codexUsageHistory.read(host.id,sessionId,file,start=>files.usageChunk(host,file,start),()=>files.usageTail(host,file)) : null;
-  });
-  const enriched = usage?.provider === "codex" && usage.crew ? { ...usage,
-    crew: codexAgentTelemetry.read(host.id, sessionId, usage.crew,
-      async id => history.agentTelemetryPath(host, await passwordFor(host.id), id),
-      path => files.usageTail(host, path)) } : usage;
+  const usage = await terminalUsage.read(
+    terminal.id,
+    terminal.agentKind,
+    sessionId,
+    async () => {
+      const password = await passwordFor(host.id);
+      if (terminal.agentKind === "claude") {
+        const native = await files
+          .usageSnapshot(host, `~/.cache/harbor/usage/claude-${sessionId}.json`)
+          .then((text) => claudeUsageSnapshot(text, sessionId))
+          .catch(() => null);
+        const saved = await claudeHistory
+          .usage(host, password, sessionId, terminal.cwd)
+          .catch((error) => {
+            if (native) return null;
+            throw error;
+          });
+        return native && (!saved || native.updatedAt >= saved.updatedAt)
+          ? native
+          : saved;
+      }
+      const file = await history.usagePath(host, password, sessionId);
+      return file
+        ? codexUsageHistory.read(
+            host.id,
+            sessionId,
+            file,
+            (start) => files.usageChunk(host, file, start),
+            () => files.usageTail(host, file),
+          )
+        : null;
+    },
+  );
+  const enriched =
+    usage?.provider === "codex" && usage.crew
+      ? {
+          ...usage,
+          crew: codexAgentTelemetry.read(
+            host.id,
+            sessionId,
+            usage.crew,
+            async (id) =>
+              history.agentTelemetryPath(host, await passwordFor(host.id), id),
+            (path) => files.usageTail(host, path),
+          ),
+        }
+      : usage;
   res.json({ usage: enriched });
 });
 app.get("/api/terminals/:id/rich", (req, res) => {
@@ -1929,6 +2146,7 @@ app.get("/api/hosts/:id/files", async (req, res) => {
 });
 app.get("/api/hosts/:id/files/download", async (req, res) => {
   if (
+    !desktop.device(req) &&
     !validToken(req.query.token, token) &&
     !validToken(req.headers["x-harbor-token"], token)
   ) {
@@ -1949,7 +2167,10 @@ app.get("/api/hosts/:id/files/download", async (req, res) => {
   });
 });
 app.get("/api/hosts/:id/files/preview", async (req, res) => {
-  if (!validToken(req.headers["x-harbor-token"], token)) {
+  if (
+    !desktop.device(req) &&
+    !validToken(req.headers["x-harbor-token"], token)
+  ) {
     res
       .status(403)
       .json({ error: "화면을 새로고침한 뒤 파일을 다시 열어주세요." });
@@ -1972,7 +2193,7 @@ app.post("/api/hosts/:id/files/html", async (req, res) => {
   );
 });
 app.get("/api/hosts/:id/files/image", async (req, res) => {
-  if (!validToken(req.query.token, token)) {
+  if (!desktop.device(req) && !validToken(req.query.token, token)) {
     res.status(403).json({ error: "이미지 연결이 만료되었습니다." });
     return;
   }
@@ -1983,7 +2204,7 @@ app.get("/api/hosts/:id/files/image", async (req, res) => {
   await sendMediaFile(req, res, image);
 });
 app.get("/api/hosts/:id/files/pdf", async (req, res) => {
-  if (!validToken(req.query.token, token)) {
+  if (!desktop.device(req) && !validToken(req.query.token, token)) {
     res.status(403).json({ error: "PDF 연결이 만료되었습니다." });
     return;
   }
@@ -2063,7 +2284,7 @@ app.use(
       });
       return;
     }
-    res.status(400).json({
+    res.status(error.status || 400).json({
       error: errorText(error).slice(0, 5000),
       ...(error?.level === "client-authentication"
         ? { code: "SSH_AUTH_REQUIRED" }
@@ -2089,6 +2310,7 @@ if (development) {
     res.sendFile(join(clientDirectory, "index.html")),
   );
 }
+await mobile.start();
 await terminals.restore();
 terminalAnnotations.retain(new Set(terminals.list().map((t) => t.id)));
 richTerminals.on("block", (id, block) => {

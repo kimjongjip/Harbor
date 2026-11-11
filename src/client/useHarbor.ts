@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppState, ServerEvent, SessionView } from "../shared/types";
 import { setToken, setConnectionMonitoring, reportViewConnection } from "./api";
 import { SocketWatchdog } from "./socket-watchdog";
+import { remoteDesktop } from "./desktop-session";
+import type { DesktopWorkspace } from "../shared/desktop-workspace";
 
 const empty: AppState = {
   hosts: [],
@@ -19,6 +21,7 @@ export function useHarbor(
   const [views, setViews] = useState<Record<string, SessionView>>({});
   const [connected, setConnected] = useState(false);
   const [ready, setReady] = useState(false);
+  const [workspace, setWorkspace] = useState<DesktopWorkspace>();
   const [aliases, setAliases] = useState<string[]>([]);
   const [localCwd, setLocalCwd] = useState("");
   const [credentialStorageAvailable, setCredentialStorageAvailable] =
@@ -63,7 +66,11 @@ export function useHarbor(
         const response = await fetch("/api/bootstrap", {
           signal: bootstrap.signal,
         });
-        if (!response.ok) throw new Error("Harbor 서버에 연결할 수 없습니다.");
+        if (!response.ok) {
+          if (remoteDesktop && response.status === 401)
+            window.dispatchEvent(new Event("harbor:device-expired"));
+          throw new Error("Harbor 서버에 연결할 수 없습니다.");
+        }
         const data = await response.json();
         clearTimeout(deadline);
         if (!current()) return;
@@ -72,6 +79,7 @@ export function useHarbor(
           data.capabilities?.connectionMonitoring === true,
         );
         setState(data.state);
+        setWorkspace(data.workspace);
         setAliases(data.sshAliases);
         setLocalCwd(data.localCwd);
         setCredentialStorageAvailable(!!data.credentialStorageAvailable);
@@ -153,6 +161,7 @@ export function useHarbor(
     views,
     connected,
     ready,
+    workspace,
     aliases,
     localCwd,
     updateView,

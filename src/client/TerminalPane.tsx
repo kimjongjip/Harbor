@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
 import "@xterm/xterm/css/xterm.css";
+import { remoteDesktop, desktopMessage } from "./desktop-session";
 import {
   api,
   getToken,
@@ -155,7 +156,7 @@ export default function TerminalPane({
   const [connectionStatus, setConnectionStatus] = useState("터미널 연결 중…");
   const [inputError, setInputError] = useState("");
   const [controlReason, setControlReason] = useState("");
-  const readOnlyRef = useRef(false);
+  const readOnlyRef = useRef(remoteDesktop);
   const [controlRefresh, setControlRefresh] = useState(0);
   const controlClaimedRef = useRef<(() => void) | null>(null);
   const reconnectViewRef = useRef<(() => void) | null>(null);
@@ -318,7 +319,7 @@ export default function TerminalPane({
     let retry: ReturnType<typeof setTimeout>;
     const send = (data: unknown) => {
       if (socket?.readyState === WebSocket.OPEN)
-        socket.send(JSON.stringify(data));
+        socket.send(JSON.stringify(desktopMessage(data)));
     };
     const sendColors = () => {
       const current = colorsRef.current;
@@ -1080,6 +1081,7 @@ export default function TerminalPane({
       // Sizes rejected while a phone owned input must be sent again after the
       // user's explicit takeover. Never replay keystrokes rejected before it.
       lastSentSize = "";
+      sendColors();
       resize();
     };
     const connect = () => {
@@ -1136,7 +1138,16 @@ export default function TerminalPane({
         reportViewConnection(info.id, "manual");
         setViewEpoch((value) => value + 1);
       };
-      let waiting: string[] = [];
+      type LiveOutput = string | { cols: number; rows: number };
+      let waiting: LiveOutput[] = [];
+      const writeLive = (data: LiveOutput) => {
+        if (typeof data === "string") term.write(data);
+        else
+          term.write("", () => {
+            if (current() && readOnlyRef.current)
+              term.resize(data.cols, data.rows);
+          });
+      };
       connection.onopen = () => {
         if (!current()) return;
         watchdog?.opened();
@@ -1171,9 +1182,9 @@ export default function TerminalPane({
         if (!current()) return;
         watchdog?.message();
         const event: ServerEvent = JSON.parse(e.data);
-        const output = (data: string) => {
+        const output = (data: LiveOutput) => {
           if (!notificationsReady) waiting.push(data);
-          else term.write(data);
+          else writeLive(data);
         };
         if (event.type === "terminal-data" && event.id === info.id) {
           if (!replayReceived) {
@@ -1195,7 +1206,7 @@ export default function TerminalPane({
                 )
                   return;
                 notificationsReady = true;
-                for (const data of waiting) term.write(data);
+                for (const data of waiting) writeLive(data);
                 waiting = [];
                 // New output now follows the restored parser state. Fit only
                 // after these buffered live writes, never in the middle of them.
@@ -1220,6 +1231,13 @@ export default function TerminalPane({
                 recover("restore-failed", undefined, true);
               });
           } else output(event.data);
+        }
+        if (
+          event.type === "terminal-resize" &&
+          event.id === info.id &&
+          readOnlyRef.current
+        ) {
+          output({ cols: event.cols, rows: event.rows });
         }
         if (event.type === "terminal-exit" && event.id === info.id) {
           terminalEnded = true;
@@ -1770,14 +1788,20 @@ export default function TerminalPane({
           ref={element}
           data-testid={`terminal-${info.id}`}
         />
-        {info.agentKind && !info.exited && <TerminalUsageBar
-          visible={showHarborPanel}
-          hostId={info.hostId}
-          terminalId={info.id} provider={info.agentKind}
-          sessionId={historySessionId || info.agentSessionId || info.resumeThreadId}
-          active={active} working={info.agentState === "working"}
-          waiting={info.agentState === "waiting"}
-        />}
+        {info.agentKind && !info.exited && (
+          <TerminalUsageBar
+            visible={showHarborPanel}
+            hostId={info.hostId}
+            terminalId={info.id}
+            provider={info.agentKind}
+            sessionId={
+              historySessionId || info.agentSessionId || info.resumeThreadId
+            }
+            active={active}
+            working={info.agentState === "working"}
+            waiting={info.agentState === "waiting"}
+          />
+        )}
       </div>
       {nativeTerminal && (
         <TerminalRich

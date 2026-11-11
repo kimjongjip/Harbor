@@ -1,3 +1,4 @@
+import { desktopHeaders, remoteDesktop } from "./desktop-session";
 let token = "";
 let connectionMonitoring = false;
 export function setConnectionMonitoring(value: boolean) {
@@ -34,6 +35,9 @@ export function setToken(value: string) {
 export function getToken() {
   return token;
 }
+export function apiHeaders() {
+  return { "X-Harbor-Token": token, ...desktopHeaders() };
+}
 export async function api<T = any>(
   path: string,
   body?: unknown,
@@ -43,10 +47,12 @@ export async function api<T = any>(
   const response = await fetch(`/api${path}`, {
     signal,
     method: body === undefined && method === "GET" ? "GET" : method,
-    headers: { "Content-Type": "application/json", "X-Harbor-Token": token },
+    headers: { "Content-Type": "application/json", ...apiHeaders() },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const value = await response.json();
+  if (remoteDesktop && response.status === 401)
+    window.dispatchEvent(new Event("harbor:device-expired"));
   if (!response.ok)
     throw new ApiError(
       value.error || `요청 실패 (${response.status})`,

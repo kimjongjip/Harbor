@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { remoteDesktop } from "./desktop-session";
+import { DesktopTerminalControl } from "./DesktopTerminalControl";
 import type { TerminalControlView } from "../shared/mobile";
-export function TerminalControlStatus({
+export function TerminalControlStatus(
+  props: Parameters<typeof LocalTerminalControlStatus>[0],
+) {
+  return remoteDesktop ? (
+    <DesktopTerminalControl {...props} />
+  ) : (
+    <LocalTerminalControlStatus {...props} />
+  );
+}
+function LocalTerminalControlStatus({
   id,
   active,
   refresh = 0,

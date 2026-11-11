@@ -1,4 +1,4 @@
-import { getToken } from "./api";
+import { apiHeaders } from "./api";
 
 export const TERMINAL_FILE_MIME = "application/x-harbor-file";
 export const TERMINAL_TAB_MIME = "application/x-harbor-terminal-tab";
@@ -194,7 +194,7 @@ export async function resolveTerminalUploadTarget(
 ) {
   if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(target.terminalId))
     throw new Error("첨부파일을 올릴 터미널을 확인하세요.");
-  const headers = { "X-Harbor-Token": getToken() };
+  const headers = apiHeaders();
   const endpoint = `/api/terminals/${encodeURIComponent(target.terminalId)}/attachments`;
   const response = await fetch(`${endpoint}/prepare`, {
     method: "POST",
@@ -300,7 +300,8 @@ export function uploadTerminalFile(
         ? `${target.attachmentUploadUrl}?${new URLSearchParams({ name })}`
         : `/api/hosts/${encodeURIComponent(target.hostId)}/files/upload?${new URLSearchParams({ path: target.cwd, name })}`,
     );
-    request.setRequestHeader("X-Harbor-Token", getToken());
+    for (const [name, value] of Object.entries(apiHeaders()))
+      request.setRequestHeader(name, value);
     request.setRequestHeader("Content-Type", "application/octet-stream");
     request.upload.onprogress = (event) =>
       onProgress?.({

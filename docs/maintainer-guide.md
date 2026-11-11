@@ -1,5 +1,13 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.22 공통 PC 작업 화면
+
+`remote-desktop/main.tsx`는 호스트 `main.tsx`를 사용한다. PC 등록 Gate 뒤에서 동일 App·TerminalPane·TerminalConversation·DesktopIdeView·Crew를 렌더링하며 별도의 원격 조판·IDE 구현은 제거했다. 모바일 엔트리와 기존 모바일 API는 유지한다. 최초 접속은 호스트의 선택 세션·보기와 명시된 화면 설정 키만 복원한다. 이후 탐색은 독립적이며 초안·편집 내용·로그인·인증 쿠키를 복사하지 않는다. 호스트는 값이 바뀌었을 때만 화면 스냅샷을 게시한다.
+
+게이트웨이 `/api`·`/ws`는 같은 서버 핸들러에 연결한다. `DesktopAccess`의 request WeakMap은 인증된 desktop 기기만 등록하며 외부 헤더로 호스트 권한을 흉내낼 수 없다. 호스트 token을 전달하지 않고 쿠키·출처·변경 요청 marker를 검사한다. 연결 설정·기기 관리 API는 호스트 전용이다. 응답 쓰기와 WebSocket 송수신에서 기기 만료·해제를 재확인한다. IDE 저장은 파일 커밋 전에도 권한을 재확인한다. 터미널 입력·크기·색 변경은 client ID와 해당 제어권 token을 확인하고, 호스트와 기기 간 제어 인계를 유지한다. 읽기 창에는 제어 기기의 크기 변경을 전달한다.
+
+모바일의 작은 JSON 파서가 PC 요청을 먼저 소비하지 않도록 공통 API 분기를 모바일 파서 앞에 둔다. 공통 API 자체의 업로드·미디어 한도를 유지한다. PDF worker·CMap·폰트·WASM, blob 이미지와 중앙 탭의 CSP를 실제 브라우저로 검사한다. `desktop-access.test.ts`, `desktop-workbench.test.ts`, `remote-desktop.browser.test.ts`는 격리된 게이트웨이·실제 빌드 서버·합성 PTY 화면으로 권한·제어·연결 해제·화면 복원·IDE DOM 보존·이미지/PDF 탭을 확인한다. 실행 중 사용자 앱은 재시작하지 않으며 새로운 백엔드는 다음 정상 실행용 설치본으로만 준비한다.
+
 ## 1.18.21 화면 경계 게시와 PTY 격리
 
 `TerminalConversation`의 경계는 `TerminalNativeFlow`가 native 행과 함께 게시한다. 기록·상태 렌더 중 과거 프레임으로 경계를 다시 계산하지 않는다. 범위 변경은 layout effect에서 반영하며 작업 portal 대상 변경은 reader·유예 상태를 초기화하지 않는다. 최초 기록 조회 중에는 인식한 입력 영역과 로딩 안내를 표시한다.

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { TerminalInfo } from "../../shared/types";
-import { getToken } from "../api";
+import { apiHeaders } from "../api";
 import { usePreview } from "../ResourcePreview";
 import IdeWorkspace from "./IdeWorkspace";
 import { createIdeApi, type IdeSelection } from "./types";
@@ -14,7 +14,7 @@ const IdeChatPanel = lazy(() => import("./IdeChatPanel"));
 const editorApi = createIdeApi((path, init) =>
   fetch(path, {
     ...init,
-    headers: { ...init.headers, "X-Harbor-Token": getToken() },
+    headers: { ...init.headers, ...apiHeaders() },
   }),
 );
 
