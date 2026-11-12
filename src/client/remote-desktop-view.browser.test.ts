@@ -71,11 +71,16 @@ for (const provider of ["codex", "claude"] as const)
           .getByRole("button", { name: "등록하고 세션 보기", exact: true })
           .click();
         const pane = page.locator(`[data-terminal-id="${f.second.id}"]`).last();
-        const bar = pane.getByRole("status", {
+        const bar = page.locator(".harbor-topbar").getByRole("status", {
           name: "터미널 제어 상태",
           exact: true,
         });
         await bar.getByText("보기 전용", { exact: true }).waitFor();
+        assert.equal(await pane.locator(".terminal-control-bar").count(), 0);
+        assert.equal(
+          await bar.getAttribute("data-control-terminal"),
+          f.second.id,
+        );
         const answer = pane.getByRole("heading", {
           name: "Rendered answer",
           exact: true,
@@ -154,8 +159,15 @@ for (const provider of ["codex", "claude"] as const)
 
         const ownedBy = f.gateway.controls.view(f.second.id)!.clientId;
         await page.locator(`[data-terminal-tab="${f.id}"]`).click();
+        await page
+          .locator(`.harbor-topbar [data-control-terminal="${f.id}"]`)
+          .waitFor();
         await page.locator(`[data-terminal-tab="${f.second.id}"]`).click();
         await bar.getByText("이 창에서 제어", { exact: true }).waitFor();
+        assert.equal(
+          await bar.getAttribute("data-control-terminal"),
+          f.second.id,
+        );
         assert.equal(
           f.gateway.controls.view(f.second.id)?.clientId,
           ownedBy,
@@ -198,7 +210,7 @@ for (const provider of ["codex", "claude"] as const)
         await bar
           .getByText("보기 전용", { exact: true })
           .waitFor({ timeout: 1000 });
-        await pane.getByText("Host PC에서 입력 중", { exact: true }).waitFor();
+        assert.equal(await bar.getAttribute("title"), "Host PC에서 입력 중");
         await page.waitForFunction(
           ({ id, height }) => {
             const screen = document.querySelector<HTMLElement>(

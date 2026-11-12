@@ -133,9 +133,7 @@ test(
       await page
         .getByRole("button", { name: "여기서 제어", exact: true })
         .click();
-      await page
-        .getByText("이 창에서 제어", { exact: true })
-        .waitFor();
+      await page.getByText("이 창에서 제어", { exact: true }).waitFor();
       await pane.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("remote-input");
       await page.waitForFunction(() =>
@@ -151,6 +149,10 @@ test(
       const connections = opened;
       await page.getByRole("button", { name: "IDE", exact: true }).click();
       await page.locator(".desktop-ide-workspace").waitFor();
+      await page
+        .locator(".harbor-topbar")
+        .getByText("이 창에서 제어", { exact: true })
+        .waitFor();
       await page.getByRole("button", { name: "note.md", exact: true }).click();
       await page.getByRole("tab", { name: "note.md", exact: true }).waitFor();
       await page

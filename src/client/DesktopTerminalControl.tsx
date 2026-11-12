@@ -199,6 +199,7 @@ export function DesktopTerminalControl({
   if (!active) return null;
   return (
     <TerminalControlBanner
+      id={id}
       readOnly={!mine}
       checking={!checked}
       busy={busy}

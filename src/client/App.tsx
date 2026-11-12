@@ -37,6 +37,7 @@ import { remoteDesktop } from "./desktop-session";
 import { useDesktopWorkspace } from "./desktop-workspace";
 import type { HostView, TerminalInfo } from "../shared/types";
 import TerminalWorkspace, { NewTerminalDialog } from "./TerminalWorkspace";
+import { TerminalControlToolbar } from "./TerminalControlBanner";
 import CloseTerminalDialog from "./CloseTerminalDialog";
 import DirectoryTree from "./DirectoryTree";
 import FilesBrowser from "./FilesBrowser";
@@ -120,6 +121,8 @@ export default function App() {
   const [ideNewChat, setIdeNewChat] = useState(false);
   const [ideEditorWidth, setIdeEditorWidth] = useState(52);
   const workbenchRef = useRef<HTMLDivElement>(null);
+  const [terminalControlTarget, setTerminalControlTarget] =
+    useState<HTMLDivElement | null>(null);
   const { notices, push, read, sync } = useNotifications();
   const [page, setPage] = useState<"hosts" | "terminals" | "files">(
     "terminals",
@@ -1017,6 +1020,12 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {page === "terminals" && (
+                <div
+                  className="terminal-control-slot"
+                  ref={setTerminalControlTarget}
+                />
+              )}
               {ideMode && (
                 <div
                   className="harbor-ide-panel-actions"
@@ -1367,30 +1376,39 @@ export default function App() {
                     !(ideNativeTerminal ? ideChatOpen : ideTerminalOpen)
                   }
                 >
-                  <TerminalWorkspace
-                    key="mounted-terminal-workspace"
-                    terminals={state.terminals}
-                    hosts={orderedHosts}
-                    activeId={activeId}
-                    showHarborPanel={!ideMode}
-                    singleTerminalId={
-                      ideMode && ideNativeTerminal ? ideTerminal?.id : undefined
-                    }
-                    visible={
-                      page === "terminals" &&
-                      (!ideMode ||
-                        (ideNativeTerminal ? ideChatOpen : ideTerminalOpen))
-                    }
-                    popoutId={popoutId}
-                    ready={ready}
-                    onFocus={focus}
-                    onCloseTerminal={setEndingTerminal}
-                    terminalColorsSupported={terminalColorsSupported}
-                    onNew={(id, cwd) => setNewTerminal({ hostId: id, cwd })}
-                    onFiles={(id, cwd) => files(id, cwd)}
-                    onError={onError}
-                    onMessages={(id) => openInbox("messages", id)}
-                  />
+                  <TerminalControlToolbar.Provider
+                    value={{
+                      target: terminalControlTarget,
+                      terminalId: activeId,
+                    }}
+                  >
+                    <TerminalWorkspace
+                      key="mounted-terminal-workspace"
+                      terminals={state.terminals}
+                      hosts={orderedHosts}
+                      activeId={activeId}
+                      showHarborPanel={!ideMode}
+                      singleTerminalId={
+                        ideMode && ideNativeTerminal
+                          ? ideTerminal?.id
+                          : undefined
+                      }
+                      visible={
+                        page === "terminals" &&
+                        (!ideMode ||
+                          (ideNativeTerminal ? ideChatOpen : ideTerminalOpen))
+                      }
+                      popoutId={popoutId}
+                      ready={ready}
+                      onFocus={focus}
+                      onCloseTerminal={setEndingTerminal}
+                      terminalColorsSupported={terminalColorsSupported}
+                      onNew={(id, cwd) => setNewTerminal({ hostId: id, cwd })}
+                      onFiles={(id, cwd) => files(id, cwd)}
+                      onError={onError}
+                      onMessages={(id) => openInbox("messages", id)}
+                    />
+                  </TerminalControlToolbar.Provider>
                 </div>
               </div>
               {page === "files" && (

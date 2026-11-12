@@ -92,6 +92,7 @@ function LocalTerminalControlStatus({
   if (!active) return null;
   return (
     <TerminalControlBanner
+      id={id}
       readOnly={!!otherControl || !!blockedReason || !checked}
       checking={!checked}
       busy={busy}
