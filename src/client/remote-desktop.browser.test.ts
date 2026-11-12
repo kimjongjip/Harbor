@@ -134,8 +134,8 @@ test(
         .getByRole("button", { name: "여기서 제어", exact: true })
         .click();
       await page
-        .getByRole("button", { name: "여기서 제어", exact: true })
-        .waitFor({ state: "hidden" });
+        .getByText("이 창에서 제어", { exact: true })
+        .waitFor();
       await pane.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("remote-input");
       await page.waitForFunction(() =>

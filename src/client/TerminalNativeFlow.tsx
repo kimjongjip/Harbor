@@ -179,7 +179,9 @@ export function TerminalNativeFlow({
     // Read geometry once, then consume ResizeObserver's already-computed size.
     // Reading clientHeight after every parsed echo flushes pending DOM layout
     // for both xterm and the entire conversation before React can paint it.
-    let screenHeight = screen?.clientHeight || 0;
+    // A resize notification precedes ResizeObserver. Retain a cell's height,
+    // not the old screen height divided by the NEW row count for that frame.
+    let cellHeight = (screen?.clientHeight || 0) / term.rows;
     const inside = (node: Node | null | undefined) =>
       !!node &&
       (!!root.current?.contains(node) ||
@@ -279,7 +281,7 @@ export function TerminalNativeFlow({
         fontFamily: term.options.fontFamily || "monospace",
         lineHeight: Math.max(
           term.options.fontSize || 14,
-          screenHeight / term.rows ||
+          cellHeight ||
             (term.options.fontSize || 14) * (term.options.lineHeight || 1.2),
         ),
         blocks: latest.current.blocks,
@@ -296,12 +298,19 @@ export function TerminalNativeFlow({
     function schedule() {
       if (disposed) return;
       const now = performance.now();
+      // A small composer/tail is cheap to project, including a spectator's
+      // echoes (which never emit onData in this browser). Keep the larger
+      // output batch for full-screen command output and long transcripts.
+      const coalesceMs =
+        previous.current &&
+        previous.current.frame.end - previous.current.start <= 8
+          ? 16
+          : outputCoalesceMs;
       // The parsed buffer is ready independently of painting, and Electron can
       // suspend RAF while occluded, so never wait for a frame here. Typing
       // echoes run at once; other output joins the next short batch.
       const urgent =
-        now - lastInput < typingWindowMs ||
-        now - lastCapture >= outputCoalesceMs;
+        now - lastInput < typingWindowMs || now - lastCapture >= coalesceMs;
       if (scheduled) {
         // A pending batch never gets cancelled; an echo only makes it sooner.
         if (urgent && timer !== undefined) {
@@ -315,13 +324,13 @@ export function TerminalNativeFlow({
       clearTimeout(timer);
       timer = undefined;
       if (urgent) queueMicrotask(capture);
-      else timer = setTimeout(capture, outputCoalesceMs - (now - lastCapture));
+      else timer = setTimeout(capture, coalesceMs - (now - lastCapture));
     }
     refresh.current = capture;
     const geometry = new ResizeObserver((entries) => {
-      const height = entries[0]?.contentRect.height || 0;
-      if (height === screenHeight) return;
-      screenHeight = height;
+      const height = (entries[0]?.contentRect.height || 0) / term.rows;
+      if (!height || height === cellHeight) return;
+      cellHeight = height;
       schedule();
     });
     if (screen) geometry.observe(screen);

@@ -35,6 +35,7 @@ import type { MobileState, MobileConversationPage } from "../shared/mobile.js";
 import type { TerminalReplayMetadata } from "../shared/types.js";
 
 export interface MobileOperations {
+  controlChanged?(): void;
   desktop?: {
     http: express.RequestHandler;
     upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
@@ -121,7 +122,10 @@ export class MobileGateway {
             ])
           : undefined;
       },
-      () => this.changed(),
+      () => {
+        this.changed();
+        this.operations.controlChanged?.();
+      },
     );
     this.completions = new MobileCompletions(
       () => this.operations.state(),

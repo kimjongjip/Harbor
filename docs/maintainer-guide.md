@@ -1,5 +1,13 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.23 보기 전용 상태와 화면 크기 변경
+
+`TerminalControl`의 변경 콜백에서 공통 WebSocket의 `terminal-control` 이벤트를 게시합니다. 구독 시작 때도 현재 상태를 보내며, 스냅샷 진행 중에는 기존 FIFO에 추가합니다. 클라이언트는 비활성 터미널도 제어 상태를 즉시 적용하므로 다음 `terminal-resize`를 무시하지 않습니다. HTTP 조회·갱신은 구백엔드 호환과 임대 갱신을 위해 유지하되, 늦게 끝난 조회는 더 최신 이벤트를 덮어쓰지 않습니다. 보기 창의 자동 claim은 제거하고 유효한 기존 제어권은 내부 탭 이동 동안 보존합니다.
+
+`TerminalControlBanner`는 양쪽 상태에 같은 높이를 사용합니다. `TerminalNativeFlow`는 화면 높이가 아닌 셀 높이를 저장하여 `onResize`와 `ResizeObserver` 사이의 프레임에 옛 높이/새 행 수를 혼합하지 않습니다. 8행 이하의 작은 native 영역만 16ms 간격으로 합치고 긴 출력은 40ms 간격을 유지합니다. 사용자 입력의 즉시 경로는 바꾸지 않습니다.
+
+`remote-desktop-view.browser.test.ts`는 격리된 게이트웨이·합성 Claude/Codex 기록에서 조판·상단 상태·고정 줄 높이·보기 중 입력 차단·크기 변경보다 먼저 도착하는 인계·오래된 조회 응답·빈 제어권의 자동 획득 방지를 검증합니다. 새 백엔드는 다음 정상 실행용 설치본으로 준비하며 실행 중 앱을 재시작하지 않습니다.
+
 ## 1.18.22 공통 PC 작업 화면
 
 `remote-desktop/main.tsx`는 호스트 `main.tsx`를 사용한다. PC 등록 Gate 뒤에서 동일 App·TerminalPane·TerminalConversation·DesktopIdeView·Crew를 렌더링하며 별도의 원격 조판·IDE 구현은 제거했다. 모바일 엔트리와 기존 모바일 API는 유지한다. 최초 접속은 호스트의 선택 세션·보기와 명시된 화면 설정 키만 복원한다. 이후 탐색은 독립적이며 초안·편집 내용·로그인·인증 쿠키를 복사하지 않는다. 호스트는 값이 바뀌었을 때만 화면 스냅샷을 게시한다.

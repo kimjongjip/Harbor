@@ -8,7 +8,7 @@ import { EditorFiles, createEditorRouter } from "../server/editor-files";
 import { Files } from "../server/files";
 import { sendMediaFile } from "../server/file-media";
 import { mobileFixture } from "./mobile-fixture";
-import type { HostConfig } from "../shared/types";
+import type { HostConfig, MessageItem, ServerEvent } from "../shared/types";
 import type { DesktopWorkspace } from "../shared/desktop-workspace";
 
 export async function desktopWorkbenchFixture() {
@@ -122,6 +122,20 @@ export async function desktopWorkbenchFixture() {
   const inputs: string[] = [],
     subscriptions = new Map<WebSocket, Set<string>>();
   let deferred: (() => void) | undefined;
+  const timeline: MessageItem[] = [];
+  const broadcast = (id: string, event: ServerEvent) => {
+    for (const [client, ids] of subscriptions)
+      if (ids.has(id) && desktop.validSocket(client))
+        client.send(JSON.stringify(event));
+  };
+  f.operations.controlChanged = () => {
+    for (const terminal of state.terminals)
+      broadcast(terminal.id, {
+        type: "terminal-control",
+        id: terminal.id,
+        control: f.gateway.controls.view(terminal.id),
+      });
+  };
   app.use(express.json({ limit: "30mb" }));
   app.get("/api/bootstrap", (_req, res) =>
     res.json({
@@ -165,8 +179,8 @@ export async function desktopWorkbenchFixture() {
   app.get("/api/hosts/:id/history/:session", (req, res) =>
     res.json({
       thread: { id: req.params.session, hostId: host.id, cwd: directory },
-      items: [],
-      timeline: [],
+      items: timeline,
+      timeline,
       nextCursor: null,
     }),
   );
@@ -229,6 +243,13 @@ export async function desktopWorkbenchFixture() {
             if (m.type === "subscribe") {
               subscriptions.set(ws, new Set(m.terminals));
               for (const id of m.terminals) {
+                ws.send(
+                  JSON.stringify({
+                    type: "terminal-control",
+                    id,
+                    control: f.gateway.controls.view(id),
+                  }),
+                );
                 const snapshot = await f.screen.snapshot();
                 if (desktop.validSocket(ws) && ws.readyState === WebSocket.OPEN)
                   ws.send(
@@ -278,6 +299,16 @@ export async function desktopWorkbenchFixture() {
     inputs,
     pair,
     desktop,
+    timeline,
+    output(data: string) {
+      f.screen.append(data);
+      for (const terminal of state.terminals)
+        broadcast(terminal.id, {
+          type: "terminal-data",
+          id: terminal.id,
+          data,
+        });
+    },
     resizeScreen(cols: number, rows: number) {
       f.screen.resize(cols, rows);
       for (const [client, ids] of subscriptions)

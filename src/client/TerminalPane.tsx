@@ -3,7 +3,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
 import "@xterm/xterm/css/xterm.css";
-import { remoteDesktop, desktopMessage } from "./desktop-session";
+import {
+  remoteDesktop,
+  desktopMessage,
+  desktopClientId,
+  desktopLease,
+} from "./desktop-session";
 import {
   api,
   getToken,
@@ -46,6 +51,7 @@ import { TerminalRich, richSelectedText } from "./TerminalRich";
 import { TerminalConversation } from "./TerminalConversation";
 import { useTerminalHistorySession } from "./useTerminalHistorySession";
 import { TerminalControlStatus } from "./TerminalControlStatus";
+import { publishTerminalControl } from "./terminal-control-events";
 import { TerminalUsageBar } from "./TerminalUsageBar";
 import { ReconnectTerminalDialog } from "./ReconnectTerminalDialog";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
@@ -159,6 +165,16 @@ export default function TerminalPane({
   const readOnlyRef = useRef(remoteDesktop);
   const [controlRefresh, setControlRefresh] = useState(0);
   const controlClaimedRef = useRef<(() => void) | null>(null);
+  const applyReadOnlyRef = useRef((_value: boolean) => {});
+  applyReadOnlyRef.current = (value) => {
+    const previous = readOnlyRef.current;
+    readOnlyRef.current = value;
+    if (termRef.current) termRef.current.options.disableStdin = value;
+    if (previous && !value) {
+      setControlReason("");
+      controlClaimedRef.current?.();
+    }
+  };
   const reconnectViewRef = useRef<(() => void) | null>(null);
   const recoveryFailures = useRef(0);
   const infoRef = useRef(info);
@@ -211,6 +227,7 @@ export default function TerminalPane({
   useEffect(() => {
     const term = new Terminal({
       cursorBlink: true,
+      disableStdin: readOnlyRef.current,
       fontSize: typographyRef.current.terminalSize,
       fontFamily: terminalFontFamily(typographyRef.current.terminalFont),
       lineHeight: typographyRef.current.terminalLineHeight,
@@ -1182,6 +1199,20 @@ export default function TerminalPane({
         if (!current()) return;
         watchdog?.message();
         const event: ServerEvent = JSON.parse(e.data);
+        if (event.type === "terminal-control" && event.id === info.id) {
+          const control =
+            event.control && event.control.expiresAt > Date.now()
+              ? event.control
+              : null;
+          // Hidden terminal views still parse output. Update their authority
+          // before processing the following resize, even with no active banner.
+          applyReadOnlyRef.current(
+            remoteDesktop
+              ? control?.clientId !== desktopClientId || !desktopLease(info.id)
+              : !!control && control.clientId !== "local",
+          );
+          publishTerminalControl(event);
+        }
         const output = (data: LiveOutput) => {
           if (!notificationsReady) waiting.push(data);
           else writeLive(data);
@@ -1264,10 +1295,10 @@ export default function TerminalPane({
         if (event.type === "error") {
           // Harbor errors are UI notices, not bytes produced by the remote PTY.
           // Injecting one per rejected key corrupts cursor-addressed CLI output.
-          if (event.message.includes("여기서 제어")) {
+          if (/여기서 제어|제어권/.test(event.message)) {
             setControlReason(event.message);
             if (!readOnlyRef.current) {
-              readOnlyRef.current = true;
+              applyReadOnlyRef.current(true);
               setControlRefresh((value) => value + 1);
             }
           } else setInputError(event.message);
@@ -1435,14 +1466,7 @@ export default function TerminalPane({
         active={active}
         refresh={controlRefresh}
         blockedReason={controlReason}
-        onReadOnlyChange={(value) => {
-          const previous = readOnlyRef.current;
-          readOnlyRef.current = value;
-          if (previous && !value) {
-            setControlReason("");
-            controlClaimedRef.current?.();
-          }
-        }}
+        onReadOnlyChange={(value) => applyReadOnlyRef.current(value)}
         onClaim={() => {
           setInputError("");
           setControlReason("");

@@ -597,6 +597,7 @@ const mobile: MobileGateway = new MobileGateway(
       revoke: (id) => desktop.revoke(id),
     },
     editor: editorFiles,
+    controlChanged: () => broadcastTerminalControls(),
     ideChat: ideChats,
     resize: (id, cols, rows) => terminals.resize(id, cols, rows),
     annotate: (id, text, comment) => {
@@ -834,6 +835,15 @@ function sendTerminal(socket: WebSocket, id: string, event: ServerEvent) {
   }
   pending.events.push(event);
 }
+function broadcastTerminalControls() {
+  for (const [socket, sub] of subscriptions)
+    for (const id of sub.terminals)
+      sendTerminal(socket, id, {
+        type: "terminal-control",
+        id,
+        control: mobile.controls.view(id),
+      });
+}
 hub.on("state", broadcastState);
 hub.on("session", (session) => {
   for (const [socket, sub] of subscriptions)
@@ -956,6 +966,11 @@ wsServer.on("connection", (socket: WebSocket, request: IncomingMessage) => {
         }
         for (const id of next.terminals) {
           if (prev.terminals.has(id)) continue;
+          send(socket, {
+            type: "terminal-control",
+            id,
+            control: mobile.controls.view(id),
+          });
           const pending = { events: [] as ServerEvent[], bytes: 0 };
           next.pending.set(id, pending);
           const replayDeadline = setTimeout(() => {
@@ -1082,7 +1097,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.22" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.23" }),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({

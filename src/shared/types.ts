@@ -213,6 +213,11 @@ export interface TerminalReplayMetadata {
   truncated?: boolean;
 }
 export type ServerEvent =
+  | {
+      type: "terminal-control";
+      id: string;
+      control: import("./mobile.js").TerminalControlView | null;
+    }
   | { type: "terminal-resize"; id: string; cols: number; rows: number }
   | { type: "connection-heartbeat" }
   | import("./rich-terminal.js").RichTerminalEvent

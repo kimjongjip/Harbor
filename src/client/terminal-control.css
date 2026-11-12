@@ -1,0 +1,43 @@
+.terminal-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 40px;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  z-index: 2;
+}
+.terminal-control-bar.viewing {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-bottom-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+}
+.terminal-control-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.terminal-control-bar.controlling .terminal-control-mode {
+  color: var(--accent);
+}
+.terminal-control-description {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-control-bar button {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-weight: 600;
+}
