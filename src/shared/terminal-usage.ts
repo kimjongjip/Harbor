@@ -73,6 +73,7 @@ export function claudeUsage(
   for (const [key, label] of [
     ["five_hour", "5시간 한도"],
     ["seven_day", "7일 한도"],
+    ["seven_day_fable", "7일 Fable 한도"],
   ]) {
     const rate = value.rate_limits?.[key];
     if (

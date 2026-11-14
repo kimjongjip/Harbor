@@ -1,12 +1,12 @@
 .account-usage-panel {
   flex: 0 0 auto;
-  margin: 8px 12px;
-  padding: 12px;
+  margin: 6px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
   font-size: 12px;
-  max-height: 42vh;
+  max-height: 30vh;
   overflow: auto;
 }
 .account-usage-panel header,
@@ -33,25 +33,47 @@
   font-size: 11px;
 }
 .account-quota {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 10px;
-  background: color-mix(in srgb, currentColor 4%, transparent);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
-.quota-identity {
-  color: var(--muted);
+.quota-account-heading strong {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin: 4px 0;
+}
+.quota-account-heading > small {
+  flex-shrink: 0;
+}
+.quota-host {
+  display: block;
+  margin-top: 2px;
+}
+.account-usage-panel > header .icon-button {
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+}
+.account-usage-panel .insights-warning,
+.account-usage-panel > p {
+  margin: 4px 0 0;
+}
+.quota-unavailable {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .quota-window {
-  margin: 10px 0;
+  margin: 5px 0 0;
+  line-height: 1.35;
 }
 .quota-window progress {
   appearance: none;
   width: 100%;
-  height: 7px;
+  display: block;
+  margin: 3px 0 1px;
+  height: 5px;
   border: 0;
   border-radius: 8px;
   overflow: hidden;

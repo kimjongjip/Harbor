@@ -9,7 +9,11 @@ import type {
 import "./host-insights.css";
 
 /** Polling lives here, never in App/TerminalPane, so telemetry cannot invalidate input. */
-function usePoll<T>(path: string | undefined, interval: number) {
+function usePoll<T>(
+  path: string | undefined,
+  interval: number,
+  forceRefresh = false,
+) {
   const [value, setValue] = useState<{ path: string; data: T }>();
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
@@ -18,13 +22,14 @@ function usePoll<T>(path: string | undefined, interval: number) {
     let disposed = false,
       timer: ReturnType<typeof setTimeout>;
     let controller: AbortController | undefined;
-    const read = async () => {
+    const read = async (manual = false) => {
       if (disposed) return;
       if (document.visibilityState !== "hidden") {
         controller = new AbortController();
         const timeout = setTimeout(() => controller?.abort(), 30000);
         try {
-          const data = await api<T>(path, undefined, "GET", controller.signal);
+          const url = manual && forceRefresh ? `${path}?refresh=1` : path;
+          const data = await api<T>(url, undefined, "GET", controller.signal);
           if (!disposed) {
             setValue({ path, data });
             setError("");
@@ -38,15 +43,15 @@ function usePoll<T>(path: string | undefined, interval: number) {
           clearTimeout(timeout);
         }
       }
-      if (!disposed) timer = setTimeout(read, interval);
+      if (!disposed) timer = setTimeout(() => void read(), interval);
     };
-    void read();
+    void read(refresh > 0);
     return () => {
       disposed = true;
       clearTimeout(timer);
       controller?.abort();
     };
-  }, [path, interval, refresh]);
+  }, [path, interval, refresh, forceRefresh]);
   return {
     data: value && value.path === path ? value.data : undefined,
     error,
@@ -59,6 +64,17 @@ const tokens = (n: number | null) =>
     : n >= 1000000
       ? `${(n / 1000000).toFixed(2)}M`
       : `${Math.round(n / 1000)}k`;
+function displayedWindows(account: AccountQuota) {
+  if (account.provider !== "claude") return account.windows;
+  return ["7일 한도", "7일 Fable 한도"].map(
+    (label) =>
+      account.windows.find((w) => w.label === label) || {
+        label,
+        remaining: null,
+        resetsAt: undefined,
+      },
+  );
+}
 export const AccountUsagePanel = memo(function AccountUsagePanel({
   hostId,
   hostName,
@@ -72,6 +88,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
       ? `/hosts/${encodeURIComponent(hostId)}/account-usage`
       : undefined,
     120000,
+    true,
   );
   if (!hostId) return null;
   return (
@@ -86,7 +103,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
         </button>
         <button
           className="icon-button"
-          title="사용 한도 새로고침 (서버 조회는 2분 간격)"
+          title="사용 한도 새로고침 (최소 15초 간격, 요청 제한 시 대기)"
           onClick={refresh}
         >
           <RefreshCw size={13} />
@@ -94,48 +111,76 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
       </header>
       {open && (
         <>
-          <small>{hostName || "선택한 서버"} · CLI 로그인 계정</small>
+          <small className="quota-host">
+            {hostName || "선택한 서버"} · CLI 계정
+          </small>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
           {data?.accounts.map((account) => (
             <article key={account.provider} className="account-quota">
-              <strong>
-                {account.provider === "codex" ? "Codex" : "Claude"}{" "}
-                <small>{account.plan}</small>
-              </strong>
-              {account.account && (
-                <div className="quota-identity" title={account.account}>
-                  {account.account}
-                </div>
-              )}
-              {account.windows.map((w, i) => (
+              <header
+                className="quota-account-heading"
+                title={`${account.account || "CLI 로그인 계정"} · ${new Date(account.updatedAt).toLocaleString("ko-KR")} 확인`}
+              >
+                <strong>
+                  {account.provider === "codex" ? "Codex" : "Claude"}{" "}
+                  <small>{account.plan}</small>
+                </strong>
+                <small>
+                  {new Date(account.updatedAt).toLocaleTimeString("ko-KR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </small>
+              </header>
+              {displayedWindows(account).map((w, i) => (
                 <div className="quota-window" key={i}>
                   <div>
                     <span>{w.label}</span>
-                    <b>{Math.round(w.remaining)}% 남음</b>
+                    <b
+                      title={
+                        w.remaining === null && !account.error
+                          ? "현재 계정의 Claude 응답에 이 한도가 제공되지 않았습니다."
+                          : undefined
+                      }
+                      className={
+                        w.remaining === null ? "quota-unavailable" : undefined
+                      }
+                    >
+                      {w.remaining === null
+                        ? account.error
+                          ? "확인 불가"
+                          : "미제공"
+                        : `${Math.round(w.remaining)}% 남음`}
+                    </b>
                   </div>
-                  <progress
-                    className={
-                      w.remaining < 10
-                        ? "critical"
-                        : w.remaining < 30
-                          ? "low"
-                          : ""
-                    }
-                    max={100}
-                    value={w.remaining}
-                    aria-label={`${w.label} 남은 비율`}
-                  />
-                  {w.resetsAt && (
-                    <small>
-                      {new Date(w.resetsAt).toLocaleString("ko-KR", {
-                        month: "numeric",
-                        day: "numeric",
-                        hour: "numeric",
-                        minute: "2-digit",
-                      })}{" "}
-                      초기화
-                    </small>
+                  {w.remaining !== null && (
+                    <>
+                      <progress
+                        className={
+                          w.remaining < 10
+                            ? "critical"
+                            : w.remaining < 30
+                              ? "low"
+                              : ""
+                        }
+                        max={100}
+                        value={w.remaining}
+                        aria-label={`${w.label} 남은 비율`}
+                      />
+                      {w.resetsAt && (
+                        <small>
+                          {new Date(w.resetsAt).toLocaleString("ko-KR", {
+                            month: "numeric",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}{" "}
+                          초기화
+                        </small>
+                      )}
+                    </>
                   )}
                 </div>
               ))}
@@ -147,13 +192,6 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
                   {account.error}
                 </p>
               )}
-              <small>
-                {new Date(account.updatedAt).toLocaleTimeString("ko-KR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}{" "}
-                확인
-              </small>
             </article>
           ))}
         </>
@@ -214,7 +252,9 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
           {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변 후
           압축:{" "}
           {data.postTurnPercent ? `${data.postTurnPercent}%` : "CLI 기본값"}.
-          최대치는 해당 서버의 모델 목록 기준이며 모델·요금제에 따라 다릅니다.
+          최대치는 Codex가 자동 저장한 models_cache.json의 모델별 상한입니다.
+          버튼을 누르면 해당 서버의 config.toml(선택한 프로필 포함)에 설정을
+          저장합니다.
         </small>
       )}
       {message && <p role="status">{message}</p>}

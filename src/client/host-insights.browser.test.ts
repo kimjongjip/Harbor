@@ -35,6 +35,7 @@ test(
       postTurnPercent: null as number | null,
     };
     const actions: string[] = [];
+    let includeFable = true;
     const app = express();
     app.use(express.json());
     app.get("/api/hosts/fixture/account-usage", (_req, res) =>
@@ -52,7 +53,12 @@ test(
           {
             provider: "claude",
             plan: "Max",
-            windows: [{ label: "5시간 한도", remaining: 1 }],
+            windows: [
+              { label: "7일 한도", remaining: 32 },
+              ...(includeFable
+                ? [{ label: "7일 Fable 한도", remaining: 1 }]
+                : []),
+            ],
             updatedAt: Date.now(),
           },
         ],
@@ -128,6 +134,28 @@ test(
       await page.getByText("75% 남음", { exact: true }).waitFor();
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
+      const panel = page.locator(".account-usage-panel");
+      assert.ok(
+        (await panel.boundingBox())!.height < 260,
+        "quota panel must leave room for servers",
+      );
+      await panel.getByText("7일 Fable 한도", { exact: true }).waitFor();
+      assert.equal(
+        await panel.getByText("5시간 한도", { exact: true }).count(),
+        0,
+      );
+      const refreshRequest = page.waitForRequest((r) =>
+        r.url().endsWith("/account-usage?refresh=1"),
+      );
+      includeFable = false;
+      await panel.getByRole("button", { name: /사용 한도 새로고침/ }).click();
+      await refreshRequest;
+      await panel.getByText("미제공", { exact: true }).waitFor();
+      assert.equal(
+        await panel.locator("progress").count(),
+        2,
+        "missing Fable must never show an invented percentage",
+      );
       assert.match(
         await page.locator(".terminal-work-list").innerText(),
         /4,096 MiB/,
