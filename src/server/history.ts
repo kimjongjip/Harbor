@@ -71,6 +71,54 @@ async function connect(host: HostConfig, password?: string): Promise<Reader> {
 
 /** Reads the host's Codex index across projects, never starts/resumes a conversation. */
 export class History {
+  async accountUsage(host: HostConfig, password?: string) {
+    return this.using(host, password, async (client) => {
+      const account = await client.call(
+        "account/read",
+        { refreshToken: false },
+        12000,
+      );
+      const limits = await client.call("account/rateLimits/read", {}, 12000);
+      return { account: account.account, ...limits };
+    });
+  }
+  async contextConfig(host: HostConfig, password?: string) {
+    return this.using(host, password, async (client) => {
+      const result = await client.call(
+        "config/read",
+        { includeLayers: false },
+        12000,
+      );
+      return result.config || {};
+    });
+  }
+  async writeContextConfig(
+    host: HostConfig,
+    password: string | undefined,
+    edits: { keyPath: string; value: number }[],
+  ) {
+    if (
+      !edits.length ||
+      edits.some(
+        (e) =>
+          !/^(?:profiles\.[a-zA-Z0-9_-]+\.)?model_(?:context_window|auto_compact_token_limit|post_turn_compact_threshold_percent)$/.test(
+            e.keyPath,
+          ) ||
+          !Number.isSafeInteger(e.value) ||
+          e.value <= 0,
+      )
+    )
+      throw new Error("허용되지 않은 컨텍스트 설정입니다.");
+    return this.using(host, password, (client) =>
+      client.call(
+        "config/batchWrite",
+        {
+          edits: edits.map((e) => ({ ...e, mergeStrategy: "replace" })),
+        },
+        12000,
+      ),
+    );
+  }
   private leases = new Map<string, Lease>();
   private pageSizes = new Map<string, number>();
   private oversizedTurns = new Map<string, string>();

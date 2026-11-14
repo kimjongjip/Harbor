@@ -18,6 +18,7 @@ export interface AnnotationCapture {
 /** The selected text remains on the server; only this marker enters the CLI. */
 export interface AnnotationReference {
   readonly number: number;
+  readonly displayNumber?: number;
   readonly reference: string;
 }
 
@@ -36,8 +37,19 @@ export interface AnnotationContext {
   }[];
 }
 
-export function annotationReference(number: number): string {
+export function annotationReference(
+  number: number,
+  displayNumber?: number,
+): string {
   if (!Number.isSafeInteger(number) || number < 1)
     throw new Error("인용 번호가 올바르지 않습니다.");
-  return `[#${number} annotation]`;
+  if (
+    displayNumber !== undefined &&
+    (!Number.isSafeInteger(displayNumber) || displayNumber < 1)
+  )
+    throw new Error("인용 표시 번호가 올바르지 않습니다.");
+  // Keep the first marker recognizable by hooks in already-running CLI sessions.
+  return displayNumber === undefined
+    ? `[#${number} annotation]`
+    : `[#${displayNumber} annotation][ref:${number}]`;
 }

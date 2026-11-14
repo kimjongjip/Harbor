@@ -3,19 +3,18 @@ import { shellQuote } from "./ssh.js";
 
 // The native hook receives only the submitted prompt. It never reads transcripts
 // or changes the prompt; its additionalContext is separate from the TUI composer.
-export const powershellAnnotationHook = `$ProgressPreference='SilentlyContinue';$u=[Text.UTF8Encoding]::new($false);[Console]::InputEncoding=$u;[Console]::OutputEncoding=$u;$b=[Console]::In.ReadToEnd();try {$p=$b|ConvertFrom-Json;if($p.hook_event_name -eq 'UserPromptSubmit' -and $p.prompt -notmatch '\\[#([0-9]+) annotation\\]'){[Console]::Out.Write('{}');exit};$url=[Uri]::new([Uri]$env:HARBOR_HOOK_URL,'/bridge/annotation');$r=Invoke-WebRequest -UseBasicParsing -Method POST -Uri $url -Headers @{Authorization=('Bearer '+$env:HARBOR_HOOK_TOKEN)} -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 5;[Console]::Out.Write($r.Content)} catch {if($b -match '\\[#([0-9]+) annotation\\]'){[Console]::Out.Write('{"decision":"block","reason":"Harbor annotation connection is unavailable. Reconnect Harbor and try again."}')}else{[Console]::Out.Write('{}')}}`;
+export const powershellAnnotationHook = `$ProgressPreference='SilentlyContinue';$u=[Text.UTF8Encoding]::new($false);[Console]::InputEncoding=$u;[Console]::OutputEncoding=$u;$b=[Console]::In.ReadToEnd();try {$p=$b|ConvertFrom-Json;$url=[Uri]::new([Uri]$env:HARBOR_HOOK_URL,'/bridge/annotation');$r=Invoke-WebRequest -UseBasicParsing -Method POST -Uri $url -Headers @{Authorization=('Bearer '+$env:HARBOR_HOOK_TOKEN)} -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 5;[Console]::Out.Write($r.Content)} catch {if($b -match '\\[#([0-9]+) annotation(?::[0-9]+)?\\]'){[Console]::Out.Write('{"decision":"block","reason":"Harbor annotation connection is unavailable. Reconnect Harbor and try again."}')}else{[Console]::Out.Write('{}')}}`;
 
 export const pythonAnnotationHook = [
   "import json,os,re,sys,urllib.request,urllib.parse",
   "b=sys.stdin.buffer.read()",
   "try:",
   " p=json.loads(b)",
-  " if p.get('hook_event_name')=='UserPromptSubmit' and not re.search(r'\\[#([0-9]+) annotation\\]',p.get('prompt','')): sys.stdout.write('{}');sys.exit(0)",
   " url=urllib.parse.urljoin(os.environ['HARBOR_HOOK_URL'],'/bridge/annotation')",
   " r=urllib.request.Request(url,data=b,headers={'Authorization':'Bearer '+os.environ['HARBOR_HOOK_TOKEN'],'Content-Type':'application/json'})",
   " with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(r,timeout=5) as s: sys.stdout.buffer.write(s.read())",
   "except Exception:",
-  " if re.search(rb'\\[#([0-9]+) annotation\\]',b): sys.stdout.write(json.dumps({'decision':'block','reason':'Harbor annotation connection is unavailable. Reconnect Harbor and try again.'}))",
+  " if re.search(rb'\\[#([0-9]+) annotation(?::[0-9]+)?\\]',b): sys.stdout.write(json.dumps({'decision':'block','reason':'Harbor annotation connection is unavailable. Reconnect Harbor and try again.'}))",
   " else: sys.stdout.write('{}')",
 ].join("\n");
 

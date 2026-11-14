@@ -77,6 +77,8 @@ import { RichTerminals } from "./rich-terminal.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { Files, MAX_UPLOAD_BYTES } from "./files.js";
 import { SkillLibrary, createSkillRouter } from "./skill-library.js";
+import { HostInsights, createInsightsRouter } from "./host-insights.js";
+import { TerminalWorkMonitor } from "./terminal-work.js";
 import { sendMediaFile } from "./file-media.js";
 import { HtmlPreviews } from "./html-preview.js";
 import { UPLOAD_ENTRY_LIMIT } from "../shared/upload-tree.js";
@@ -101,6 +103,7 @@ const terminalAnnotations = new TerminalAnnotations(store.directory);
 const credentials = new Credentials(store.directory);
 const history = new History();
 const terminalUsage = new TerminalUsageStore();
+let hostInsights: HostInsights | undefined;
 const codexUsageHistory = new CodexUsageHistory();
 const codexAgentTelemetry = new CodexAgentTelemetry();
 const claudeHistory = new ClaudeHistory();
@@ -291,7 +294,11 @@ const bridge = new AgentBridge(mailbox, {
       );
     }
   },
-  onUsage: (id, usage) => terminalUsage.put(id, usage),
+  onUsage: (id, usage) => {
+    terminalUsage.put(id, usage);
+    const terminal = terminals.list().find((t) => t.id === id);
+    if (terminal) hostInsights?.observe(terminal.hostId, usage);
+  },
 });
 terminals.on("peer-runtime-restored", (id, runtime) =>
   bridge.setPeerRuntime(id, runtime),
@@ -385,6 +392,8 @@ bridge.peers.on("change", () => {
       void flushPeerMessages(terminal.id);
 });
 const files = new Files((id) => hub.passwords.get(id));
+const workMonitor = new TerminalWorkMonitor(files);
+hostInsights = new HostInsights(files, history, passwordFor);
 const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
@@ -613,7 +622,7 @@ const mobile: MobileGateway = new MobileGateway(
       bridge.annotations.attach(id, [
         { number: capture.number, annotation: comment },
       ]);
-      return { reference: annotationReference(capture.number) };
+      return { reference: capture.reference };
     },
     state: () => ({
       runtimeId: mobileRuntimeId,
@@ -1097,7 +1106,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.24" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.25" }),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({
@@ -1222,6 +1231,46 @@ app.use(
     passwordFor,
   ),
 );
+app.use(
+  [
+    "/api/hosts/:id/account-usage",
+    "/api/hosts/:id/codex-context",
+    "/api/terminals/:id/work",
+  ],
+  (req, res, next) => {
+    if (
+      !desktop.device(req) &&
+      !validToken(req.headers["x-harbor-token"], token)
+    ) {
+      res.status(403).json({ error: "화면을 새로고침해 주세요." });
+      return;
+    }
+    next();
+  },
+);
+app.use(
+  "/api/hosts",
+  createInsightsRouter(hostInsights, (id) => hub.host(id)),
+);
+app.get("/api/terminals/:id/work", async (req, res) => {
+  const terminal = terminals
+    .list()
+    .find((t) => t.id === req.params.id && !t.exited);
+  if (!terminal) {
+    res.json({ jobs: [], updatedAt: Date.now() });
+    return;
+  }
+  const host = hub.host(terminal.hostId);
+  await passwordFor(host.id);
+  res.json(
+    await workMonitor.read(
+      host,
+      terminal.id,
+      bridge.processScope(terminal.id),
+      terminals.monitorPid(terminal.id),
+    ),
+  );
+});
 app.post("/api/hosts/:id/credentials", async (req, res) => {
   const host = hub.host(String(req.params.id));
   const { password } = z

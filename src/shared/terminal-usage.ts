@@ -2,6 +2,7 @@ import {
   terminalAgents,
   type TerminalCrewSnapshot,
 } from "./terminal-agents.js";
+import type { QuotaWindow } from "./host-insights.js";
 
 /** A provider-reported snapshot, never a sum of every request in a conversation. */
 export interface TerminalUsage {
@@ -19,6 +20,7 @@ export interface TerminalUsage {
   costSource?: "native" | "api-estimate";
   costStatus?: "loading" | "partial" | "unpriced";
   crew?: TerminalCrewSnapshot;
+  accountWindows?: QuotaWindow[];
 }
 
 export interface TerminalUsageResponse {
@@ -67,12 +69,32 @@ export function claudeUsage(
       ? context.used_percentage
       : null;
   const agents = terminalAgents(value.harbor_agents);
+  const accountWindows: QuotaWindow[] = [];
+  for (const [key, label] of [
+    ["five_hour", "5시간 한도"],
+    ["seven_day", "7일 한도"],
+  ]) {
+    const rate = value.rate_limits?.[key];
+    if (
+      typeof rate?.used_percentage === "number" &&
+      Number.isFinite(rate.used_percentage)
+    )
+      accountWindows.push({
+        label,
+        remaining: Math.max(0, Math.min(100, 100 - rate.used_percentage)),
+        ...(typeof rate.resets_at === "number" &&
+        Number.isFinite(rate.resets_at)
+          ? { resetsAt: rate.resets_at * 1000 }
+          : {}),
+      });
+  }
   if (
     used === null &&
     window === null &&
     cost === null &&
     percent === null &&
-    !agents
+    !agents &&
+    !accountWindows.length
   )
     return null;
   const model = value.model?.id;
@@ -86,6 +108,7 @@ export function claudeUsage(
     costUsd: cost,
     updatedAt,
     source: "native",
+    ...(accountWindows.length ? { accountWindows } : {}),
     costSource: "native",
     ...(agents
       ? {

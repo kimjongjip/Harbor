@@ -6,7 +6,7 @@ import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from "node-pty";
 export type LocalPty = Pick<
   IPty,
   "write" | "resize" | "kill" | "onData" | "onExit"
->;
+> & { readonly monitorPid?: number };
 
 /** Native ConPTY failures cannot be caught by JS. Keep one terminal's native
  * handles in an owned process, outside the HTTP server and other terminals. */
@@ -54,6 +54,7 @@ export function spawnLocalPty(
       });
     };
     const pty: LocalPty = {
+      monitorPid: child.pid,
       write: (data) => {
         if (!closing) send({ type: "write", data });
       },

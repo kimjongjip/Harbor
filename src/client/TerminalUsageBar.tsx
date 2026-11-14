@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
 import { TerminalPanelResize } from "./TerminalPanelResize";
 import { TerminalCrew } from "./TerminalCrew";
+import { TerminalWorkList } from "./HostInsights";
 import {
   claudeUsageSnapshot,
   compactTokens,
@@ -330,6 +331,10 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             active={active}
             crew={usage?.crew}
             unavailable={current?.unavailable}
+          />
+          <TerminalWorkList
+            terminalId={terminalId}
+            active={active && !collapsed}
           />
           <p className="terminal-usage-note">
             {current?.unavailable

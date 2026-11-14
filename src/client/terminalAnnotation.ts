@@ -19,6 +19,8 @@ export interface TerminalAnnotationSnapshot {
 
 export interface TerminalAnnotationReference {
   readonly number: number;
+  readonly displayNumber?: number;
+  readonly reference?: string;
   readonly snapshot: TerminalAnnotationSnapshot;
   readonly annotation: string;
 }
@@ -142,8 +144,10 @@ export function buildAnnotationAttachments(
 export function buildAnnotationPrompt(
   annotations: readonly TerminalAnnotationReference[],
 ): string {
-  const attachments = buildAnnotationAttachments(annotations);
+  buildAnnotationAttachments(annotations);
   // The server-side native hook supplies reference contents separately.
   // Quote, per-reference comment and provenance all belong inside the reference.
-  return attachments.map(({ number }) => annotationLabel(number)).join(" ");
+  return annotations
+    .map((item) => item.reference || annotationLabel(item.number))
+    .join(" ");
 }

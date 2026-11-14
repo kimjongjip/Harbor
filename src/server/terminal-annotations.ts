@@ -71,6 +71,7 @@ export const annotationCommentsSchema = z
   );
 
 interface StoredAnnotation extends AnnotationCapture {
+  readonly displayNumber?: number;
   readonly annotation: string;
   readonly submitted?: true;
   readonly sessionId?: string;
@@ -78,6 +79,7 @@ interface StoredAnnotation extends AnnotationCapture {
   readonly bytes: number;
 }
 interface Namespace {
+  nextLabel?: number;
   sessionId?: string;
   records: Map<number, StoredAnnotation>;
 }
@@ -101,6 +103,7 @@ export class TerminalAnnotations {
       const recordSchema = annotationCaptureSchema
         .extend({
           number: numberSchema,
+          displayNumber: numberSchema.optional(),
           annotation: z.string().max(ANNOTATION_COMMENT_LIMIT),
           sessionId: idSchema.optional(),
           submitted: z.literal(true).optional(),
@@ -115,6 +118,7 @@ export class TerminalAnnotations {
               z
                 .object({
                   terminalId: idSchema,
+                  nextLabel: numberSchema.optional(),
                   sessionId: idSchema.optional(),
                   records: z.array(recordSchema).max(ANNOTATION_RECORD_LIMIT),
                 })
@@ -133,7 +137,10 @@ export class TerminalAnnotations {
           if (numbers.has(saved.number) || saved.number >= data.nextNumber)
             throw new Error("Invalid annotation sequence");
           numbers.add(saved.number);
-          const reference = annotationReference(saved.number);
+          const reference = annotationReference(
+            saved.number,
+            saved.displayNumber,
+          );
           const source = Object.freeze(saved.source);
           const bytes = Buffer.byteLength(
             JSON.stringify({
@@ -153,6 +160,7 @@ export class TerminalAnnotations {
           this.byteCount += bytes;
         }
         this.namespaces.set(namespace.terminalId, {
+          nextLabel: namespace.nextLabel,
           sessionId: namespace.sessionId,
           records,
         });
@@ -175,9 +183,13 @@ export class TerminalAnnotations {
     const temporary = `${this.file}.tmp`;
     const namespaces = [...this.namespaces].map(([terminalId, namespace]) => ({
       terminalId,
+      ...(namespace.nextLabel ? { nextLabel: namespace.nextLabel } : {}),
       ...(namespace.sessionId ? { sessionId: namespace.sessionId } : {}),
       records: [...namespace.records].map(([number, record]) => ({
         number,
+        ...(record.displayNumber
+          ? { displayNumber: record.displayNumber }
+          : {}),
         text: record.text,
         annotation: record.annotation,
         source: record.source,
@@ -252,7 +264,8 @@ export class TerminalAnnotations {
   capture(terminalId: string, input: AnnotationCapture): AnnotationReference {
     const namespace = this.ready(terminalId);
     const parsed = annotationCaptureSchema.parse(input);
-    const reference = annotationReference(this.nextNumber);
+    const displayNumber = namespace.nextLabel || 1;
+    const reference = annotationReference(this.nextNumber, displayNumber);
     const source = Object.freeze({ ...parsed.source });
     const bytes = Buffer.byteLength(
       JSON.stringify({
@@ -271,10 +284,12 @@ export class TerminalAnnotations {
         "인용 저장 공간이 가득 찼습니다. 사용하지 않는 참조를 삭제하거나 터미널을 닫아주세요.",
       );
     const number = this.nextNumber++;
+    namespace.nextLabel = displayNumber + 1;
     namespace.records.set(
       number,
       Object.freeze({
         text: parsed.text,
+        displayNumber,
         annotation: "",
         source,
         sessionId: namespace.sessionId,
@@ -285,7 +300,7 @@ export class TerminalAnnotations {
     this.recordCount++;
     this.byteCount += bytes;
     this.save();
-    return Object.freeze({ number, reference });
+    return Object.freeze({ number, displayNumber, reference });
   }
 
   /** Check all refs before placing their markers in the CLI's real input. */
@@ -343,21 +358,38 @@ export class TerminalAnnotations {
     if (typeof prompt !== "string" || prompt.length > ANNOTATION_PROMPT_LIMIT)
       throw new Error("인용을 확인할 입력이 너무 깁니다.");
     const numbers: number[] = [];
-    for (const marker of prompt.matchAll(/\[#([0-9]+) annotation\]/g)) {
-      const number = Number(marker[1]);
+    for (const marker of prompt.matchAll(
+      /\[#([0-9]+) annotation(?::([0-9]+))?\](?:\[ref:([0-9]+)\])?/g,
+    )) {
+      const number = Number(marker[3] || marker[2] || marker[1]);
       if (
         !Number.isSafeInteger(number) ||
         number < 1 ||
-        String(number) !== marker[1]
+        String(number) !== (marker[3] || marker[2] || marker[1])
       )
         throw new Error("인용 번호가 올바르지 않습니다.");
+      const record = this.namespaces.get(terminalId)?.records.get(number);
+      if (record?.displayNumber && record.reference !== marker[0])
+        throw new Error(
+          "인용 표시 번호가 일치하지 않습니다. 인용 전체를 다시 추가해주세요.",
+        );
       if (!numbers.includes(number)) numbers.push(number);
       if (numbers.length > ANNOTATION_DRAFT_LIMIT)
         throw new Error(
           `인용은 한 번에 ${ANNOTATION_DRAFT_LIMIT}개까지 가능합니다.`,
         );
     }
-    if (!numbers.length) return null;
+    if (!numbers.length) {
+      const namespace = this.namespaces.get(terminalId);
+      if (
+        namespace &&
+        (!namespace.sessionId || namespace.sessionId === sessionId)
+      ) {
+        namespace.nextLabel = 1;
+        this.save();
+      }
+      return null;
+    }
     const namespace = this.ready(terminalId);
     if (!namespace.sessionId) {
       // Some managed reconnects do not emit SessionStart again. This method is
@@ -369,6 +401,7 @@ export class TerminalAnnotations {
         "인용을 추가한 대화와 현재 대화가 다릅니다. 현재 대화에서 다시 선택해주세요.",
       );
     const records = this.records(terminalId, numbers);
+    namespace.nextLabel = 1;
     for (let index = 0; index < records.length; index++)
       if (!records[index].submitted)
         namespace.records.set(

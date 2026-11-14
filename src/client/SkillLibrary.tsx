@@ -27,6 +27,7 @@ import {
 import { Modal } from "./Dialogs";
 import { api, ApiError } from "./api";
 import "./skill-library.css";
+import { CodexContextSettings } from "./HostInsights";
 
 export function SkillLibraryButton({ host }: { host: HostView }) {
   const [open, setOpen] = useState(false);
@@ -163,6 +164,7 @@ export function SkillLibraryDialog({
       }}
     >
       <div className="skill-library-body">
+        <CodexContextSettings hostId={host.id} />
         <section className="skill-intro">
           <BookOpen size={27} />
           <div>

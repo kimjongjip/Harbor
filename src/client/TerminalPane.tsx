@@ -38,6 +38,7 @@ import {
   type TerminalAnnotationSnapshot,
 } from "./terminalAnnotation";
 import { TerminalAnnotationDialog } from "./TerminalAnnotationDialog";
+import { AtomicAnnotationInput } from "./annotationInput";
 import {
   attachmentReflected,
   terminalComposer,
@@ -747,9 +748,13 @@ export default function TerminalPane({
             cwd: infoRef.current.cwd,
           });
         setCopyStatus("인용 번호를 연결하고 있습니다…");
-        let registered: { number: number };
+        let registered: {
+          number: number;
+          displayNumber?: number;
+          reference?: string;
+        };
         try {
-          registered = await api<{ number: number }>(
+          registered = await api<typeof registered>(
             `/terminals/${info.id}/annotations`,
             { snapshot },
           );
@@ -785,6 +790,8 @@ export default function TerminalPane({
           throw new Error(annotationUnavailable);
         const captured = Object.freeze({
           number: registered.number,
+          displayNumber: registered.displayNumber,
+          reference: registered.reference,
           snapshot,
           annotation: "",
         });
@@ -1307,6 +1314,7 @@ export default function TerminalPane({
       connection.onclose = (event) => recover("socket-close", event.code);
       connection.onerror = () => recover("socket-error");
     };
+    const annotationInput = new AtomicAnnotationInput();
     const input = term.onData((data) => {
       // A user's edit/submit supersedes the pending attachment batch. Programmatic
       // attachment paste and terminal protocol replies do not count as edits.
@@ -1322,8 +1330,14 @@ export default function TerminalPane({
         !["disconnected", "reconnecting", "connecting"].includes(
           infoRef.current.connectionState || "",
         )
-      )
-        send({ type: "terminal-input", id: info.id, data });
+      ) {
+        const outgoing =
+          infoRef.current.agentConnected && term.modes.bracketedPasteMode
+            ? annotationInput.transform(term.buffer.active, data)
+            : data;
+        if (outgoing)
+          send({ type: "terminal-input", id: info.id, data: outgoing });
+      }
     });
     const composerKeys = term.onKey(() => {
       composerInputGeneration++;

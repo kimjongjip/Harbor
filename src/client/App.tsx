@@ -45,6 +45,7 @@ import HostManager from "./HostManager";
 import WorkspaceInbox, { type InboxTab } from "./WorkspaceInbox";
 import { ReportNotificationsSync } from "./ReportNotifications";
 import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
+import { AccountUsagePanel } from "./HostInsights";
 import CodexHistory from "./CodexHistory";
 import ServerTreeHost from "./ServerTreeHost";
 import ResizableSidebar from "./ResizableSidebar";
@@ -689,6 +690,16 @@ export default function App() {
                 terminal={active}
                 onMessages={() =>
                   openInbox("messages", active?.id || "__all__")
+                }
+              />
+            )}
+            {sidebar === "servers" && (
+              <AccountUsagePanel
+                key={active?.hostId || hostId}
+                hostId={active?.hostId || hostId}
+                hostName={
+                  state.hosts.find((h) => h.id === (active?.hostId || hostId))
+                    ?.name
                 }
               />
             )}

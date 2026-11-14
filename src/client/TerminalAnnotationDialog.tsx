@@ -33,7 +33,9 @@ export function TerminalAnnotationDialog({
   const selected =
     annotations.find((item) => item.number === selectedNumber) ??
     annotations.at(-1);
-  const selectedLabel = selected ? `[#${selected.number} annotation]` : "";
+  const selectedLabel = selected
+    ? `[#${selected.displayNumber || selected.number} annotation]`
+    : "";
   const canInsert = !disabled && !busy && annotations.length > 0;
 
   useEffect(() => {
@@ -116,7 +118,7 @@ export function TerminalAnnotationDialog({
       >
         <div className="terminal-annotation-attachments" aria-label="인용 첨부">
           {annotations.map((annotation) => {
-            const label = `[#${annotation.number} annotation]`;
+            const label = `[#${annotation.displayNumber || annotation.number} annotation]`;
             const isSelected = selected?.number === annotation.number;
             return (
               <div

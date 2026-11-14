@@ -63,7 +63,9 @@ interface TerminalBridge {
 }
 interface Entry {
   info: TerminalInfo;
-  process: Pick<pty.IPty, "write" | "resize" | "kill">;
+  process: Pick<pty.IPty, "write" | "resize" | "kill"> & {
+    monitorPid?: number;
+  };
   buffer: TerminalScreen;
   colors: TerminalColorResponder;
   cwdObserver: TerminalCwdObserver;
@@ -89,6 +91,10 @@ interface Entry {
 
 export class Terminals extends EventEmitter {
   private entries = new Map<string, Entry>();
+  monitorPid(id: string): number | undefined {
+    const entry = this.entries.get(id);
+    return entry && !entry.info.exited ? entry.process.monitorPid : undefined;
+  }
   private opening = 0;
   private sequence = new Map<string, number>();
   private bridge?: TerminalBridge;
@@ -153,8 +159,13 @@ export class Terminals extends EventEmitter {
   markPeerRuntime(id: string, runtime: PeerRuntime) {
     const entry = this.entries.get(id);
     if (!entry || entry.info.exited) return;
-    if (runtime.kind !== "claude" || runtime.state === "working" || runtime.state === "offline" ||
-      (runtime.sessionId && runtime.sessionId !== entry.info.agentSessionId)) delete entry.info.agentCompletion;
+    if (
+      runtime.kind !== "claude" ||
+      runtime.state === "working" ||
+      runtime.state === "offline" ||
+      (runtime.sessionId && runtime.sessionId !== entry.info.agentSessionId)
+    )
+      delete entry.info.agentCompletion;
     if (
       entry.durable &&
       runtime.kind === "claude" &&
@@ -273,8 +284,24 @@ export class Terminals extends EventEmitter {
     const entry = this.entries.get(id);
     if (!entry || entry.info.exited) return;
     const info = entry.info;
-    if (event.hook_event_name !== "SessionStart" && info.agentSessionId && info.agentSessionId !== event.session_id) return;
-    if (["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event.hook_event_name))
+    if (
+      event.hook_event_name !== "SessionStart" &&
+      info.agentSessionId &&
+      info.agentSessionId !== event.session_id
+    )
+      return;
+    if (
+      [
+        "SessionStart",
+        "SessionEnd",
+        "UserPromptSubmit",
+        "Stop",
+        "StopFailure",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PermissionRequest",
+      ].includes(event.hook_event_name)
+    )
       delete info.agentCompletion;
     if (event.hook_event_name === "SessionEnd") {
       if (info.agentSessionId !== event.session_id) return;
@@ -310,9 +337,18 @@ export class Terminals extends EventEmitter {
         ["SessionStart", "Stop", "StopFailure"].includes(event.hook_event_name)
       )
         info.agentState = "idle";
-      if (event.hook_event_name === "Stop" && typeof event.last_assistant_message === "string" &&
-        event.last_assistant_message.trim() && event.last_assistant_message.length <= 128000)
-        info.agentCompletion = { sessionId: event.session_id, textHash: createHash("sha256").update(event.last_assistant_message, "utf8").digest("hex") };
+      if (
+        event.hook_event_name === "Stop" &&
+        typeof event.last_assistant_message === "string" &&
+        event.last_assistant_message.trim() &&
+        event.last_assistant_message.length <= 128000
+      )
+        info.agentCompletion = {
+          sessionId: event.session_id,
+          textHash: createHash("sha256")
+            .update(event.last_assistant_message, "utf8")
+            .digest("hex"),
+        };
     }
     this.persist(entry);
     this.emit("change");

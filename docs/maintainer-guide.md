@@ -667,3 +667,12 @@ Claude의 `rows-v2` 표식은 답변 위치를 위한 내부 예약이다. `rich
 터미널 뷰는 `subscribe.state=false`로 자신이 사용하지 않는 전체 AppState 방송을 제외한다. 메인 구독은 종전처럼 전체 상태를 받고 같은 20ms 안의 갱신을 합친다. `view-connections.jsonl`은 허용한 reason/code/terminalId/시각만 기록하며 분당 건수와 파일 크기를 제한한다. 사용자 대화·주소·token·원래 예외 메시지를 추가하지 않는다. `npx.cmd tsx --test src/client/socket-watchdog.test.ts src/server/view-connections.test.ts`와 빌드 후 `node scripts/verify-view-recovery.mjs`로 검증한다. 후자는 독립 백엔드·Electron·ConPTY에서 최초 replay 누락과 close 이벤트 없는 연결 정지를 재현하며, 같은 프로세스 보존·키보드 미전송·상태 방송 제외·자동 복구를 확인한다. 기존 사용자 앱이나 SSH 서버를 테스트 대상으로 쓰지 않는다.
 
 Codex의 네이티브 Mermaid 지원 범위와 Harbor 브라우저의 Mermaid 지원 범위는 다르다. 완료 답변 구독이 없는 기존 네이티브 세션에서도 지원 불가 안내가 보이면 `TerminalDiagramFallback`이 현재 host/session의 저장 기록을 읽는다. ANSI 출력에서 그림 소스를 복원하거나 예약 행·입력을 주입하지 않는다. 일반 화면에서 주기적으로 기록을 조회하지 않으며, 저장 지연은 최대 세 번 읽고 수동 재시도를 제공한다. 완결된 Mermaid fence가 있는 최종 assistant 메시지만 사용한다. 현재 대화가 바뀌면 컴포넌트 키로 상태를 분리하고 늦은 응답을 취소한다. `npx.cmd tsx --test src/client/terminal-diagrams.test.ts src/client/terminal-diagrams.browser.test.ts src/client/terminal-rich-layout.browser.test.ts`로 그림 조판·저장 지연·세션 전환·입력 비침범과 기존 Claude 조판을 함께 검증한다.
+
+
+## 계정·작업 텔레메트리 (1.18.25)
+
+'host-insights.ts'는 Codex account/config RPC만 사용하며 thread/start·resume을 호출하지 않습니다. 설정 쓰기는 컨텍스트/압축 세 키만 허용하고 config/batchWrite로 병합합니다. Claude는 공식 statusline의 rate_limits를 우선 사용하며, 없을 때 호스트 안에서 OAuth usage를 조회합니다. 토큰 갱신·재로그인·자격 증명 파일 쓰기는 하지 않습니다. 인증 정보·프로세스 환경·전체 명령행은 API 응답에 포함하지 않습니다.
+
+'terminal-work.ts'는 세션 토큰의 SHA-256 비교를 원격 호스트 내부에서 수행하고 Linux /proc의 같은 UID만 조회합니다. Windows는 owned PTY worker PID의 자손만 조회합니다. 조회 실패는 기존 수치를 유지하고 오류를 표시합니다. 숨긴 패널에서는 타이머만 대기하며 네트워크 요청을 보내지 않습니다. 테스트는 합성 프로세스·대화·별도 Electron 프로필로 수행하고 사용자 Harbor를 종료하지 않습니다.
+
+annotation 저장 스냅샷은 기존 v1 레코드도 읽으며 displayNumber와 namespace nextLabel을 선택 필드로 추가합니다. 고유 내부 번호는 계속 증가하고 프롬프트 전송 성공 후 표시 번호만 초기화합니다. 구버전 hook 정규식과 호환되는 첫 표기 및 고유 ref 접미사를 함께 전달합니다. 보존된 과거 레코드는 같은 텍스트를 반환하며 잘린 참조는 차단합니다.

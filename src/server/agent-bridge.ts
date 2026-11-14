@@ -480,8 +480,13 @@ export class AgentBridge {
       const runtime = this.peers.runtime(credential.terminalId);
       const usage = claudeUsage(req.body);
       // A child CLI or a late response from /clear cannot overwrite the main session.
-      if (usage && !req.body.agent_id && runtime?.kind === "claude" &&
-          runtime.state !== "offline" && runtime.sessionId === usage.sessionId)
+      if (
+        usage &&
+        !req.body.agent_id &&
+        runtime?.kind === "claude" &&
+        runtime.state !== "offline" &&
+        runtime.sessionId === usage.sessionId
+      )
         this.options.onUsage?.(credential.terminalId, usage);
       res.json({});
     });
@@ -517,10 +522,13 @@ export class AgentBridge {
               : "hook",
           detail: currentRuntime?.detail,
           userInputVersion:
-            currentRuntime?.kind === "claude" && currentRuntime.delivery === "automatic" &&
+            currentRuntime?.kind === "claude" &&
+            currentRuntime.delivery === "automatic" &&
             currentRuntime.state !== "offline" &&
-            (!currentRuntime.sessionId || currentRuntime.sessionId === event.data.session_id)
-              ? currentRuntime.userInputVersion : undefined,
+            (!currentRuntime.sessionId ||
+              currentRuntime.sessionId === event.data.session_id)
+              ? currentRuntime.userInputVersion
+              : undefined,
         });
       else if (
         event.data.hook_event_name === "SessionEnd" &&
@@ -640,7 +648,12 @@ export class AgentBridge {
     this.annotationHandle.use(errors);
   }
 
-  /** Raw tokens are returned once and never persisted or included in UI state. */
+  /** One-way scope used inside the host's read-only process probe. */
+  processScope(terminalId: string): string | undefined {
+    return this.credentials.get(terminalId)?.hash.toString("hex");
+  }
+
+  /** Raw tokens are returned once and never included in UI state. */
   issue(terminalId: string): {
     token: string;
     path: "/bridge/mcp";

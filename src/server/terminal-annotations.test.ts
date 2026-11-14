@@ -35,6 +35,40 @@ const ready = () => {
   return registry;
 };
 
+test("display numbers restart for each prompt and terminal while old references stay immutable", () => {
+  const registry = ready();
+  const first = registry.capture("terminal-a", input("first"));
+  const second = registry.capture("terminal-a", input("second"));
+  assert.equal(first.displayNumber, 1);
+  assert.equal(second.displayNumber, 2);
+  registry.resolve(
+    "terminal-a",
+    first.reference + " " + second.reference,
+    "session-a",
+  );
+  const next = registry.capture("terminal-a", input("next prompt"));
+  assert.equal(next.displayNumber, 1);
+  assert.notEqual(next.number, first.number);
+  assert.equal(
+    registry.resolve("terminal-a", first.reference, "session-a")!.annotations[0]
+      .text,
+    "first",
+  );
+  registry.resolve("terminal-a", "ordinary prompt", "session-a");
+  assert.equal(registry.capture("terminal-a", input()).displayNumber, 1);
+  registry.markReady("terminal-b", "session-b");
+  assert.equal(registry.capture("terminal-b", input()).displayNumber, 1);
+  assert.throws(
+    () =>
+      registry.resolve(
+        "terminal-a",
+        next.reference.replace("#1", "#99"),
+        "session-a",
+      ),
+    /표시 번호/,
+  );
+});
+
 test("private annotation snapshots preserve notes, native binding and reference high-water after backend restart", () => {
   const root = resolve(".cache/annotation-persistence-tests");
   mkdirSync(root, { recursive: true });
@@ -277,7 +311,11 @@ test("captures are immutable; hidden context contains selected text, its note an
   const registry = ready();
   const original = input("  preserved whitespace\n한국어 and 😀\n");
   const captured = registry.capture("terminal-a", original);
-  assert.deepEqual(captured, { number: 1, reference: "[#1 annotation]" });
+  assert.deepEqual(captured, {
+    number: 1,
+    displayNumber: 1,
+    reference: "[#1 annotation][ref:1]",
+  });
   assert.equal(Object.isFrozen(captured), true);
   original.text = "changed after capture";
   original.source.hostName = "changed source";
@@ -890,8 +928,11 @@ test("global UTF-8 byte capacity rejects oversize storage and revoke frees capac
   );
   const last = accepted.at(-1)!;
   assert.equal(
-    registry.resolve("terminal-a", annotationReference(last), "session-a")!
-      .annotations[0].text.length,
+    registry.resolve(
+      "terminal-a",
+      annotationReference(last, last),
+      "session-a",
+    )!.annotations[0].text.length,
     ANNOTATION_TEXT_LIMIT,
   );
   registry.revoke("terminal-a");

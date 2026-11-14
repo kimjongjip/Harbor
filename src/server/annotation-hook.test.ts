@@ -138,8 +138,8 @@ test(
     );
     assert.equal(
       posts,
-      before,
-      "ordinary prompts must not require a bridge request",
+      before + 1,
+      "ordinary submissions reset the next prompt's annotation numbering",
     );
     await run(session, other.hookToken);
     assert.equal((await run(submitted, other.hookToken)).decision, "block");
