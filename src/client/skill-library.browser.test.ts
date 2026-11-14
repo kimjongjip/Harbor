@@ -35,6 +35,17 @@ test(
       mutations: any[] = [];
     const app = express();
     app.use(express.json());
+    app.get("/api/hosts/fixture/codex-context", (_req, res) =>
+      res.json({
+        model: "fixture-model",
+        current: 872000,
+        maximum: 872000,
+        usable: 828400,
+        usablePercent: 95,
+        compactAt: null,
+        postTurnPercent: null,
+      }),
+    );
     app.get("/api/hosts/fixture/skills", (_req, res) => {
       statusReads++;
       if (oldServer) {
@@ -144,12 +155,20 @@ test(
       );
       assert.equal(
         await dialog.locator(".codex-context-settings").count(),
-        0,
-        "settings stay unloaded until opened",
+        1,
+        "context expansion stays visible at the top",
       );
+      await dialog
+        .getByRole("button", { name: "컨텍스트 최대 확장 · 872k", exact: true })
+        .waitFor();
+      const firstCard = (await dialog
+        .locator(".skill-card")
+        .first()
+        .boundingBox())!;
       assert.ok(
-        (await dialog.locator(".skill-card").first().boundingBox())!.y < 400,
-        "skills should be visible before scrolling past explanations",
+        firstCard.y + firstCard.height <
+          (await dialog.locator(".modal-footer").boundingBox())!.y,
+        "the expansion control and a complete skill card must fit without scrolling",
       );
       assert.equal(
         await page

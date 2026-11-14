@@ -65,7 +65,6 @@ export function SkillLibraryDialog({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [category, setCategory] = useState("전체");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [sort, setSort] = useState("research");
@@ -164,14 +163,8 @@ export function SkillLibraryDialog({
       }}
     >
       <div className="skill-library-body">
+        <CodexContextSettings hostId={host.id} compact />
         <div className="skill-utilities">
-          <details
-            className="skill-settings"
-            onToggle={(e) => setSettingsOpen(e.currentTarget.open)}
-          >
-            <summary>Codex 설정</summary>
-            {settingsOpen && <CodexContextSettings hostId={host.id} />}
-          </details>
           <details className="skill-help">
             <summary>사용법</summary>
             <div className="skill-help-grid">

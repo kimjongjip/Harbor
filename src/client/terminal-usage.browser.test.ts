@@ -393,13 +393,13 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       await page.waitForFunction(
         () =>
           document.querySelector(".terminal-usage-tokens")?.textContent ===
-          "첫 응답 대기",
+          "사용량 확인 중",
       );
       release();
       await page.waitForTimeout(100);
       assert.equal(
         await page.locator(".terminal-usage-tokens").innerText(),
-        "첫 응답 대기",
+        "사용량 확인 중",
       );
       assert.equal(
         await page.locator("[role=progressbar]").getAttribute("aria-valuenow"),

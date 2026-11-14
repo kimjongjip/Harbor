@@ -90,6 +90,38 @@ test(
         false,
       );
       assert.equal(reports.at(-1).delivery, "poll");
+      assert.equal(
+        reports.at(-1).sessionId,
+        undefined,
+        "a name is not a verified thread ID",
+      );
+      const id = "11111111-2222-4333-8444-555555555555";
+      for (const [args, expected] of [
+        [["-c", "notice=true", "resume", "--model", "fixture-model", id], id],
+        [["resume", "--last", id], undefined],
+        [["resume", "named-thread", id], undefined],
+      ] as const) {
+        const result = await run(
+          `${codexPeerPowerShellLauncher()}\n__HarborRunCodexPeers -Executable ${quote(executable)} -BridgeUrl 'http://127.0.0.1:${(server.address() as any).port}/bridge/mcp' -ConfigArgs @() -UserArgs @(${args.map(quote).join(",")})`,
+          {
+            HARBOR_CAPTURE: capture,
+            HARBOR_SESSION_TOKEN: "synthetic-test-token",
+          },
+        );
+        assert.equal(result.code, 0, result.error);
+        assert.equal(reports.at(-1).sessionId, expected);
+        const recorded = readFileSync(capture, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert.deepEqual(recorded.at(-1), args);
+        assert.equal(
+          recorded.some(
+            (args) => args.includes("app-server") || args.includes("--remote"),
+          ),
+          false,
+        );
+      }
       assert.match(
         codexPeerPosixLauncher(),
         /if resume and '--no-daemon' in help_text/,

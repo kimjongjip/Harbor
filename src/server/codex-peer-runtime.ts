@@ -793,8 +793,8 @@ export function codexPeerPowerShellLauncher() {
 function global:__HarborRunCodexPeers {
   param([string]$Executable,[string]$BridgeUrl,[string[]]$ConfigArgs,[string[]]$UserArgs)
   $harborCommands=@('exec','e','review','login','logout','mcp','plugin','app-server','remote-control','app','completion','update','doctor','sandbox','debug','apply','queue','agents','archive','delete','migrate-rollouts','unarchive','cloud','exec-server','features','help')
-  $harborBypass=$false; $harborFirstPositional=$false; $harborResume=$false
-  $harborValueFlags=@('-C','--cd','-m','--model','-p','--profile','-s','--sandbox','-a','--ask-for-approval','-i','--image','--add-dir','--local-provider','--enable','--disable','--remote-auth-token-env')
+  $harborBypass=$false; $harborFirstPositional=$false; $harborResume=$false; $harborResumeId=$null; $harborResumeArgument=$false
+  $harborValueFlags=@('-c','--config','-C','--cd','-m','--model','-p','--profile','-s','--sandbox','-a','--ask-for-approval','-i','--image','--add-dir','--local-provider','--enable','--disable','--remote-auth-token-env')
   for($harborI=0;$harborI -lt $UserArgs.Count;$harborI++) {
     $harborArg=[string]$UserArgs[$harborI]
     if($harborArg -eq '--') { break }
@@ -802,6 +802,7 @@ function global:__HarborRunCodexPeers {
     if($harborArg -in $harborValueFlags) { $harborI++; continue }
     if($harborArg.StartsWith('-')) { continue }
     if(-not $harborFirstPositional) { $harborFirstPositional=$true; if($harborArg -eq 'resume') { $harborResume=$true }; if($harborArg -in $harborCommands) { $harborBypass=$true } }
+    elseif($harborResume -and -not $harborResumeArgument) { $harborResumeArgument=$true; if($harborArg -match '^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$') { $harborResumeId=$harborArg } }
   }
   function __HarborPeerReport([hashtable]$Payload) {
     try {
@@ -818,7 +819,9 @@ function global:__HarborRunCodexPeers {
     if($harborResume -and $harborHelp -match '--no-daemon') {
       # A native shared daemon can already own this thread's writer lock.
       # Preserve native resume routing instead of forcing a second server.
-      __HarborPeerReport @{kind='codex';state='idle';delivery='poll';detail='Codex 공유 세션 · 받은함 확인 방식'} | Out-Null
+      $harborSharedReport=@{kind='codex';state='idle';delivery='poll';detail='Codex shared session'}
+      if($harborResumeId -and $UserArgs -notcontains '--last') { $harborSharedReport.sessionId=$harborResumeId }
+      __HarborPeerReport $harborSharedReport | Out-Null
       & $Executable @ConfigArgs @UserArgs
       return
     }
@@ -935,7 +938,7 @@ public static class HarborCodexPeerJob {
 
 /** Python's standard library is available on the supported managed SSH shell. */
 export function codexPeerPosixLauncher() {
-  return String.raw`import ctypes,hashlib,json,os,secrets,signal,socket,subprocess,sys,tempfile,time,urllib.request
+  return String.raw`import ctypes,hashlib,json,os,re,secrets,signal,socket,subprocess,sys,tempfile,time,urllib.request
 executable,bridge_url,count=sys.argv[1],sys.argv[2],int(sys.argv[3])
 configs=sys.argv[4:4+count]
 args=sys.argv[4+count:]
@@ -948,11 +951,11 @@ def report(payload):
         with urllib.request.urlopen(request,timeout=15) as result: return result.status==200
     except Exception: return False
 def fallback(detail='Automatic peer input requires Codex CLI 0.160.1 or newer and its experimental app-server transport.'):
-    report({'kind':'codex','state':'idle','delivery':'poll','detail':detail})
+    report({'kind':'codex','state':'idle','delivery':'poll','detail':detail,**({'sessionId':resume_id} if resume_id else {})})
     os.execvpe(executable,[executable]+configs+args,base_env)
 commands={'exec','e','review','login','logout','mcp','plugin','app-server','remote-control','app','completion','update','doctor','sandbox','debug','apply','queue','agents','archive','delete','migrate-rollouts','unarchive','cloud','exec-server','features','help'}
-value_flags={'-C','--cd','-m','--model','-p','--profile','-s','--sandbox','-a','--ask-for-approval','-i','--image','--add-dir','--local-provider','--enable','--disable','--remote-auth-token-env'}
-bypass=False;first_positional=False;resume=False;i=0
+value_flags={'-c','--config','-C','--cd','-m','--model','-p','--profile','-s','--sandbox','-a','--ask-for-approval','-i','--image','--add-dir','--local-provider','--enable','--disable','--remote-auth-token-env'}
+bypass=False;first_positional=False;resume=False;resume_id=None;resume_argument=False;i=0
 while i<len(args):
     arg=args[i]
     if arg=='--': break
@@ -963,7 +966,11 @@ while i<len(args):
         first_positional=True
         if arg=='resume': resume=True
         if arg in commands: bypass=True
+    elif not arg.startswith('-') and resume and not resume_argument:
+        resume_argument=True
+        if re.fullmatch(r'[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}',arg): resume_id=arg
     i+=1
+if '--last' in args: resume_id=None
 if bypass:
     os.execvpe(executable,[executable]+configs+args,base_env)
 if not sys.platform.startswith('linux'): fallback('Automatic peer input on managed SSH requires Linux with Python 3. The native CLI remains available.')

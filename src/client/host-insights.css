@@ -122,6 +122,38 @@
 .codex-context-settings h3 {
   margin: 0;
 }
+.codex-context-settings.compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  background: var(--panel);
+}
+.codex-context-settings.compact h3 {
+  font-size: 14px;
+}
+.codex-context-settings.compact > p {
+  margin: 0;
+  grid-column: 1;
+}
+.codex-context-settings.compact .insights-actions {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: center;
+}
+.codex-context-settings.compact > [role="status"] {
+  grid-column: 1 / -1;
+}
+@media (max-width: 600px) {
+  .codex-context-settings.compact {
+    grid-template-columns: 1fr;
+  }
+  .codex-context-settings.compact .insights-actions {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
 .codex-context-settings p {
   font-size: 12px;
   line-height: 1.6;

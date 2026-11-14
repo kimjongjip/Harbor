@@ -209,7 +209,13 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
   );
 });
 
-export function CodexContextSettings({ hostId }: { hostId: string }) {
+export function CodexContextSettings({
+  hostId,
+  compact = false,
+}: {
+  hostId: string;
+  compact?: boolean;
+}) {
   const path = `/hosts/${encodeURIComponent(hostId)}/codex-context`;
   const { data, error } = usePoll<ContextSettings>(path, 300000);
   const [busy, setBusy] = useState(false),
@@ -230,8 +236,8 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
     }
   };
   return (
-    <section className="codex-context-settings">
-      <h3>컨텍스트</h3>
+    <section className={`codex-context-settings${compact ? " compact" : ""}`}>
+      <h3>Codex 컨텍스트</h3>
       <p>
         {data
           ? `${data.model}${data.profile ? ` · ${data.profile}` : ""} · 현재 ${tokens(data.current)} / 지원 최대 ${tokens(data.maximum)}`
@@ -245,30 +251,33 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
           컨텍스트 최대 확장{data?.maximum ? ` · ${tokens(data.maximum)}` : ""}
         </button>
       </div>
-      <details className="context-advanced">
-        <summary>압축 기준</summary>
-        <button
-          disabled={busy || !data?.current || data.customProvider}
-          onClick={() => configure("compact")}
-        >
-          사용량 기준 압축 설정
-        </button>
-        <p>
-          토큰 90% 또는 답변 완료 후 85%에서 압축합니다. 유휴 시간 기준은
-          아닙니다.
-        </p>
-        {data && (
+      {!compact && (
+        <details className="context-advanced">
+          <summary>압축 기준</summary>
+          <button
+            disabled={busy || !data?.current || data.customProvider}
+            onClick={() => configure("compact")}
+          >
+            사용량 기준 압축 설정
+          </button>
           <p>
-            {data.usable != null
-              ? `CLI 사용 가능 한도: ${tokens(data.usable)} (${data.usablePercent}%). `
-              : ""}
-            현재 압축 기준:{" "}
-            {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변 후
-            압축:{" "}
-            {data.postTurnPercent ? `${data.postTurnPercent}%` : "CLI 기본값"}.
+            토큰 90% 또는 답변 완료 후 85%에서 압축합니다. 유휴 시간 기준은
+            아닙니다.
           </p>
-        )}
-      </details>
+          {data && (
+            <p>
+              {data.usable != null
+                ? `CLI 사용 가능 한도: ${tokens(data.usable)} (${data.usablePercent}%). `
+                : ""}
+              현재 압축 기준:{" "}
+              {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변
+              후 압축:{" "}
+              {data.postTurnPercent ? `${data.postTurnPercent}%` : "CLI 기본값"}
+              .
+            </p>
+          )}
+        </details>
+      )}
       {message && <p role="status">{message}</p>}
     </section>
   );

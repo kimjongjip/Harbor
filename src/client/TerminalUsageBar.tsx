@@ -290,7 +290,11 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
               }
             >
               {usage?.usedTokens == null ? (
-                "첫 응답 대기"
+                !sessionId ? (
+                  "대화 확인 중"
+                ) : (
+                  "사용량 확인 중"
+                )
               ) : (
                 <>
                   {compactTokens(usage.usedTokens)}
