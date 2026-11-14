@@ -136,9 +136,6 @@ export function ResearchSidebar({
           </button>
         </div>
       </div>
-      <p className="research-caption">
-        한 AI와 주제를 준비하고, 다른 AI와 함께 발전시킵니다.
-      </p>
       <div className="research-list" aria-label="연구 과제 목록">
         {labs.map((item) => (
           <div className="research-room-row" key={item.id}>

@@ -138,9 +138,18 @@ test(
           .getAttribute("data-skill-id"),
         "literature-review",
       );
-      assert.match(
-        await dialog.locator(".skill-popularity-note").innerText(),
-        /개별 스킬의 사용 횟수·품질 평가가 아닙니다/,
+      assert.equal(
+        await dialog.locator(".skill-popularity-note, .skill-intro").count(),
+        0,
+      );
+      assert.equal(
+        await dialog.locator(".codex-context-settings").count(),
+        0,
+        "settings stay unloaded until opened",
+      );
+      assert.ok(
+        (await dialog.locator(".skill-card").first().boundingBox())!.y < 400,
+        "skills should be visible before scrolling past explanations",
       );
       assert.equal(
         await page
@@ -179,6 +188,7 @@ test(
         .selectOption("research");
       await page.getByRole("textbox", { name: "스킬 검색" }).fill("graft");
       const graft = dialog.locator('[data-skill-id="graft"]');
+      await graft.locator("summary").click();
       assert.equal(await dialog.locator(".skill-card").count(), 1);
       assert.equal(await graft.getByRole("checkbox").count(), 0);
       assert.match(
@@ -211,7 +221,7 @@ test(
         ids: ["pdf"],
         providers: ["claude", "codex"],
       });
-      assert.match(await pdf.innerText(), /Harbor 설치됨/);
+      assert.match(await pdf.innerText(), /설치됨/);
       await page.getByRole("textbox", { name: "스킬 검색" }).fill("워드");
       assert.equal(await dialog.locator(".skill-card").count(), 1);
       fail = true;

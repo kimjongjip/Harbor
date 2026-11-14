@@ -110,7 +110,6 @@ export function Modal({
       >
         <header className="modal-header">
           <div>
-            <div className="eyebrow">HARBOR WORKSPACE</div>
             <h2 id={id}>{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
@@ -172,11 +171,7 @@ export function HostDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <Modal
-      title={existing ? "서버 설정" : "서버 추가"}
-      subtitle="작업이 있는 곳을 워크스페이스에 연결하세요."
-      onClose={onClose}
-    >
+    <Modal title={existing ? "서버 설정" : "서버 추가"} onClose={onClose}>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -393,11 +388,7 @@ export function SessionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <Modal
-      title="새 세션"
-      subtitle="하나의 작업에 하나의 세션. 필요한 만큼 나란히 열어보세요."
-      onClose={onClose}
-    >
+    <Modal title="새 세션" onClose={onClose}>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -894,11 +885,7 @@ export function DiscussionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <Modal
-      title="두 세션과 함께 검토"
-      subtitle="각 세션의 맥락을 활용해 의견을 교환하고 결론을 남깁니다."
-      onClose={onClose}
-    >
+    <Modal title="두 세션과 함께 검토" onClose={onClose}>
       <form
         onSubmit={async (e) => {
           e.preventDefault();

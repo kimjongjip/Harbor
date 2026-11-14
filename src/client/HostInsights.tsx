@@ -222,9 +222,7 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
       window.dispatchEvent(
         new CustomEvent("harbor:context-settings-changed", { detail: path }),
       );
-      setMessage(
-        "설정을 저장했습니다. 다음 Codex 실행·대화 재개부터 적용됩니다. 실행 중인 대화는 유지됩니다.",
-      );
+      setMessage("저장했습니다. 다음 Codex 실행부터 적용됩니다.");
     } catch (e) {
       setMessage((e as Error).message);
     } finally {
@@ -233,7 +231,7 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
   };
   return (
     <section className="codex-context-settings">
-      <h3>Codex 컨텍스트 · 압축 기준</h3>
+      <h3>컨텍스트</h3>
       <p>
         {data
           ? `${data.model}${data.profile ? ` · ${data.profile}` : ""} · 현재 ${tokens(data.current)} / 지원 최대 ${tokens(data.maximum)}`
@@ -246,33 +244,31 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
         >
           컨텍스트 최대 확장{data?.maximum ? ` · ${tokens(data.maximum)}` : ""}
         </button>
+      </div>
+      <details className="context-advanced">
+        <summary>압축 기준</summary>
         <button
           disabled={busy || !data?.current || data.customProvider}
           onClick={() => configure("compact")}
         >
           사용량 기준 압축 설정
         </button>
-      </div>
-      <p>
-        이 버튼은 사용량 기준 압축을 설정합니다. 컨텍스트 90%에서 압축하고, 답변
-        완료 후 85% 이상이면 압축하도록 설정합니다. Claude의 캐시 만료 전 유휴
-        압축과는 다릅니다. 현재 확인한 Codex 공식 설정에는 유휴 시간·캐시 만료
-        기준 압축 옵션이 없습니다.
-      </p>
-      {data && (
-        <small>
-          {data.usable != null
-            ? `CLI 사용 가능 한도: ${tokens(data.usable)} (${data.usablePercent}%). `
-            : ""}
-          현재 압축 기준:{" "}
-          {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변 후
-          압축:{" "}
-          {data.postTurnPercent ? `${data.postTurnPercent}%` : "CLI 기본값"}.
-          최대치는 Codex가 자동 저장한 models_cache.json의 모델별 상한입니다.
-          버튼을 누르면 해당 서버의 config.toml(선택한 프로필 포함)에 설정을
-          저장합니다.
-        </small>
-      )}
+        <p>
+          토큰 90% 또는 답변 완료 후 85%에서 압축합니다. 유휴 시간 기준은
+          아닙니다.
+        </p>
+        {data && (
+          <p>
+            {data.usable != null
+              ? `CLI 사용 가능 한도: ${tokens(data.usable)} (${data.usablePercent}%). `
+              : ""}
+            현재 압축 기준:{" "}
+            {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변 후
+            압축:{" "}
+            {data.postTurnPercent ? `${data.postTurnPercent}%` : "CLI 기본값"}.
+          </p>
+        )}
+      </details>
       {message && <p role="status">{message}</p>}
     </section>
   );
@@ -315,18 +311,14 @@ export function CodexSessionContext({
           : ""}
       </span>
       {pending && (
-        <p>
-          현재 세션에 적용 대기 · Codex를 종료한 뒤 같은 대화를 다시 실행하면
-          설정을 읽습니다.
+        <p title="Codex를 정상 종료한 뒤 같은 대화를 재개하고 다음 응답에서 한도를 확인하세요.">
+          적용 대기 · 다음 Codex 실행부터
         </p>
       )}
       {data.usable == null &&
         sessionWindow != null &&
         sessionWindow !== data.current && (
-          <p>
-            위 수치는 현재 세션이 보고한 한도입니다. 저장된 설정은 다음 Codex
-            실행부터 읽습니다.
-          </p>
+          <p>설정 변경은 다음 Codex 실행부터 적용됩니다.</p>
         )}
     </div>
   );
@@ -349,6 +341,7 @@ export const TerminalWorkList = memo(function TerminalWorkList({
     monitor: "모니터링",
     background: "백그라운드",
   };
+  if (data && !error && !data.error && !data.jobs.length) return null;
   return (
     <section className="terminal-work-list" aria-label="백그라운드 작업">
       <h4>
@@ -383,7 +376,6 @@ export const TerminalWorkList = memo(function TerminalWorkList({
         <p>이 터미널에서 실행한 작업이 없습니다.</p>
       )}
       {!data && !error && <p>작업 확인 중…</p>}
-      <small>현재 터미널의 작업만 표시 · 10초 간격</small>
     </section>
   );
 });

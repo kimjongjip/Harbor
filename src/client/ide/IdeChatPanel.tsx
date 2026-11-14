@@ -1095,7 +1095,6 @@ export default function IdeChatPanel({
             </div>
             <strong>{label}와 새 대화</strong>
             <p>{hostName || "선택한 서버"}에서 질문하거나 작업을 요청하세요.</p>
-            <small>이전 대화는 위쪽 기록 버튼에서 이어갈 수 있습니다.</small>
           </div>
         )}
         {conversation?.historyCursor && (

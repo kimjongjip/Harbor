@@ -100,11 +100,7 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
     }
   }
   return (
-    <Modal
-      title="휴대폰 · 다른 PC 연결"
-      subtitle="열어 둔 터미널을 다른 기기에서 그대로 이어 씁니다."
-      onClose={onClose}
-    >
+    <Modal title="휴대폰 · 다른 PC 연결" onClose={onClose}>
       <div className="mobile-settings">
         <TailscaleOnboarding
           onAddress={(address) => setOrigin((current) => current || address)}

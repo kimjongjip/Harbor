@@ -10,6 +10,7 @@ import {
 import {
   compactTokens,
   claudeUsageSnapshot,
+  mergeClaudeUsage,
 } from "../shared/terminal-usage.js";
 import { History } from "./history.js";
 import { ClaudeHistory, type ClaudeHistoryReader } from "./claude-history.js";
@@ -39,6 +40,42 @@ const claude = {
   },
   cost: { total_cost_usd: 3.25 },
 };
+
+test("new Claude history keeps same-model engine limits as explicitly dated metadata", () => {
+  const native = claudeUsage(
+    { ...claude, model: { id: "claude-fixture" } },
+    100,
+  )!;
+  const saved = claudeUsageTail(
+    "session-a",
+    line({
+      type: "assistant",
+      sessionId: "session-a",
+      timestamp: "2030-01-01T00:00:00Z",
+      message: { model: "claude-fixture", usage: { input_tokens: 150000 } },
+    }),
+    200,
+  )!;
+  const merged = mergeClaudeUsage(saved, native)!;
+  assert.equal(merged.usedTokens, 150000);
+  assert.equal(merged.contextWindow, 1000000);
+  assert.equal(merged.usedPercent, 15);
+  assert.equal(merged.metadataUpdatedAt, 100);
+  assert.equal(merged.costUsd, 3.25);
+  assert.equal(
+    mergeClaudeUsage({ ...saved, model: "different" }, native)?.contextWindow,
+    null,
+  );
+  assert.equal(
+    mergeClaudeUsage({ ...saved, sessionId: "other" }, native)?.contextWindow,
+    null,
+  );
+  assert.equal(
+    mergeClaudeUsage(saved, { ...native, updatedAt: saved.updatedAt + 1 })
+      ?.metadataUpdatedAt,
+    undefined,
+  );
+});
 
 test("context uses the latest request including cache, never cumulative usage or double-counted output", () => {
   const c = codexUsage("session-a", codex(), 1)!;

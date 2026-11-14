@@ -6,6 +6,7 @@ import { TerminalCrew } from "./TerminalCrew";
 import { TerminalWorkList, CodexSessionContext } from "./HostInsights";
 import {
   claudeUsageSnapshot,
+  mergeClaudeUsage,
   compactTokens,
   type TerminalUsage,
   type TerminalUsageResponse,
@@ -105,9 +106,8 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
               file.kind === "text" && typeof file.text === "string"
                 ? claudeUsageSnapshot(file.text, sessionId)
                 : null;
-            if (native && (!usage || native.updatedAt >= usage.updatedAt))
-              usage = native;
-            else if (
+            usage = mergeClaudeUsage(usage, native);
+            if (
               usage &&
               native?.crew?.detailVersion &&
               !usage.crew?.detailVersion &&
@@ -170,9 +170,11 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   const usage = current?.usage;
   const percent = usage?.usedPercent ?? null;
   const title = [
-    usage?.contextEstimated
-      ? "Claude 엔진이 로컬에서 추정한 현재 컨텍스트입니다."
-      : "마지막 API 응답 기준 컨텍스트 사용량입니다. 입력 중인 글자는 아직 포함되지 않을 수 있습니다.",
+    usage?.metadataUpdatedAt
+      ? `사용 토큰은 최신 대화 기록입니다. 한도·비용은 ${new Date(usage.metadataUpdatedAt).toLocaleString()}에 측정한 이전 값입니다.`
+      : usage?.contextEstimated
+        ? "Claude 엔진이 로컬에서 추정한 현재 컨텍스트입니다."
+        : "마지막 API 응답 기준 컨텍스트 사용량입니다. 입력 중인 글자는 아직 포함되지 않을 수 있습니다.",
     usage?.source === "history"
       ? "저장 기록에서 확인한 값입니다. 한도·비용은 제공된 경우에만 표시합니다."
       : "CLI가 제공한 한도와 사용량입니다.",
@@ -186,7 +188,6 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
     .filter(Boolean)
     .join("\n");
   const providerName = provider === "claude" ? "Claude" : "Codex";
-  const partial = usage?.source === "history" && usage.contextWindow === null;
   const tone =
     percent === null
       ? "unknown"
@@ -241,9 +242,22 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
           )}
           <section className="terminal-usage-context" title={title}>
             <div className="terminal-usage-heading">
-              <span className="terminal-usage-label">컨텍스트</span>
+              <span
+                className="terminal-usage-label"
+                title={
+                  usage?.metadataUpdatedAt
+                    ? `한도 측정: ${new Date(usage.metadataUpdatedAt).toLocaleString()}`
+                    : undefined
+                }
+              >
+                컨텍스트{usage?.metadataUpdatedAt ? " · 이전 한도" : ""}
+              </span>
               <strong className="terminal-usage-percent">
-                {percent === null ? "연결 중" : `약 ${Math.round(percent)}%`}
+                {percent === null
+                  ? usage
+                    ? "미수집"
+                    : "대기"
+                  : `약 ${Math.round(percent)}%`}
               </strong>
             </div>
             <span
@@ -275,17 +289,28 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                   : undefined
               }
             >
-              {usage?.usedTokens == null
-                ? "측정 중"
-                : compactTokens(usage.usedTokens)}
-              <span className="terminal-usage-divider">/</span>
-              {usage?.contextWindow == null
-                ? "한도 연결 중"
-                : compactTokens(usage.contextWindow)}
+              {usage?.usedTokens == null ? (
+                "첫 응답 대기"
+              ) : (
+                <>
+                  {compactTokens(usage.usedTokens)}
+                  {usage.contextWindow == null ? (
+                    " 사용"
+                  ) : (
+                    <>
+                      <span className="terminal-usage-divider">/</span>
+                      {compactTokens(usage.contextWindow)}
+                    </>
+                  )}
+                </>
+              )}
             </span>
             <span className="terminal-usage-caption">
-              사용 / 현재 세션 한도
-              {usage?.contextEstimated ? " · 로컬 추정" : ""}
+              {usage?.usedTokens == null
+                ? ""
+                : usage.contextWindow == null
+                  ? "한도 미수집"
+                  : `사용 / ${usage.metadataUpdatedAt ? "이전 측정 한도" : "현재 세션 한도"}${usage.contextEstimated ? " · 로컬 추정" : ""}`}
             </span>
             {remaining !== null && (
               <div className="terminal-usage-remaining">
@@ -317,7 +342,9 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             }
           >
             <span>
-              {provider === "codex" ? "API 환산 비용" : "세션 누적 비용"}
+              {provider === "codex"
+                ? "API 환산 비용"
+                : `세션 누적 비용${usage?.metadataUpdatedAt ? " · 이전값" : ""}`}
               {usage?.costStatus === "loading" ||
               usage?.costStatus === "partial"
                 ? " · 소계"
@@ -329,7 +356,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                   ? "단가 미등록"
                   : usage?.costStatus === "loading"
                     ? "계산 중"
-                    : "연결 중"
+                    : "미수집"
                 : `$${usage.costUsd.toFixed(2)}`}
             </strong>
           </div>
@@ -345,27 +372,11 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             terminalId={terminalId}
             active={active && !collapsed}
           />
-          <p className="terminal-usage-note">
-            {current?.unavailable
-              ? "사용량 연결을 확인 중입니다. 마지막 수치를 유지합니다."
-              : !sessionId
-                ? "대화가 연결되면 사용량을 표시합니다."
-                : !usage
-                  ? "사용량을 확인하고 있습니다. 첫 응답 전에는 수치가 없을 수 있습니다."
-                  : partial
-                    ? provider === "claude"
-                      ? "기존 Claude에서 한도·비용이 연결되지 않으면 /reload-plugins로 Harbor 연결을 갱신하세요."
-                      : "현재 세션의 사용 토큰입니다. Codex가 컨텍스트 한도를 제공하면 사용률을 함께 표시합니다."
-                    : usage?.costStatus === "loading"
-                      ? "이전 요청의 환산 비용을 집계 중입니다."
-                      : usage?.costStatus === "partial"
-                        ? "단가가 확인된 요청의 비용 소계입니다."
-                        : usage?.costStatus === "unpriced"
-                          ? "이 모델의 표준 API 단가가 등록되지 않아 비용을 환산할 수 없습니다."
-                          : usage?.contextEstimated
-                            ? "Claude 엔진의 로컬 추정치 · 다음 응답 후 실측값으로 갱신됩니다."
-                            : "마지막 응답 기준 · 입력 중인 글자는 다음 응답에 반영됩니다."}
-          </p>
+          {current?.unavailable && (
+            <p className="terminal-usage-note" role="status">
+              사용량 연결 확인 중
+            </p>
+          )}
         </div>
       )}
     </aside>

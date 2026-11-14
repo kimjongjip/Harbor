@@ -36,12 +36,14 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       hold = false,
       partial = false,
       nativeCache = false,
+      staleMetadata = false,
       release: (() => void) | undefined;
     const app = express();
     app.get("/api/terminals/fixture/usage", (req, res) => {
       reads++;
       const usage = {
         provider: "claude",
+        model: "claude-opus-5-5",
         sessionId: req.query.sessionId,
         usedTokens: used,
         contextWindow: partial ? null : 1000000,
@@ -74,7 +76,9 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         text: nativeCache
           ? JSON.stringify({
               session_id: first,
-              harbor_updated_at: Date.now() + 1,
+              harbor_updated_at: staleMetadata
+                ? Date.now() - 86400000
+                : Date.now() + 1,
               model: { id: "claude-opus-5-5" },
               context_window: {
                 context_window_size: 1000000,
@@ -334,7 +338,7 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       await page.waitForFunction(() =>
         document
           .querySelector(".terminal-usage-note")
-          ?.textContent?.includes("마지막 수치"),
+          ?.textContent?.includes("연결 확인"),
       );
       assert.equal(
         await page.locator(".terminal-usage-tokens").innerText(),
@@ -355,6 +359,21 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
         await page.locator(".terminal-usage-model").innerText(),
         /claude-opus/,
       );
+      staleMetadata = true;
+      used = 153000;
+      await page.waitForFunction(
+        () =>
+          document.querySelector(".terminal-usage-tokens")?.textContent ===
+          "153k/1M",
+      );
+      assert.match(
+        await page.locator(".terminal-usage-label").innerText(),
+        /이전 한도/,
+      );
+      assert.match(
+        await page.locator(".terminal-usage-cost").innerText(),
+        /이전값/,
+      );
       await page.evaluate(() => (window as any).setActive(false));
       await page.waitForTimeout(100);
       assert.equal(
@@ -374,13 +393,13 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       await page.waitForFunction(
         () =>
           document.querySelector(".terminal-usage-tokens")?.textContent ===
-          "측정 중/한도 연결 중",
+          "첫 응답 대기",
       );
       release();
       await page.waitForTimeout(100);
       assert.equal(
         await page.locator(".terminal-usage-tokens").innerText(),
-        "측정 중/한도 연결 중",
+        "첫 응답 대기",
       );
       assert.equal(
         await page.locator("[role=progressbar]").getAttribute("aria-valuenow"),

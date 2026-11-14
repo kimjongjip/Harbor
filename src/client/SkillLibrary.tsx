@@ -11,7 +11,6 @@ import {
 import type { HostView } from "../shared/types";
 import {
   SKILL_CATALOG,
-  INSTALLABLE_SKILLS,
   skillFolder,
   skillInvocation,
   type SkillProvider,
@@ -66,6 +65,7 @@ export function SkillLibraryDialog({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [category, setCategory] = useState("전체");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [sort, setSort] = useState("research");
@@ -155,7 +155,7 @@ export function SkillLibraryDialog({
   return (
     <Modal
       title="스킬 라이브러리"
-      subtitle={`${host.name} · ${host.kind === "local" ? "이 컴퓨터의 사용자" : `${host.username || "SSH 로그인 사용자"} 계정`}`}
+      subtitle={host.name}
       wide
       isolateEvents
       backdropClassName="skill-library-backdrop"
@@ -164,98 +164,92 @@ export function SkillLibraryDialog({
       }}
     >
       <div className="skill-library-body">
-        <CodexContextSettings hostId={host.id} />
-        <section className="skill-intro">
-          <BookOpen size={27} />
-          <div>
-            <h3>연구부터 개발까지, 필요한 스킬을 골라보세요</h3>
-            <p>
-              스킬은 AI가 필요할 때 읽는 작업 설명서와 도구 모음입니다. 한국어
-              설명을 보고 필요한 것만 골라 설치하세요.
-            </p>
-            <p className="skill-library-counts">
-              연구{" "}
-              {SKILL_CATALOG.filter((s) => s.category.includes("연구")).length}
-              개 우선 · 설치 가능한 스킬 {INSTALLABLE_SKILLS.length}개 · 도구
-              연결 안내 {SKILL_CATALOG.length - INSTALLABLE_SKILLS.length}개
-            </p>
-          </div>
-        </section>
-        <details className="skill-help">
-          <summary>처음 사용하시나요? 사용법·로그인 안내</summary>
-          <div className="skill-help-grid">
-            <section>
-              <h4>매번 지정해야 하나요?</h4>
-              <p>
-                보통은 작업과 스킬 설명이 맞으면 AI가 자동으로 선택합니다.
-                확실히 사용하고 싶다면 직접 지정하세요. 조직 정책이나 스킬
-                설정에 따라 자동 선택이 제한될 수 있습니다.
-              </p>
-              <p>
-                <strong>Claude Code</strong>{" "}
-                <code>/pdf 이 문서의 표를 추출해줘</code>
-              </p>
-              <p>
-                <strong>Codex CLI</strong>{" "}
-                <code>$pdf 이 문서의 표를 추출해줘</code>
-              </p>
-              <p>
-                Claude는 <code>/</code>, Codex는 <code>/skills</code>에서 목록을
-                확인하세요. 설치 후 인식되지 않으면 작업을 저장한 뒤 새 CLI
-                세션을 여세요. Harbor가 실행 중인 세션을 종료하지는 않습니다.
-              </p>
-            </section>
-            <section>
-              <h4>Harbor에서 따로 로그인하나요?</h4>
-              <p>
-                같은 서버·같은 OS 계정에서 로그인한 CLI 인증을 그대로
-                사용합니다. Harbor에 AI 비밀번호를 등록할 필요는 없습니다.
-                Claude와 OpenAI 로그인·요금제는 서로 별개입니다.
-              </p>
-              <p>
-                처음 쓰는 서버에서는 본인 터미널에서 Claude의{" "}
-                <code>claude auth login</code>, Codex의 <code>codex login</code>
-                으로 각각 로그인합니다. 원격 Codex는{" "}
-                <code>codex login --device-auth</code>를 사용할 수 있습니다.
-              </p>
-              <p>
-                다른 사람은 각자의 OS/SSH 계정과 AI 서비스 계정을 사용하세요.
-                같은 OS 계정을 공유하면 스킬과 CLI 로그인도 공유됩니다. 이
-                설치는 Claude.ai·ChatGPT 웹 계정에 업로드하는 기능이 아닙니다.
-              </p>
-            </section>
-          </div>
-          <div className="skill-help-links">
-            <a
-              href="https://code.claude.com/docs/en/skills"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Claude 스킬 안내 ↗
-            </a>
-            <a
-              href="https://learn.chatgpt.com/docs/build-skills"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Codex 스킬 안내 ↗
-            </a>
-            <a
-              href="https://code.claude.com/docs/en/authentication"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Claude 로그인 ↗
-            </a>
-            <a
-              href="https://learn.chatgpt.com/docs/auth"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Codex 로그인 ↗
-            </a>
-          </div>
-        </details>
+        <div className="skill-utilities">
+          <details
+            className="skill-settings"
+            onToggle={(e) => setSettingsOpen(e.currentTarget.open)}
+          >
+            <summary>Codex 설정</summary>
+            {settingsOpen && <CodexContextSettings hostId={host.id} />}
+          </details>
+          <details className="skill-help">
+            <summary>사용법</summary>
+            <div className="skill-help-grid">
+              <section>
+                <h4>매번 지정해야 하나요?</h4>
+                <p>
+                  보통은 작업과 스킬 설명이 맞으면 AI가 자동으로 선택합니다.
+                  확실히 사용하고 싶다면 직접 지정하세요. 조직 정책이나 스킬
+                  설정에 따라 자동 선택이 제한될 수 있습니다.
+                </p>
+                <p>
+                  <strong>Claude Code</strong>{" "}
+                  <code>/pdf 이 문서의 표를 추출해줘</code>
+                </p>
+                <p>
+                  <strong>Codex CLI</strong>{" "}
+                  <code>$pdf 이 문서의 표를 추출해줘</code>
+                </p>
+                <p>
+                  Claude는 <code>/</code>, Codex는 <code>/skills</code>에서
+                  목록을 확인하세요. 설치 후 인식되지 않으면 작업을 저장한 뒤 새
+                  CLI 세션을 여세요. Harbor가 실행 중인 세션을 종료하지는
+                  않습니다.
+                </p>
+              </section>
+              <section>
+                <h4>Harbor에서 따로 로그인하나요?</h4>
+                <p>
+                  같은 서버·같은 OS 계정에서 로그인한 CLI 인증을 그대로
+                  사용합니다. Harbor에 AI 비밀번호를 등록할 필요는 없습니다.
+                  Claude와 OpenAI 로그인·요금제는 서로 별개입니다.
+                </p>
+                <p>
+                  처음 쓰는 서버에서는 본인 터미널에서 Claude의{" "}
+                  <code>claude auth login</code>, Codex의{" "}
+                  <code>codex login</code>
+                  으로 각각 로그인합니다. 원격 Codex는{" "}
+                  <code>codex login --device-auth</code>를 사용할 수 있습니다.
+                </p>
+                <p>
+                  다른 사람은 각자의 OS/SSH 계정과 AI 서비스 계정을 사용하세요.
+                  같은 OS 계정을 공유하면 스킬과 CLI 로그인도 공유됩니다. 이
+                  설치는 Claude.ai·ChatGPT 웹 계정에 업로드하는 기능이 아닙니다.
+                </p>
+              </section>
+            </div>
+            <div className="skill-help-links">
+              <a
+                href="https://code.claude.com/docs/en/skills"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Claude 스킬 안내 ↗
+              </a>
+              <a
+                href="https://learn.chatgpt.com/docs/build-skills"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Codex 스킬 안내 ↗
+              </a>
+              <a
+                href="https://code.claude.com/docs/en/authentication"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Claude 로그인 ↗
+              </a>
+              <a
+                href="https://learn.chatgpt.com/docs/auth"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Codex 로그인 ↗
+              </a>
+            </div>
+          </details>
+        </div>
         <div className="skill-install-settings">
           <label>
             설치할 AI
@@ -270,7 +264,8 @@ export function SkillLibraryDialog({
               <option value="codex">Codex CLI</option>
             </select>
           </label>
-          <div className="skill-install-roots">
+          <details className="skill-install-roots">
+            <summary>설치 위치</summary>
             {providers.map((provider) => (
               <div key={provider}>
                 <strong>{provider === "claude" ? "Claude" : "Codex"}</strong>
@@ -282,10 +277,10 @@ export function SkillLibraryDialog({
                 </code>
               </div>
             ))}
-            <small>
-              선택한 서버 계정의 모든 프로젝트에 적용 · 기존 폴더는 보존
-            </small>
-          </div>
+            <p>
+              이 서버 계정의 모든 프로젝트에 적용됩니다. 기존 폴더는 보존합니다.
+            </p>
+          </details>
           <button
             className="icon-button"
             type="button"
@@ -346,7 +341,7 @@ export function SkillLibraryDialog({
             <Search size={17} />
             <input
               aria-label="스킬 검색"
-              placeholder="한국어 설명이나 스킬 이름으로 검색"
+              placeholder="스킬 검색"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -391,10 +386,6 @@ export function SkillLibraryDialog({
           </select>
           <span>{filtered.length}개</span>
         </div>
-        <p className="skill-popularity-note">
-          ★는 저장소 전체의 GitHub 별 수입니다. 개별 스킬의 사용 횟수·품질
-          평가가 아닙니다. {SKILL_CHECKED_AT} 확인.
-        </p>
         <div className="skill-cards">
           {filtered.map((skill) => {
             const origin = skillSource(skill.source),
@@ -428,7 +419,6 @@ export function SkillLibraryDialog({
                   )}
                   <div>
                     <h4>{skill.title}</h4>
-                    <code>{skill.id}</code>
                   </div>
                   <span>{skill.category}</span>
                 </label>
@@ -441,7 +431,7 @@ export function SkillLibraryDialog({
                     {origin.name} ↗
                   </a>
                   <span
-                    title={`${origin.repo} · ${origin.stars.toLocaleString("en-US")} stars · ${SKILL_CHECKED_AT}`}
+                    title={`저장소 전체 별 수 · 개별 스킬 평가가 아닙니다. ${origin.repo} · ${SKILL_CHECKED_AT} 확인`}
                   >
                     ★{" "}
                     {new Intl.NumberFormat("en", {
@@ -455,23 +445,22 @@ export function SkillLibraryDialog({
                   {guide ? (
                     <span>독립 도구 · 연결 안내</span>
                   ) : (
-                    (["claude", "codex"] as const).map((provider) => {
+                    providers.map((provider) => {
                       const state = status?.skills[skill.id]?.[provider];
+                      if (state === "available") return null;
                       return (
                         <span key={provider} data-state={state}>
                           {state === "installed" && <Check size={12} />}
                           {provider === "claude" ? "Claude" : "Codex"} ·{" "}
                           {state === "installed"
-                            ? "Harbor 설치됨"
+                            ? "설치됨"
                             : state === "existing"
                               ? "기존 폴더 있음"
-                              : state === "available"
-                                ? "설치 가능"
-                                : state === "unavailable"
-                                  ? "경로 확인 필요"
-                                  : status
-                                    ? "Harbor 업데이트 필요"
-                                    : "확인 전"}
+                              : state === "unavailable"
+                                ? "경로 확인 필요"
+                                : status
+                                  ? "Harbor 업데이트 필요"
+                                  : "확인 전"}
                         </span>
                       );
                     })
@@ -480,14 +469,9 @@ export function SkillLibraryDialog({
                     <span>안내 스킬 · OpenRig 실행 환경은 별도</span>
                   )}
                 </div>
-                <details
-                  className="skill-card-details"
-                  open={guide || undefined}
-                >
+                <details className="skill-card-details">
                   <summary>
-                    {guide
-                      ? "공식 연결 방법·필요한 환경"
-                      : "사용 예시·필요한 환경"}
+                    {guide ? "공식 연결 방법·필요한 환경" : "사용법"}
                   </summary>
                   <div>
                     {guide ? (
@@ -582,12 +566,6 @@ export function SkillLibraryDialog({
         {!filtered.length && (
           <p className="skill-empty">검색에 맞는 스킬이 없습니다.</p>
         )}
-        <p className="skill-source-note">
-          한국어 설명은 Harbor 안내입니다. 설치 파일은 원본을 유지하며, 스크립트
-          실행·인증 정보 복사는 하지 않습니다. 원본 확인: {SKILL_CHECKED_AT}.
-          저장소별 확인된 버전을 설치하며 라이선스 파일을 함께 보존합니다. 최신
-          원본은 Harbor 업데이트로 반영합니다.
-        </p>
       </div>
       <footer className="modal-footer skill-footer">
         <div>

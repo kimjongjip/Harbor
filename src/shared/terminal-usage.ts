@@ -21,6 +21,37 @@ export interface TerminalUsage {
   costStatus?: "loading" | "partial" | "unpriced";
   crew?: TerminalCrewSnapshot;
   accountWindows?: QuotaWindow[];
+  metadataUpdatedAt?: number;
+}
+
+/** A newer transcript has tokens but no engine limits/cost. Retain matching
+ * model metadata with its original timestamp, never present it as a fresh read. */
+export function mergeClaudeUsage(
+  saved: TerminalUsage | null,
+  native: TerminalUsage | null,
+): TerminalUsage | null {
+  if (!saved) return native;
+  if (
+    !native ||
+    saved.sessionId !== native.sessionId ||
+    saved.provider !== "claude" ||
+    native.provider !== "claude"
+  )
+    return saved;
+  if (native.updatedAt >= saved.updatedAt) return native;
+  if (!saved.model || saved.model !== native.model) return saved;
+  if (saved.contextWindow !== null && saved.costUsd !== null) return saved;
+  const contextWindow = saved.contextWindow ?? native.contextWindow;
+  return {
+    ...saved,
+    contextWindow,
+    costUsd: saved.costUsd ?? native.costUsd,
+    usedPercent:
+      saved.usedTokens !== null && contextWindow
+        ? (saved.usedTokens / contextWindow) * 100
+        : saved.usedPercent,
+    metadataUpdatedAt: native.metadataUpdatedAt ?? native.updatedAt,
+  };
 }
 
 export interface TerminalUsageResponse {

@@ -284,10 +284,6 @@ export function PreparationPanel({
   }, [lab.id]);
   return (
     <div className="research-preparation">
-      <p className="research-caption">
-        터미널에서 배경과 방향을 자유롭게 이야기하세요. 준비가 되면 계획을
-        정리하고 다른 AI를 참여시킬 수 있습니다.
-      </p>
       <button
         className="research-participant"
         onClick={() => onOpen(lead.terminalId)}

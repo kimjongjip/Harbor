@@ -118,6 +118,12 @@ export function claudeUsageTail(
         Number.isFinite(stamp) ? stamp : modified,
         "history",
       );
+      const model = row.message.model;
+      if (
+        typeof model === "string" &&
+        /^[A-Za-z0-9._:[\]-]{1,150}$/.test(model)
+      )
+        result.model = model;
     } catch {
       /* Ignore incomplete records. No model-name guesses for context limits/cost. */
     }

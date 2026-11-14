@@ -46,7 +46,10 @@ import { ClaudeHistory } from "./claude-history.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { createBridgeRouter } from "./bridge-router.js";
-import { claudeUsageSnapshot } from "../shared/terminal-usage.js";
+import {
+  claudeUsageSnapshot,
+  mergeClaudeUsage,
+} from "../shared/terminal-usage.js";
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
 import { TerminalUsageStore } from "./terminal-usage.js";
 import { CodexUsageHistory } from "./codex-usage-history.js";
@@ -1106,7 +1109,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.28" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.29" }),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({
@@ -2038,9 +2041,7 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
             if (native) return null;
             throw error;
           });
-        return native && (!saved || native.updatedAt >= saved.updatedAt)
-          ? native
-          : saved;
+        return mergeClaudeUsage(saved, native);
       }
       const file = await history.usagePath(host, password, sessionId);
       return file

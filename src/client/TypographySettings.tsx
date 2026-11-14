@@ -44,7 +44,6 @@ export default function TypographySettingsDialog({
   return (
     <Modal
       title="글꼴·읽기 설정"
-      subtitle="바꾸는 즉시 반영하고, 이 컴퓨터의 다른 Harbor 창에도 함께 적용합니다."
       onClose={onClose}
       backdropClassName="typography-dialog"
     >

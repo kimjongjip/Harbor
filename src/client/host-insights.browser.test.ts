@@ -180,7 +180,7 @@ test(
       await page.getByText(/현재 872k \/ 지원 최대 872k/).waitFor();
       await page
         .locator(".codex-session-context")
-        .getByText(/현재 세션에 적용 대기/)
+        .getByText(/적용 대기/)
         .waitFor();
       assert.match(
         await page.locator(".codex-session-context").innerText(),
@@ -198,6 +198,7 @@ test(
             .querySelector(".codex-session-context")
             ?.textContent?.includes("적용 대기"),
       );
+      await page.locator(".context-advanced > summary").click();
       await page
         .getByRole("button", { name: "사용량 기준 압축 설정", exact: true })
         .click();
