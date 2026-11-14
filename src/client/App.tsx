@@ -44,7 +44,7 @@ import FilesBrowser from "./FilesBrowser";
 import HostManager from "./HostManager";
 import WorkspaceInbox, { type InboxTab } from "./WorkspaceInbox";
 import { ReportNotificationsSync } from "./ReportNotifications";
-import ConnectionOverview, { connectionLabel } from "./ConnectionOverview";
+import { connectionLabel } from "./ConnectionOverview";
 import { AccountUsagePanel } from "./HostInsights";
 import CodexHistory from "./CodexHistory";
 import ServerTreeHost from "./ServerTreeHost";
@@ -684,15 +684,6 @@ export default function App() {
                 )}
               </button>
             </div>
-            {sidebar !== "activity" && sidebar !== "research" && (
-              <ConnectionOverview
-                state={state}
-                terminal={active}
-                onMessages={() =>
-                  openInbox("messages", active?.id || "__all__")
-                }
-              />
-            )}
             {sidebar === "servers" && (
               <AccountUsagePanel
                 key={active?.hostId || hostId}

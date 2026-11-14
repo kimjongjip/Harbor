@@ -133,7 +133,7 @@ def scoped_limit(v):
 mode=MODE
 if mode=='models':
  d=read(os.path.join(os.environ.get('CODEX_HOME',os.path.expanduser('~/.codex')),'models_cache.json'))
- print(json.dumps([dict((k,m.get(k)) for k in ('slug','context_window','max_context_window')) for m in d.get('models',[])][:200]))
+ print(json.dumps([dict((k,m.get(k)) for k in ('slug','context_window','max_context_window','effective_context_window_percent')) for m in d.get('models',[])][:200]))
 else:
  root=os.environ.get('CLAUDE_CONFIG_DIR',os.path.expanduser('~/.claude'))
  c=read(os.path.join(root,'.credentials.json')).get('claudeAiOauth',{})
@@ -215,6 +215,7 @@ export class HostInsights {
         slug: m.slug,
         context_window: m.context_window,
         max_context_window: m.max_context_window,
+        effective_context_window_percent: m.effective_context_window_percent,
       }));
     }
     const credential = (
@@ -370,9 +371,21 @@ export class HostInsights {
       : numeric(model?.context_window)
         ? model.context_window
         : null;
+    const usablePercent =
+      !customProvider &&
+      numeric(model?.effective_context_window_percent) &&
+      model.effective_context_window_percent > 0 &&
+      model.effective_context_window_percent <= 100
+        ? model.effective_context_window_percent
+        : null;
     return {
       model: text(effective.model) || "CLI 기본 모델",
       current,
+      usablePercent,
+      usable:
+        current && usablePercent
+          ? Math.floor((current * usablePercent) / 100)
+          : null,
       maximum,
       compactAt: numeric(effective.model_auto_compact_token_limit)
         ? effective.model_auto_compact_token_limit

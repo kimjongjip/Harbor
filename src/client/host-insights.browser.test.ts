@@ -17,7 +17,7 @@ test(
     const dir = await mkdtemp(join(root, "run-"));
     await build({
       stdin: {
-        contents: `import React from'react';import{createRoot}from'react-dom/client';import{AccountUsagePanel,CodexContextSettings,TerminalWorkList}from'./src/client/HostInsights';import'./src/client/styles.css';import'./src/client/themes.css';window.renders=0;function Fixture(){window.renders++;return <main style={{display:'grid',gridTemplateColumns:'290px 1fr 300px',gap:16,padding:16}}><aside><AccountUsagePanel hostId="fixture" hostName="테스트 서버"/></aside><div><textarea aria-label="작성 중 프롬프트" defaultValue="한글 English " style={{width:'100%',height:100}}/><CodexContextSettings hostId="fixture"/></div><aside><TerminalWorkList terminalId="terminal" active/></aside></main>}createRoot(document.getElementById('root')).render(<Fixture/>);`,
+        contents: `import React,{useState} from'react';import{createRoot}from'react-dom/client';import{AccountUsagePanel,CodexContextSettings,CodexSessionContext,TerminalWorkList}from'./src/client/HostInsights';import'./src/client/styles.css';import'./src/client/themes.css';window.renders=0;function Session(){const[windowSize,setWindowSize]=useState(258400);window.setWindowSize=setWindowSize;return <><span data-session-limit>{windowSize}</span><CodexSessionContext hostId="fixture" model="fixture-model" sessionWindow={windowSize} active/></>}function Fixture(){window.renders++;return <main style={{display:'grid',gridTemplateColumns:'290px 1fr 300px',gap:16,padding:16}}><aside><AccountUsagePanel hostId="fixture" hostName="테스트 서버"/></aside><div><textarea aria-label="작성 중 프롬프트" defaultValue="한글 English " style={{width:'100%',height:100}}/><CodexContextSettings hostId="fixture"/><Session/></div><aside><TerminalWorkList terminalId="terminal" active/></aside></main>}createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "insights-fixture.tsx",
         loader: "tsx",
@@ -31,6 +31,8 @@ test(
       model: "fixture-model",
       current: 272000,
       maximum: 872000,
+      usable: 258400,
+      usablePercent: 95,
       compactAt: null as number | null,
       postTurnPercent: null as number | null,
     };
@@ -69,8 +71,10 @@ test(
     );
     app.post("/api/hosts/fixture/codex-context", (req, res) => {
       actions.push(req.body.action);
-      if (req.body.action === "expand") context.current = 872000;
-      else {
+      if (req.body.action === "expand") {
+        context.current = 872000;
+        context.usable = 828400;
+      } else {
         context.compactAt = 784800;
         context.postTurnPercent = 85;
       }
@@ -135,6 +139,11 @@ test(
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
       const panel = page.locator(".account-usage-panel");
+      assert.equal(
+        Math.round((await panel.boundingBox())!.width),
+        290,
+        "quota fills sidebar width",
+      );
       assert.ok(
         (await panel.boundingBox())!.height < 260,
         "quota panel must leave room for servers",
@@ -170,7 +179,27 @@ test(
         .click();
       await page.getByText(/현재 872k \/ 지원 최대 872k/).waitFor();
       await page
-        .getByRole("button", { name: "자동 압축 설정", exact: true })
+        .locator(".codex-session-context")
+        .getByText(/현재 세션에 적용 대기/)
+        .waitFor();
+      assert.match(
+        await page.locator(".codex-session-context").innerText(),
+        /872k.*828.4k/,
+      );
+      assert.equal(
+        await page.locator("[data-session-limit]").innerText(),
+        "258400",
+        "configuration must not invent a larger live session limit",
+      );
+      await page.evaluate(() => (window as any).setWindowSize(828400));
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector(".codex-session-context")
+            ?.textContent?.includes("적용 대기"),
+      );
+      await page
+        .getByRole("button", { name: "사용량 기준 압축 설정", exact: true })
         .click();
       await page.getByText(/답변 후 압축: 85%/).waitFor();
       assert.deepEqual(actions, ["expand", "compact"]);

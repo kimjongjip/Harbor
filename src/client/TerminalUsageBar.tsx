@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
 import { TerminalPanelResize } from "./TerminalPanelResize";
 import { TerminalCrew } from "./TerminalCrew";
-import { TerminalWorkList } from "./HostInsights";
+import { TerminalWorkList, CodexSessionContext } from "./HostInsights";
 import {
   claudeUsageSnapshot,
   compactTokens,
@@ -284,7 +284,8 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 : compactTokens(usage.contextWindow)}
             </span>
             <span className="terminal-usage-caption">
-              사용 / 전체 토큰{usage?.contextEstimated ? " · 로컬 추정" : ""}
+              사용 / 현재 세션 한도
+              {usage?.contextEstimated ? " · 로컬 추정" : ""}
             </span>
             {remaining !== null && (
               <div className="terminal-usage-remaining">
@@ -297,6 +298,14 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                       : "여유"}
                 </strong>
               </div>
+            )}
+            {provider === "codex" && hostId && (
+              <CodexSessionContext
+                hostId={hostId}
+                model={usage?.model}
+                sessionWindow={usage?.contextWindow ?? null}
+                active={active && !collapsed}
+              />
             )}
           </section>
           <div

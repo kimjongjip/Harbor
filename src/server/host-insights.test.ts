@@ -92,13 +92,16 @@ test("context writes target active profile and catalog maximum, without launchin
           slug: "fixture-model",
           context_window: 272000,
           max_context_window: 872000,
+          effective_context_window_percent: 95,
         },
       ]),
   } as unknown as Files;
   const insights = new HostInsights(files, history, async () => undefined);
   try {
     assert.equal((await insights.context(host)).current, 272000);
+    assert.equal((await insights.context(host)).usable, 258400);
     assert.equal((await insights.configure(host, "expand")).current, 872000);
+    assert.equal((await insights.context(host)).usable, 828400);
     await insights.configure(host, "compact");
     assert.equal(
       config.profiles.research.model_auto_compact_token_limit,

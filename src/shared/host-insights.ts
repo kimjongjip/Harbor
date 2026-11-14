@@ -15,6 +15,8 @@ export interface AccountQuota {
 export interface CodexContextSettings {
   model: string;
   current: number | null;
+  usable?: number | null;
+  usablePercent?: number | null;
   maximum: number | null;
   compactAt: number | null;
   postTurnPercent: number | null;

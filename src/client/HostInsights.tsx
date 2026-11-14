@@ -18,6 +18,15 @@ function usePoll<T>(
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
+    const changed = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === path)
+        setRefresh((n) => n + 1);
+    };
+    window.addEventListener("harbor:context-settings-changed", changed);
+    return () =>
+      window.removeEventListener("harbor:context-settings-changed", changed);
+  }, [path]);
+  useEffect(() => {
     if (!path) return;
     let disposed = false,
       timer: ReturnType<typeof setTimeout>;
@@ -63,7 +72,7 @@ const tokens = (n: number | null) =>
     ? "확인 필요"
     : n >= 1000000
       ? `${(n / 1000000).toFixed(2)}M`
-      : `${Math.round(n / 1000)}k`;
+      : `${(n / 1000).toLocaleString("en-US", { maximumFractionDigits: 1 })}k`;
 function displayedWindows(account: AccountQuota) {
   if (account.provider !== "claude") return account.windows;
   return ["7일 한도", "7일 Fable 한도"].map(
@@ -202,7 +211,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
 
 export function CodexContextSettings({ hostId }: { hostId: string }) {
   const path = `/hosts/${encodeURIComponent(hostId)}/codex-context`;
-  const { data, error, refresh } = usePoll<ContextSettings>(path, 300000);
+  const { data, error } = usePoll<ContextSettings>(path, 300000);
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
   const configure = async (action: "expand" | "compact") => {
@@ -210,7 +219,9 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
     setMessage("");
     try {
       await api(path, { action });
-      refresh();
+      window.dispatchEvent(
+        new CustomEvent("harbor:context-settings-changed", { detail: path }),
+      );
       setMessage(
         "설정을 저장했습니다. 다음 Codex 실행·대화 재개부터 적용됩니다. 실행 중인 대화는 유지됩니다.",
       );
@@ -222,7 +233,7 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
   };
   return (
     <section className="codex-context-settings">
-      <h3>Codex 컨텍스트 · 자동 압축</h3>
+      <h3>Codex 컨텍스트 · 압축 기준</h3>
       <p>
         {data
           ? `${data.model}${data.profile ? ` · ${data.profile}` : ""} · 현재 ${tokens(data.current)} / 지원 최대 ${tokens(data.maximum)}`
@@ -239,15 +250,20 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
           disabled={busy || !data?.current || data.customProvider}
           onClick={() => configure("compact")}
         >
-          자동 압축 설정
+          사용량 기준 압축 설정
         </button>
       </div>
       <p>
-        Codex는 기본적으로 자동 압축을 지원합니다. 버튼을 누르면 컨텍스트
-        90%에서 압축하고, 답변 완료 후 85% 이상이면 미리 압축하도록 설정합니다.
+        이 버튼은 사용량 기준 압축을 설정합니다. 컨텍스트 90%에서 압축하고, 답변
+        완료 후 85% 이상이면 압축하도록 설정합니다. Claude의 캐시 만료 전 유휴
+        압축과는 다릅니다. 현재 확인한 Codex 공식 설정에는 유휴 시간·캐시 만료
+        기준 압축 옵션이 없습니다.
       </p>
       {data && (
         <small>
+          {data.usable != null
+            ? `CLI 사용 가능 한도: ${tokens(data.usable)} (${data.usablePercent}%). `
+            : ""}
           현재 압축 기준:{" "}
           {data.compactAt ? tokens(data.compactAt) : "모델 기본값"} · 답변 후
           압축:{" "}
@@ -259,6 +275,60 @@ export function CodexContextSettings({ hostId }: { hostId: string }) {
       )}
       {message && <p role="status">{message}</p>}
     </section>
+  );
+}
+
+/** Config is the next-launch default; never replace the running CLI's actual limit. */
+export function CodexSessionContext({
+  hostId,
+  model,
+  sessionWindow,
+  active,
+}: {
+  hostId: string;
+  model?: string;
+  sessionWindow: number | null;
+  active: boolean;
+}) {
+  const { data } = usePoll<ContextSettings>(
+    active ? `/hosts/${encodeURIComponent(hostId)}/codex-context` : undefined,
+    60000,
+  );
+  if (
+    !data ||
+    data.customProvider ||
+    !data.current ||
+    (model && data.model !== model)
+  )
+    return null;
+  const pending =
+    sessionWindow != null &&
+    data.usable != null &&
+    sessionWindow !== data.usable &&
+    sessionWindow !== data.current;
+  return (
+    <div className="codex-session-context" role="status">
+      <span>
+        저장된 설정 <b>{tokens(data.current)}</b>
+        {data.usable != null
+          ? ` · 사용 가능 ${(data.usable / 1000).toLocaleString("en-US", { maximumFractionDigits: 1 })}k`
+          : ""}
+      </span>
+      {pending && (
+        <p>
+          현재 세션에 적용 대기 · Codex를 종료한 뒤 같은 대화를 다시 실행하면
+          설정을 읽습니다.
+        </p>
+      )}
+      {data.usable == null &&
+        sessionWindow != null &&
+        sessionWindow !== data.current && (
+          <p>
+            위 수치는 현재 세션이 보고한 한도입니다. 저장된 설정은 다음 Codex
+            실행부터 읽습니다.
+          </p>
+        )}
+    </div>
   );
 }
 
