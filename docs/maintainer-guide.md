@@ -1,5 +1,13 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.32 수동 업데이트
+
+데스크톱 IPC만 업데이트 확인·설치·재시작을 제공한다. preload는 사용자 클릭을 확인하고 main은 메인 프레임·로컬 앱 URL을 검증한다. 시작 시에는 상태만 조회하며 네트워크 폴링은 없다. `desktop/updater.cjs`는 고정된 공개 저장소 main SHA의 package/CHANGELOG를 읽고 같은 SHA 아카이브를 `.runtime/updates`에 준비한다. 원본 체크아웃이나 실행 중 node_modules는 덮어쓰지 않는다.
+
+`Setup-Harbor.ps1 -NoLaunch -SkipShortcut`으로 새 소스만 빌드한다. 준비가 끝나면 모든 앱 창의 beforeunload 검사를 통과한 경우에만 재시작 도우미를 실행한다. `desktop/update-restart.cjs`는 기존 메인 PID가 종료될 때까지 기다리고 `desktop-update.json`을 원자적으로 선택한 뒤 새 Electron을 실행한다. 데이터·프로필·포트를 보존하고 실행 실패 시 이전 선택으로 복원한다. 기존 바로가기는 `Start-Harbor-Desktop.ps1`을 통해 새 선택을 읽는다. 원본이 아닌 관리되는 이전 업데이트 복사본만 정리하며 실행 중 복사본은 건드리지 않는다.
+
+검증: `node --test desktop/updater.test.cjs`, `tsx --test src/client/desktop-update.browser.test.ts`. 재시작 검증은 격리된 프로세스·포트·데이터로 수행하며 실제 사용자의 Harbor나 터미널을 종료하지 않는다.
+
 ## 1.18.24 상단 제어 상태
 
 각 `TerminalPane`의 제어권 관리 인스턴스는 유지하고 `TerminalControlToolbar`의 대상 DOM으로 상태 UI만 포털 렌더링합니다. 선택한 터미널 ID에 해당하는 표시 하나만 터미널/IDE 전환 옆에 보이며, 분할·IDE 이동이 제어권 해제나 새 터미널 연결을 만들지 않습니다. 좁은 화면의 기기 이름은 상태 표시의 툴팁으로 제공합니다.

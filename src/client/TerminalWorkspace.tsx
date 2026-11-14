@@ -79,7 +79,7 @@ export function NewTerminalDialog({
   const [savePassword, setSavePassword] = useState(credentialStorageAvailable);
   const [autoApprove, setAutoApprove] = useState(false);
   const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
-    "direct",
+    "tmux",
   );
   const [launch, setLaunch] = useState<
     "shell" | "codex" | "resume" | "claude" | "claude-resume"
@@ -136,7 +136,7 @@ export function NewTerminalDialog({
               onChange={(event) => {
                 setHostId(event.target.value);
                 setPassword("");
-                setSshSessionMode("direct");
+                setSshSessionMode("tmux");
                 setAutoApprove(false);
               }}
             >
@@ -159,8 +159,8 @@ export function NewTerminalDialog({
                   setSshSessionMode(event.target.value as "direct" | "tmux")
                 }
               >
-                <option value="direct">일반 SSH (기본)</option>
-                <option value="tmux">서버에서 세션 유지 (tmux)</option>
+                <option value="tmux">서버에서 세션 유지 (tmux · 기본)</option>
+                <option value="direct">일반 SSH</option>
               </select>
               <small id="ssh-session-mode-help">
                 {sshSessionMode === "tmux"

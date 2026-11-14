@@ -70,9 +70,9 @@ export default function CodexHistory({
   }, [expanded]);
   const [hostId, setHostId] = useState(initialHostId || "all");
   const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
-    "direct",
+    "tmux",
   );
-  useEffect(() => setSshSessionMode("direct"), [hostId, provider]);
+  useEffect(() => setSshSessionMode("tmux"), [hostId, provider]);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [automation, setAutomation] = useState(false);
@@ -318,8 +318,8 @@ export default function CodexHistory({
             setSshSessionMode(event.target.value as "direct" | "tmux")
           }
         >
-          <option value="direct">일반 SSH (기본)</option>
-          <option value="tmux">서버에서 세션 유지 (tmux)</option>
+          <option value="tmux">서버에서 세션 유지 (tmux · 기본)</option>
+          <option value="direct">일반 SSH</option>
         </select>
         {preview && (
           <small>

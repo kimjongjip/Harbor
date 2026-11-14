@@ -45,7 +45,25 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.18.31",
+    version: "1.18.32",
+    updateState: () => ipcRenderer.invoke("harbor:update-state"),
+    checkUpdate: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:update-check")
+        : Promise.resolve(null),
+    installUpdate: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:update-install")
+        : Promise.resolve(null),
+    restartUpdate: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:update-restart")
+        : Promise.resolve(null),
+    onUpdateState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on("harbor:update-state", listener);
+      return () => ipcRenderer.removeListener("harbor:update-state", listener);
+    },
     backendState: () => ipcRenderer.invoke("harbor:backend-state"),
     onBackendState: (callback) => {
       const listener = (_event, state) => callback(state);

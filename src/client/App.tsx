@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { useHarbor } from "./useHarbor";
 import { BackendStatus } from "./BackendStatus";
+import { UpdateButton } from "./UpdateButton";
 import { version } from "../../package.json";
 import { api } from "./api";
 import { remoteDesktop } from "./desktop-session";
@@ -574,6 +575,7 @@ export default function App() {
         cwd: target.defaultCwd,
         program: "shell",
         startupPlaceholder,
+        sshSessionMode: target.kind === "ssh" ? "tmux" : undefined,
         colors: terminalColors(theme),
       });
       if (startupPlaceholder) {
@@ -636,14 +638,17 @@ export default function App() {
           <ResizableSidebar
             className={`harbor-sidebar ${sidebar === "activity" ? "with-inbox" : ""}`}
           >
-            <button
-              className="harbor-brand"
-              onClick={() => navigate("terminals")}
-            >
-              <img src="/harbor.svg" alt="" />
-              <b>Harbor</b>
-              <span>v{version}</span>
-            </button>
+            <div className="harbor-brand-row">
+              <button
+                className="harbor-brand"
+                onClick={() => navigate("terminals")}
+              >
+                <img src="/harbor.svg" alt="" />
+                <b>Harbor</b>
+                <span>v{version}</span>
+              </button>
+              <UpdateButton />
+            </div>
             <div className="harbor-side-switch">
               <button
                 className={sidebar === "servers" ? "active" : ""}

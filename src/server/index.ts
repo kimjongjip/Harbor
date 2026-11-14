@@ -1109,7 +1109,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.31" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.32" }),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({
@@ -1851,7 +1851,7 @@ app.post("/api/terminals", async (req, res) => {
       title: name.optional(),
       startupPlaceholder: z.boolean().optional(),
       autoApprove: z.boolean().default(false),
-      sshSessionMode: z.enum(["direct", "tmux"]).default("direct"),
+      sshSessionMode: z.enum(["direct", "tmux"]).optional(),
       password: z.string().max(2000).optional(),
       savePassword: z.boolean().optional(),
       colors: terminalColorsInput.optional(),
@@ -1868,7 +1868,8 @@ app.post("/api/terminals", async (req, res) => {
       title: body.title,
       colors: body.colors,
       startupPlaceholder: body.startupPlaceholder,
-      sshSessionMode: body.sshSessionMode,
+      sshSessionMode:
+        body.sshSessionMode ?? (host.kind === "ssh" ? "tmux" : "direct"),
     },
   );
   try {
@@ -1978,7 +1979,7 @@ app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
     .object({
       colors: terminalColorsInput.optional(),
       provider: historyProvider,
-      sshSessionMode: z.enum(["direct", "tmux"]).default("direct"),
+      sshSessionMode: z.enum(["direct", "tmux"]).optional(),
     })
     .parse(req.body || {});
   const host = hub.host(String(req.params.id));

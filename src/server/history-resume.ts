@@ -74,7 +74,8 @@ export class HistoryResumer {
           resumeThreadId: threadId,
           ...(provider === "claude" ? { resumeCwd: cwd } : {}),
           colors,
-          sshSessionMode: options.sshSessionMode || "direct",
+          sshSessionMode:
+            options.sshSessionMode ?? (host.kind === "ssh" ? "tmux" : "direct"),
         });
       })();
       this.opening.set(key, pending);

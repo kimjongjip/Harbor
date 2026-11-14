@@ -12,12 +12,17 @@ const {
   powerMonitor,
 } = require("electron");
 const { randomUUID } = require("node:crypto");
-const { spawn, execFileSync } = require("node:child_process");
+const { spawn, fork, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { backendVersionError } = require("./backend-version.cjs");
 const { BackendSupervisor } = require("./backend-supervisor.cjs");
 const { configureInputScheduling } = require("./input-scheduling.cjs");
+const {
+  DesktopUpdater,
+  preparedNode,
+  installationRoot,
+} = require("./updater.cjs");
 
 configureInputScheduling(app.commandLine);
 app.setName("Harbor");
@@ -49,9 +54,14 @@ const root = app.getAppPath();
 const expectedVersion = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
-const project = app.isPackaged
+const defaultProject = app.isPackaged
   ? path.resolve(path.dirname(process.execPath), "../..")
   : root;
+const project = installationRoot(
+  root,
+  defaultProject,
+  process.env.HARBOR_INSTALL_ROOT,
+);
 const isProject = (() => {
   try {
     return (
@@ -69,6 +79,85 @@ const dataDirectory = path.resolve(
       : path.join(app.getPath("userData"), "workspace")),
 );
 const iconPath = path.join(root, "desktop", "icon.png");
+const updater = new DesktopUpdater({
+  version: expectedVersion,
+  installRoot: project,
+  activeRoot: root,
+  changed: (state) => {
+    for (const win of windows)
+      if (!win.isDestroyed())
+        win.webContents.send("harbor:update-state", state);
+  },
+  restart: async (directory, candidate) => {
+    if (!backend || backend.exitCode !== null)
+      throw new Error(
+        "Harbor가 직접 실행한 서버에서만 자동 재시작할 수 있습니다.",
+      );
+    for (const win of windows) {
+      if (win.isDestroyed() || !isAppPage(win.webContents.getURL())) continue;
+      const dirty = await win.webContents.executeJavaScript(
+        "(() => { const event = new Event('beforeunload', {cancelable:true}); window.dispatchEvent(event); return event.defaultPrevented; })()",
+      );
+      if (dirty)
+        throw new Error("IDE 편집 내용을 저장한 뒤 다시 시작을 눌러주세요.");
+    }
+    const pending = path.join(
+      project,
+      ".runtime",
+      `update-restart-${randomUUID()}.json`,
+    );
+    fs.writeFileSync(
+      pending,
+      JSON.stringify({
+        installRoot: project,
+        parentPid: process.pid,
+        sha: candidate.sha,
+        version: candidate.version,
+        dataDirectory,
+        profileDirectory: app.getPath("userData"),
+        port,
+        previousExecutable: process.execPath,
+        previousArgs: app.isPackaged ? [] : [root],
+      }),
+    );
+    const node = await preparedNode(directory);
+    const helper = fork(
+      path.join(root, "desktop", "update-restart.cjs"),
+      [pending],
+      {
+        execPath: node,
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      },
+    );
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("업데이트 재시작 준비가 지연되고 있습니다.")),
+          10000,
+        );
+        helper.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        helper.once("message", (message) => {
+          clearTimeout(timer);
+          message?.type === "ready"
+            ? resolve()
+            : reject(new Error(message?.error || "업데이트 재시작 준비 실패"));
+        });
+      });
+    } catch (error) {
+      helper.kill();
+      fs.unlinkSync(pending);
+      throw error;
+    }
+    helper.disconnect();
+    helper.unref();
+    requestQuit();
+  },
+});
 // Lifecycle codes only; never include page URLs, commands or exception text.
 function recordLifecycle(event, details = {}) {
   try {
@@ -481,6 +570,34 @@ async function detachTerminalWindow(id, source, point) {
   }
 }
 function setupTerminalWindows() {
+  ipcMain.handle("harbor:update-state", (event) => {
+    trustedWindow(event);
+    return updater.state;
+  });
+  ipcMain.handle("harbor:update-check", (event) => {
+    trustedWindow(event);
+    if (process.platform !== "win32" || !isProject)
+      return updater.publish({
+        phase: "error",
+        error:
+          "이 설치에서는 앱 안 업데이트를 지원하지 않습니다. GitHub 설치 폴더를 이용해주세요.",
+      });
+    return updater.check();
+  });
+  ipcMain.handle("harbor:update-install", (event) => {
+    trustedWindow(event);
+    if (!backend)
+      return updater.publish({
+        phase: "error",
+        error:
+          "외부에서 실행한 서버에 연결되어 있어 자동 업데이트할 수 없습니다.",
+      });
+    return updater.install();
+  });
+  ipcMain.handle("harbor:update-restart", (event) => {
+    trustedWindow(event);
+    return updater.restart();
+  });
   ipcMain.handle("harbor:backend-state", (event) => {
     trustedWindow(event);
     return backendSupervisor.status;

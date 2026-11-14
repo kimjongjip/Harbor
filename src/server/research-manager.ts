@@ -18,7 +18,7 @@ export const managerLaunchSchema = researchCreateSchema
     context: z.string().trim().max(16000).default(""),
     claude: researchSettingsSchema.optional(),
     codex: researchSettingsSchema.optional(),
-    sshSessionMode: z.enum(["direct", "tmux"]).default("direct"),
+    sshSessionMode: z.enum(["direct", "tmux"]).optional(),
   })
   .strict();
 export type ManagerLaunch = z.infer<typeof managerLaunchSchema>;
@@ -232,6 +232,10 @@ export class ResearchLabManager {
     const actor = this.actor(terminalId);
     const parsed = managerLaunchSchema.parse(args);
     const input = { ...parsed, hostId: parsed.hostId || actor.hostId };
+    input.sshSessionMode ??=
+      this.options.hosts().find((h) => h.id === input.hostId)?.kind === "ssh"
+        ? "tmux"
+        : "direct";
     if (!this.options.hosts().some((h) => h.id === input.hostId))
       throw new Error("Harbor에 등록된 서버를 선택하세요.");
     if (

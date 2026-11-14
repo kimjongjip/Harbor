@@ -107,7 +107,7 @@ test("both providers resume the same saved ID with the chosen mode and original 
       assert.equal(actualHost.id, host.id);
       assert.equal(cwd, "/project");
       assert.equal(password, "synthetic-password");
-      assert.equal(options?.sshSessionMode, mode || "direct");
+      assert.equal(options?.sshSessionMode, mode || "tmux");
       assert.equal(
         options?.program,
         provider === "claude" ? "claude-resume" : "resume",

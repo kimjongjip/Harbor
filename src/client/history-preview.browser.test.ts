@@ -355,7 +355,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.locator('[data-history-message="codex-a"]').waitFor();
       assert.equal(
         await page.getByRole("dialog").getByRole("combobox").inputValue(),
-        "direct",
+        "tmux",
       );
       assert.equal(
         await page.locator('[data-history-message="a3"]').count(),

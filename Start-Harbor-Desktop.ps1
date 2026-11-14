@@ -1,7 +1,25 @@
 ﻿param([switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 $harborRoot = $PSScriptRoot
-$harborPortableNode = Join-Path $harborRoot '.runtime\node-v24.15.0-win-x64\node.exe'
+$harborUpdatedNode = $null
+$harborUpdatePointer = Join-Path $harborRoot '.runtime\desktop-update.json'
+if (Test-Path -LiteralPath $harborUpdatePointer -PathType Leaf) {
+  $harborUpdate = Get-Content -LiteralPath $harborUpdatePointer -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($harborUpdate.directory -notmatch '^[a-f0-9]{40}$') { throw 'Invalid Harbor update directory.' }
+  $harborUpdatesRoot = [IO.Path]::GetFullPath((Join-Path $harborRoot '.runtime\updates'))
+  $harborUpdatedRoot = [IO.Path]::GetFullPath((Join-Path $harborUpdatesRoot $harborUpdate.directory))
+  if ([IO.Path]::GetDirectoryName($harborUpdatedRoot) -ne $harborUpdatesRoot) { throw 'Invalid Harbor update path.' }
+  if ((Get-Item -LiteralPath $harborUpdatedRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected Harbor update directory.' }
+  $harborUpdatedPackage = Get-Content -LiteralPath (Join-Path $harborUpdatedRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($harborUpdatedPackage.name -ne 'codex-harbor' -or $harborUpdatedPackage.version -ne $harborUpdate.version) { throw 'Harbor update version mismatch.' }
+  $env:HARBOR_INSTALL_ROOT = $harborRoot
+  $env:HARBOR_DATA_DIR = $harborUpdate.dataDirectory
+  $env:HARBOR_DESKTOP_PROFILE = $harborUpdate.profileDirectory
+  if ($harborUpdate.runtimeDirectory -notmatch '^node-v\d+\.\d+\.\d+-win-x64$') { throw 'Invalid Harbor update runtime.' }
+  $harborUpdatedNode = Join-Path $harborUpdatedRoot ('.runtime\' + $harborUpdate.runtimeDirectory + '\node.exe')
+  $harborRoot = $harborUpdatedRoot
+}
+$harborPortableNode = if ($harborUpdatedNode) { $harborUpdatedNode } else { Join-Path $harborRoot '.runtime\node-v24.15.0-win-x64\node.exe' }
 if (Test-Path -LiteralPath $harborPortableNode) {
   $env:HARBOR_NODE = $harborPortableNode
   $env:PATH = "$(Split-Path -Parent $harborPortableNode);$env:PATH"
