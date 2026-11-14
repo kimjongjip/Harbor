@@ -1,29 +1,31 @@
 .harbor-brand-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   min-width: 0;
 }
 .harbor-brand-row .harbor-brand {
-  flex: 1;
+  flex: 1 0 auto;
   min-width: 0;
 }
 .harbor-update-button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 6px 10px;
   margin-right: 6px;
+  margin-left: auto;
   background: none;
-  border: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
 }
 .harbor-update-button:hover {
   color: var(--accent);
-}
-.harbor-update-button span {
-  display: none;
 }
 .desktop-update-body {
   padding: 0 24px 20px;
@@ -62,10 +64,5 @@
 @media (prefers-reduced-motion: reduce) {
   .update-spinner {
     animation: none;
-  }
-}
-@media (max-width: 1000px) {
-  .harbor-update-button span {
-    display: none;
   }
 }

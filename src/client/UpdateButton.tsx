@@ -82,11 +82,7 @@ export function UpdateButton() {
             void run("checkUpdate");
         }}
       >
-        {busy ? (
-          <LoaderCircle size={16} className="update-spinner" />
-        ) : (
-          <Download size={16} />
-        )}
+        {busy && <LoaderCircle size={16} className="update-spinner" />}
         <span>업데이트</span>
       </button>
       {open && (
