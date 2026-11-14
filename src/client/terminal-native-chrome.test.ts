@@ -4,11 +4,40 @@ import {
   lastNativeBlock,
   nativeChrome,
   nativeTranscriptRepaint,
+  nativeInteractiveReplacement,
 } from "./terminal-native-chrome";
 
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("foreground command progress is live chrome even without a composer", () => {
+  const lines = [
+    "• previous explanation",
+    "",
+    "  Run synthetic simulation · 13s",
+    "    └ $ python simulator.py",
+    "      --case fixture (4 lines)",
+    "    (ctrl+b ctrl+b (twice) to run in background)",
+  ];
+  assert.deepEqual(nativeChrome(lines), { start: 2, framed: false });
+  assert.equal(nativeInteractiveReplacement(lines), false);
+  assert.equal(
+    nativeInteractiveReplacement([
+      "  python simulator.py",
+      "output chunk without a tool heading",
+    ]),
+    false,
+  );
+  assert.equal(
+    nativeInteractiveReplacement([
+      "Allow running this command?",
+      "❯ 1. Yes",
+      "  2. No",
+    ]),
+    true,
+  );
+  assert.equal(nativeInteractiveReplacement(["Process exited.", "$ "]), true);
+});
 test("only transcript redraws are retained; interactive replacements remain visible", () => {
   assert.equal(
     nativeTranscriptRepaint(["› update", "184 - old line", "184 + new line"]),

@@ -84,6 +84,63 @@ export function nativeTranscriptRepaint(
   );
 }
 
+/** Losing the composer is not proof that the CLI left its transcript. Only
+ * positive interactive/exit evidence may replace an already committed reader. */
+export function nativeInteractiveReplacement(
+  lines: readonly string[],
+  end = lines.length,
+) {
+  const tail = lines
+    .slice(Math.max(0, end - 30), end)
+    .filter((line) => line.trim());
+  if (nativeChoiceDialog(tail)) return true;
+  if (
+    tail
+      .slice(-12)
+      .some((line) =>
+        /(?:press (?:enter|return|any key)|(?:enter|return) to (?:confirm|continue|select)|(?:esc|escape) to cancel|do you want to proceed\?|would you like to run)/i.test(
+          line,
+        ),
+      )
+  )
+    return true;
+  const last = tail.at(-1) || "";
+  return /^(?:\s*(?:PS\s+[^>]*>|[\w.-]+@[^\s]+.*[#$]|[$#%])\s*$|.*(?:Process exited\.|[\\/]\S*>\s*$)|\s*:(?:wq?|q!?)?\s*$|\s*\(END\)\s*)$/i.test(
+    last,
+  );
+}
+
+/** Claude's foreground task view has no composer/rules. Its background-key
+ * hint anchors a live task surface, not a replacement for the saved transcript. */
+function foregroundTask(
+  lines: readonly string[],
+  last: number,
+): number | undefined {
+  let footer = -1;
+  for (let row = last; row >= Math.max(0, last - 3); row--)
+    if (
+      /^\s*\(?ctrl\+b\b.*\b(?:run|move|send)\b.*\bbackground\)?\s*$/i.test(
+        lines[row],
+      )
+    ) {
+      footer = row;
+      break;
+    }
+  if (footer < 0) return;
+  let start = footer;
+  for (let row = footer - 1; row >= Math.max(0, footer - 24); row--) {
+    const line = lines[row];
+    if (!line.trim()) {
+      if (start < footer) break;
+      continue;
+    }
+    start = row;
+    if (/^\s{0,4}\S.*[·•]\s*\d+(?:\.\d+)?\s*(?:ms|s|m|h)(?:\s.*)?$/.test(line))
+      break;
+  }
+  return start;
+}
+
 /** A long composer can extend above the small footer search window. Follow the
  * live cursor's genuine wraps first. Cursor-positioned TUI rows have no wrap
  * flags, so those additionally need the Codex footer and input parser mode.
@@ -175,6 +232,8 @@ export function nativeChrome(
   let last = Math.min(end, lines.length) - 1;
   while (last >= 0 && !lines[last]?.trim()) last--;
   if (last < 0) return;
+  const task = foregroundTask(lines, last);
+  if (task !== undefined) return { start: task, framed: false };
   const composer = cursorComposer(lines, last, frame);
   if (composer !== undefined)
     return {

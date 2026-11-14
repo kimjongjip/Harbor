@@ -39,7 +39,7 @@ import {
 import "./terminal-conversation.css";
 import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
-import { nativeTranscriptRepaint } from "./terminal-native-chrome";
+import { nativeInteractiveReplacement } from "./terminal-native-chrome";
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -531,6 +531,13 @@ export function TerminalConversation({
     };
   }, [turns, blocks, waiting, pendingHistory, term, modSurface]);
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
+  const publishedBuffer = useRef<NativeFlowFrame["bufferType"] | undefined>(
+    undefined,
+  );
+  useLayoutEffect(() => {
+    publishedLayout.current = undefined;
+    publishedBuffer.current = undefined;
+  }, [term, info.id, info.hostId, sessionId, provider]);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
       const next = layoutForFrame(frame);
@@ -541,17 +548,19 @@ export function TerminalConversation({
         panels: modSurface?.native.panels,
         // SSH/PTY chunks need not align with a complete CLI repaint. Losing
         // its footer briefly must not unmount saved work and expose the raw
-        // screen on every animation/status refresh. The native reader commits
-        // the replacement and its boundary together after a bounded grace.
+        // screen on every animation/status refresh. Only a positively recognized
+        // dialog, shell/exit or buffer switch can replace the committed reader.
         defer:
           publishedLayout.current?.live && !next.live
-            ? nativeTranscriptRepaint(frame.lines, frame.end)
+            ? !info.exited &&
+              publishedBuffer.current === frame.bufferType &&
+              !nativeInteractiveReplacement(frame.lines, frame.end)
               ? ("repaint" as const)
               : true
             : false,
       };
     },
-    [layoutForFrame, modSurface],
+    [layoutForFrame, modSurface, info.exited],
   );
   // A running CLI shows "esc to interrupt" in its live area even when no
   // native event reported working (poll-only sessions).
@@ -586,6 +595,7 @@ export function TerminalConversation({
       }
       const next = layoutForFrame(frame);
       const current = publishedLayout.current;
+      publishedBuffer.current = frame.bufferType;
       if (
         !current ||
         next.historyCount !== current.historyCount ||

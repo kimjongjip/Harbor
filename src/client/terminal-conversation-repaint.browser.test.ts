@@ -147,6 +147,60 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           0,
           "no intermediate DOM update may flash the raw screen",
         );
+        // Real long-running commands replace the composer with task progress.
+        // The command heading/diff can be outside the current 80-row tail.
+        // Observe EVERY intermediate DOM commit, not just the eventual footer.
+        await page.evaluate(() => {
+          (window as any).flashes = 0;
+          (window as any).observer.observe(
+            document.querySelector(".terminal-conversation")!,
+            { subtree: true, childList: true },
+          );
+        });
+        for (let cycle = 0; cycle < 3; cycle++) {
+          await page.evaluate(async (cycle) => {
+            const w = window as any;
+            await w.write(
+              "\x1b[2J\x1b[H  python simulator.py --case fixture\r\n  elapsed output chunk " +
+                cycle,
+            );
+            w.refreshHistory();
+          }, cycle);
+          await page.waitForTimeout(350);
+          assert.equal(
+            await work.count(),
+            1,
+            "unclassified command fragment must not switch to raw transcript",
+          );
+          await page.evaluate(async (cycle) => {
+            await (window as any).write(
+              "\x1b[8;1H  Run the synthetic simulation · " +
+                (13 + cycle) +
+                "s\r\n    └ $ python simulator.py --case fixture\r\n    (ctrl+b ctrl+b (twice) to run in background)",
+            );
+          }, cycle);
+          await surface
+            .getByText("(ctrl+b ctrl+b (twice) to run in background)", {
+              exact: true,
+            })
+            .waitFor({ timeout: 1500 });
+          assert.equal(
+            await work.count(),
+            1,
+            "running task view keeps saved work",
+          );
+          await page.evaluate(() => (window as any).partial());
+          await page.waitForTimeout(250);
+          await page.evaluate(() => (window as any).footer());
+          await page.waitForTimeout(100);
+        }
+        assert.equal(
+          await page.evaluate(() => {
+            (window as any).observer.disconnect();
+            return (window as any).flashes;
+          }),
+          0,
+        );
         // A hook's waiting state is not evidence of an approval dialog. A
         // normal composer must keep the same saved work, even on a quiet CLI.
         await page.evaluate(() => (window as any).setWaiting());
