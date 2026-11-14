@@ -91,6 +91,79 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate(() => (window as any).releaseHistory());
         await work.waitFor();
         await page.waitForTimeout(200);
+        if (provider === "claude") {
+          await page.evaluate(() => {
+            const w = window as any;
+            w.term.resize(90, 36);
+            w.recall = w.term.onData((data: string) => {
+              if (data === "\x1b[B") {
+                void w.write(
+                  "\x1b[2J\x1b[H✻ Working… (esc to interrupt)\r\n" +
+                    "─".repeat(90) +
+                    "\r\n❯ Current draft\r\n" +
+                    "─".repeat(90) +
+                    "\r\n  esc to interrupt\x1b[3;16H",
+                );
+                return;
+              }
+              if (data !== "\x1b[A") return;
+              void w.write(
+                "\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[H• Saved output\r\n✻ Working… (esc to interrupt)\r\n" +
+                  "─".repeat(90) +
+                  "\r\n❯ Previous prompt FIRST\r\n" +
+                  Array.from(
+                    { length: 23 },
+                    (_, i) => "  recalled prompt line " + i,
+                  ).join("\r\n") +
+                  "\r\n  Previous prompt LAST\r\n" +
+                  "─".repeat(90) +
+                  "\r\n  esc to interrupt\x1b[28;18H",
+              );
+            });
+            w.term.focus();
+          });
+          await page.keyboard.press("ArrowUp");
+          const inputFlow = surface.locator(
+            ".terminal-native-flow:not(.terminal-native-work)",
+          );
+          await inputFlow
+            .getByText("❯ Previous prompt FIRST", { exact: true })
+            .waitFor({ timeout: 2000 });
+          await inputFlow
+            .getByText("  Previous prompt LAST", { exact: true })
+            .waitFor({ timeout: 2000 });
+          assert.equal(
+            await work.count(),
+            1,
+            "recalling a prompt must not remove the saved work",
+          );
+          assert.equal(
+            await surface
+              .locator(".terminal-native-work")
+              .getByText("❯ Previous prompt FIRST", { exact: true })
+              .count(),
+            0,
+          );
+          await page.keyboard.press("ArrowDown");
+          await inputFlow
+            .getByText("❯ Current draft", { exact: true })
+            .waitFor({ timeout: 2000 });
+          assert.equal(
+            await inputFlow
+              .getByText("❯ Previous prompt FIRST", { exact: true })
+              .count(),
+            0,
+          );
+          await page.evaluate(async () => {
+            const w = window as any;
+            w.recall.dispose();
+            w.term.reset();
+            w.term.resize(90, 24);
+            w.inputs.length = 0;
+            await w.partial();
+            await w.footer();
+          });
+        }
         await page.evaluate(() => {
           (window as any).savedWork = document.querySelector(
             '[data-work-item="command"]',

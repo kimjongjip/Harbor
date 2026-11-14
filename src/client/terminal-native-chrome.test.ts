@@ -10,6 +10,30 @@ import {
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("Claude history recall keeps a tall framed draft while work continues", () => {
+  for (const length of [23, 60]) {
+    const lines = [
+      "• saved output",
+      "✻ Working… (esc to interrupt)",
+      rule,
+      "❯ Previous prompt FIRST",
+      ...Array.from({ length }, (_, i) => `  recalled prompt line ${i}`),
+      "  Previous prompt LAST",
+      rule,
+      "  esc to interrupt",
+    ];
+    for (const cursorRow of [3, length + 4])
+      assert.deepEqual(
+        nativeChrome(lines, lines.length, {
+          cursorRow,
+          cursorColumn: 12,
+          baseY: 0,
+          bracketedPasteMode: true,
+        }),
+        { start: 1, framed: true },
+      );
+  }
+});
 test("foreground command progress is live chrome even without a composer", () => {
   const lines = [
     "• previous explanation",

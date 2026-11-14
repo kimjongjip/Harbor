@@ -251,7 +251,17 @@ export function nativeChrome(
     let start = rule;
     // A composer is a prompt row (plus wrapped draft) between two rules; a
     // permission dialog starts at a single rule and encloses everything below.
-    for (let row = rule - 1; row >= Math.max(floor, rule - 16); row--) {
+    // History recall can expand Claude's draft to the whole viewport. The
+    // old 16-row scan then treated the recalled prompt as tool output. When
+    // the live cursor/parser identify input, follow its frame to the top of
+    // the viewport rather than dropping the upper part of the composer.
+    const composerFloor =
+      frame?.bracketedPasteMode &&
+      frame.cursorRow >= frame.baseY &&
+      frame.cursorRow < rule
+        ? Math.max(0, frame.baseY)
+        : Math.max(floor, rule - 16);
+    for (let row = rule - 1; row >= composerFloor; row--) {
       if (!solidRule.test(lines[row])) continue;
       if (lines.slice(row + 1, rule).some((line) => promptRow.test(line)))
         start = row;
@@ -259,7 +269,11 @@ export function nativeChrome(
     }
     // Keep the spinner and any todo/queued lines it owns just above.
     let blanks = 0;
-    for (let row = start - 1; row >= Math.max(floor, start - 14); row--) {
+    for (
+      let row = start - 1;
+      row >= Math.max(Math.min(floor, composerFloor), start - 14);
+      row--
+    ) {
       const line = lines[row];
       if (!line.trim()) {
         if (++blanks > 2) break;
