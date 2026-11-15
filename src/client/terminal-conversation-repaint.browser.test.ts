@@ -292,6 +292,68 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           true,
         );
         await page.evaluate(() => (window as any).setWaiting(false));
+        // A submitted long prompt can contain numbered requirements and quoted
+        // terminal instructions. Its redraw chunks are not approval dialogs.
+        await page.evaluate(() => {
+          (window as any).flashes = 0;
+          (window as any).observer.observe(
+            document.querySelector(".terminal-conversation")!,
+            { subtree: true, childList: true },
+          );
+        });
+        for (const fragment of [
+          `${prompt} 1. Inspect the synthetic simulator\r\n  2. Compare the two implementations\r\n  3. Explain the result`,
+          `${prompt} Explain this log message in the final report:\r\n  The example says press Enter to continue, but do not execute it.`,
+          `${prompt} Explain this log message in the final report:\r\n  Press Enter to continue, but this is only a quoted example.`,
+          `${prompt} The fixture emitted this text:\r\n  Process exited.`,
+          `${prompt} Explain this shell example:\r\nPS C:\\fixture>`,
+          `${prompt} Explain this exact log line:\r\nPress Enter to continue`,
+        ]) {
+          await page.evaluate(
+            (fragment) => (window as any).write("\x1b[2J\x1b[H" + fragment),
+            fragment,
+          );
+          await page.waitForTimeout(400);
+          assert.equal(
+            await work.count(),
+            1,
+            "prompt text must not replace the typeset transcript",
+          );
+          await page.evaluate(() => (window as any).footer());
+          await page.waitForTimeout(100);
+        }
+        // Even genuine UI-looking fragments must stay stable for their own
+        // grace period; an earlier candidate's timer cannot authorize them.
+        await page.evaluate(() => (window as any).setWaiting());
+        await page.evaluate(() =>
+          (window as any).write("\x1b[2J\x1b[HPress Enter to continue"),
+        );
+        await page.waitForTimeout(60);
+        await page.evaluate(() =>
+          (window as any).write(
+            "\x1b[2J\x1b[H  rendering the next output chunk",
+          ),
+        );
+        await page.waitForTimeout(240);
+        await page.evaluate(() =>
+          (window as any).write("\x1b[2J\x1b[HPress Enter to continue"),
+        );
+        await page.waitForTimeout(60);
+        assert.equal(
+          await work.count(),
+          1,
+          "a different incomplete redraw needs a fresh stability interval",
+        );
+        await page.evaluate(() => (window as any).footer());
+        await page.waitForTimeout(100);
+        assert.equal(
+          await page.evaluate(() => {
+            (window as any).observer.disconnect();
+            return (window as any).flashes;
+          }),
+          0,
+        );
+        await page.evaluate(() => (window as any).setWaiting(false));
         // A real prompt echo must still appear immediately, without the repaint
         // grace period applying to ordinary text/cursor changes.
         await page.evaluate(

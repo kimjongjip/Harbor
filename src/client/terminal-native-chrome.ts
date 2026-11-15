@@ -34,17 +34,62 @@ const codexPromptRow = /^ {0,2}[›»](?: |$)/;
 const codexFooterRow =
   /^ {2,}(?:.*(?:\? for shortcuts|← for agents|tab to queue(?: message)?|\d+% context left)(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?|gpt-[\w.-]+\b.*)$/i;
 
+function dialogControlRow(line: string) {
+  // Real footer hints are standalone controls, not phrases quoted in a prompt
+  // or a tool's explanation. Each middle-dot-separated segment must be a hint.
+  return line
+    .trim()
+    .split(/\s*[·•]\s*/)
+    .every((part) =>
+      /^(?:press (?:enter|return|any key)(?: to (?:select|confirm|continue))?|(?:enter|return|esc|escape|tab|shift\+tab|tab\/arrow keys|arrow keys|ctrl\+[a-z]|↑\/?↓|←\/?→|↑↓|↵)\s+(?:to\s+)?(?:select|confirm|continue|cancel|navigate|amend|submit|dismiss|move|switch|change)(?:\s+(?:questions?|options?|tabs?|selection))?)[.!…]?$/i.test(
+        part,
+      ),
+    );
+}
+
 /** Waiting hooks also describe an ordinary idle composer. Only visible choices
  * identify a dialog; activity state alone must never switch the transcript. */
 export function nativeChoiceDialog(
   lines: readonly string[],
   end = lines.length,
+  start = 0,
+  frame?: NativeChromeFrame,
 ) {
-  const tail = lines.slice(Math.max(0, end - 30), end);
+  let last = Math.min(end, lines.length) - 1;
+  while (last >= 0 && !lines[last].trim()) last--;
+  if (frame && cursorComposer(lines, last, frame) !== undefined) return false;
+  const firstRow = Math.max(start, end - 30);
+  const tail = lines.slice(firstRow, end);
+  const options = tail.flatMap((line, index) => {
+    const match = /^\s*([›❯»>]\s*)?\d+[.)]\s+(\S.*)$/.exec(line);
+    return match ? [{ selected: !!match[1], text: match[2], index }] : [];
+  });
+  if (options.length < 2 || !options.some((option) => option.selected))
+    return false;
+  // Submitted prompts routinely begin with "1." and contain numbered lists.
+  // A list alone is not evidence that the CLI is asking for a decision.
+  const after = tail
+    .slice(options.at(-1)!.index + 1)
+    .filter((line) => line.trim());
+  if (after.some(dialogControlRow)) return true;
+  if (after.length) return false;
+  const firstOptionRow = firstRow + options[0].index;
+  const question = lines
+    .slice(Math.max(0, frame?.baseY ?? 0, firstOptionRow - 120), firstOptionRow)
+    .some((line) =>
+      /^\s*(?:allow\b|approve\b|do you want\b|would you like\b).*\?\s*$/i.test(
+        line,
+      ),
+    );
+  if (!question) return false;
   return (
-    tail.some((line) => /^\s*[›❯»>]\s*\d+[.)]\s+\S/.test(line)) &&
-    tail.filter((line) => /^\s*(?:[›❯»>]\s*)?\d+[.)]\s+\S/.test(line)).length >=
-      2
+    options.some((option) => /^(?:yes\b|예(?:\s|$))/i.test(option.text)) &&
+    options.some((option) =>
+      /^(?:no\b|아니[요오](?:\s|$))/i.test(option.text),
+    ) &&
+    options.every((option) =>
+      /^(?:yes\b|no\b|예(?:\s|$)|아니[요오](?:\s|$))/i.test(option.text),
+    )
   );
 }
 
@@ -60,16 +105,7 @@ export function nativeTranscriptRepaint(
     .filter((line) => line.trim());
   if (!tail.length) return true;
   if (nativeChoiceDialog(tail)) return false;
-  if (
-    tail
-      .slice(-12)
-      .some((line) =>
-        /(?:press (?:enter|return|any key)|(?:enter|return) to (?:confirm|continue)|(?:esc|escape) to cancel|do you want to proceed\?|would you like to run)/i.test(
-          line,
-        ),
-      )
-  )
-    return false;
+  if (tail.slice(-3).some(dialogControlRow)) return false;
   const last = tail.at(-1)!;
   if (
     /^(?:\s*(?:PS\s+[^>]*>|[\w.-]+@[^\s]+.*[#$]|[$#%])\s*$|.*(?:Process exited\.|[\\/]\S*>\s*$))/i.test(
@@ -89,23 +125,18 @@ export function nativeTranscriptRepaint(
 export function nativeInteractiveReplacement(
   lines: readonly string[],
   end = lines.length,
+  allowStandaloneControls = true,
 ) {
   const tail = lines
     .slice(Math.max(0, end - 30), end)
     .filter((line) => line.trim());
   if (nativeChoiceDialog(tail)) return true;
-  if (
-    tail
-      .slice(-12)
-      .some((line) =>
-        /(?:press (?:enter|return|any key)|(?:enter|return) to (?:confirm|continue|select)|(?:esc|escape) to cancel|do you want to proceed\?|would you like to run)/i.test(
-          line,
-        ),
-      )
-  )
-    return true;
+  // During confirmed work, standalone hints and shell prompts can be tool
+  // output. Choice dialogs remain available independently of that state.
+  if (!allowStandaloneControls) return false;
+  if (tail.slice(-3).some(dialogControlRow)) return true;
   const last = tail.at(-1) || "";
-  return /^(?:\s*(?:PS\s+[^>]*>|[\w.-]+@[^\s]+.*[#$]|[$#%])\s*$|.*(?:Process exited\.|[\\/]\S*>\s*$)|\s*:(?:wq?|q!?)?\s*$|\s*\(END\)\s*)$/i.test(
+  return /^(?:\s*(?:PS\s+[^>]*>|[A-Za-z]:[\\/][^>]*>|[\w.-]+@[^\s]+.*[#$]|[$#%])\s*$|\s*:(?:wq?|q!?)?\s*$|\s*\(END\)\s*)$/i.test(
     last,
   );
 }

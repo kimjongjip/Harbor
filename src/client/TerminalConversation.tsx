@@ -531,6 +531,7 @@ export function TerminalConversation({
     };
   }, [turns, blocks, waiting, pendingHistory, term, modSurface]);
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
+  const [nativeBusy, setNativeBusy] = useState(false);
   const publishedBuffer = useRef<NativeFlowFrame["bufferType"] | undefined>(
     undefined,
   );
@@ -554,17 +555,21 @@ export function TerminalConversation({
           publishedLayout.current?.live && !next.live
             ? !info.exited &&
               publishedBuffer.current === frame.bufferType &&
-              !nativeInteractiveReplacement(frame.lines, frame.end)
+              !nativeInteractiveReplacement(
+                frame.lines,
+                frame.end,
+                info.agentState === "waiting" ||
+                  (info.agentState !== "working" && !nativeBusy),
+              )
               ? ("repaint" as const)
               : true
             : false,
       };
     },
-    [layoutForFrame, modSurface, info.exited],
+    [layoutForFrame, modSurface, info.exited, info.agentState, nativeBusy],
   );
   // A running CLI shows "esc to interrupt" in its live area even when no
   // native event reported working (poll-only sessions).
-  const [nativeBusy, setNativeBusy] = useState(false);
   const completionCue = useMemo(
     () => ({
       detector: new TerminalCompletionCue(),

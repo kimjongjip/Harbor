@@ -174,6 +174,7 @@ export function TerminalNativeFlow({
       lastInput = 0,
       lastCapture = 0;
     let incompleteSince: number | undefined;
+    let incompleteScreen: string | undefined;
     let disposed = false;
     const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
     // Read geometry once, then consume ResizeObserver's already-computed size.
@@ -230,7 +231,18 @@ export function TerminalNativeFlow({
         // Wait for its footer instead of alternating views after a deadline.
         // New parsed output/resize still runs capture immediately; no polling
         // loop is needed while a known partial screen remains unchanged.
-        if (range.defer === "repaint") return;
+        if (range.defer === "repaint") {
+          incompleteSince = undefined;
+          incompleteScreen = undefined;
+          return;
+        }
+        const candidate = frame.lines
+          .slice(Math.max(frame.baseY, frame.end - 60), frame.end)
+          .join("\n");
+        if (candidate !== incompleteScreen) {
+          incompleteScreen = candidate;
+          incompleteSince = performance.now();
+        }
         incompleteSince ??= performance.now();
         const remaining =
           incompleteFrameGraceMs - (performance.now() - incompleteSince);
@@ -244,6 +256,7 @@ export function TerminalNativeFlow({
         }
       }
       incompleteSince = undefined;
+      incompleteScreen = undefined;
       const end = Math.min(
         frame.end,
         Math.max(0, Math.floor(range.end ?? frame.end)),

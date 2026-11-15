@@ -348,7 +348,8 @@ export function liveTranscriptLayout(
   // display-mode switch (it can lag the native terminal by several seconds).
   if (
     !chrome ||
-    (!chrome.framed && nativeChoiceDialog(frame.lines, frame.end))
+    (!chrome.framed &&
+      nativeChoiceDialog(frame.lines, frame.end, chrome.start, frame))
   ) {
     const legacy = transcriptBoundary(turns, frame, blocks, false);
     return { ...legacy, chromeStart: frame.end, live: false };

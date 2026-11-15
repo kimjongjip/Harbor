@@ -5,11 +5,83 @@ import {
   nativeChrome,
   nativeTranscriptRepaint,
   nativeInteractiveReplacement,
+  nativeChoiceDialog,
 } from "./terminal-native-chrome";
 
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("numbered prompts and quoted control instructions are not native dialogs", () => {
+  assert.equal(
+    nativeInteractiveReplacement(["Press Enter to continue"], 1, false),
+    false,
+    "tool instructions during confirmed work are not terminal controls",
+  );
+  assert.equal(
+    nativeInteractiveReplacement(["PS C:\\fixture>"], 1, false),
+    false,
+    "shell examples printed during work cannot end the CLI",
+  );
+  assert.equal(
+    nativeChoiceDialog(["› 1. Yes", "  2. No"]),
+    false,
+    "literal answers need a real question or controls",
+  );
+  for (const lines of [
+    [
+      "❯ 1. Inspect the simulator",
+      "  2. Compare the output",
+      "  3. Explain the result",
+    ],
+    [
+      "› Describe the message",
+      "  The log says press Enter to continue, but do not run it.",
+    ],
+    [
+      "› Describe the message",
+      "  Press Enter to continue, but this is only a quoted example.",
+    ],
+    ["› Explain the result", "  Process exited."],
+  ]) {
+    assert.equal(nativeChoiceDialog(lines), false);
+    assert.equal(nativeInteractiveReplacement(lines), false);
+  }
+  assert.equal(
+    nativeChoiceDialog([
+      "Choose a database",
+      "› 1. PostgreSQL",
+      "  2. SQLite",
+      "Enter to select · Esc to cancel",
+    ]),
+    true,
+  );
+  const draft = [
+    "› 1. Yes",
+    "  2. No",
+    "",
+    "  GPT-6-Astra high",
+    "  ? for shortcuts",
+  ];
+  assert.equal(
+    nativeChoiceDialog([
+      "Choose a database",
+      "› 1. PostgreSQL",
+      "  2. SQLite",
+      "Tab/arrow keys to navigate · Enter to select · Esc to cancel",
+    ]),
+    true,
+  );
+  assert.equal(
+    nativeChoiceDialog(draft, draft.length, 0, {
+      cursorRow: 1,
+      cursorColumn: 7,
+      baseY: 0,
+      bracketedPasteMode: true,
+    }),
+    false,
+    "the live composer may contain literal approval examples",
+  );
+});
 test("Claude history recall keeps a tall framed draft while work continues", () => {
   for (const length of [23, 60]) {
     const lines = [
