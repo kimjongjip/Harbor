@@ -36,6 +36,9 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
     (origin.trim().replace(/\/$/, "") !== value.origin ||
       port !== value.port ||
       (supportsNetwork && mode !== value.mode));
+  const approvalPending = !!network?.approvalUrl && !network.connected;
+  const routeReady =
+    !!network?.connected && network.mode === value?.mode && !dirty;
   async function detect() {
     setBusy(true);
     setError("");
@@ -116,6 +119,7 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
               setMode(e.target.value as "private" | "funnel");
               setNetwork(undefined);
               setInvite(undefined);
+              setError("");
             }}
           >
             <option value="funnel">VPN 없이 연결 · Tailscale Funnel</option>
@@ -197,7 +201,11 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
         <div>
           상태:{" "}
           {value?.listening
-            ? "접속 창구 실행 중"
+            ? approvalPending
+              ? "Tailscale 승인 대기"
+              : routeReady
+                ? "외부 연결 준비 완료"
+                : "PC 내부 준비 완료 · 외부 연결 미확인"
             : value?.enabled
               ? "실행 실패"
               : "꺼짐"}
@@ -220,12 +228,20 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
           </p>
         )}
         {network?.approvalUrl && (
-          <p>
-            <a href={network.approvalUrl} target="_blank" rel="noreferrer">
+          <div className="mobile-approval">
+            <strong>공개 연결 승인이 필요합니다</strong>
+            <a
+              className="button primary"
+              href={network.approvalUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
               Tailscale에서 연결 허용
-            </a>{" "}
-            후 돌아와 ‘저장하고 연결 설정’을 다시 누르세요.
-          </p>
+            </a>
+            <button disabled={busy} onClick={() => void save(true, true)}>
+              승인 후 다시 확인
+            </button>
+          </div>
         )}
         {dirty && <p>변경한 설정을 저장한 뒤 기기 연결 링크를 만드세요.</p>}
         <details>
@@ -245,13 +261,25 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
         </details>
         <h3>3. 사용할 기기 등록</h3>
         <button
-          disabled={busy || !value?.listening || dirty}
+          disabled={
+            busy ||
+            !value?.listening ||
+            dirty ||
+            approvalPending ||
+            !!network?.conflict
+          }
           onClick={() => void pair()}
         >
           휴대폰 연결 링크 만들기
         </button>
         <button
-          disabled={busy || !value?.listening || dirty}
+          disabled={
+            busy ||
+            !value?.listening ||
+            dirty ||
+            approvalPending ||
+            !!network?.conflict
+          }
           onClick={() => void pair("desktop")}
         >
           PC 연결 링크 만들기
@@ -328,7 +356,7 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
         ) : (
           <p>등록된 기기가 없습니다.</p>
         )}
-        {error && <p role="alert">{error}</p>}
+        {error && !approvalPending && <p role="alert">{error}</p>}
         <p>
           휴대폰이 잠겨도 PC 작업은 계속됩니다. PC Harbor 종료·PC 전원 종료 후
           독립 실행은 후속 단계입니다.

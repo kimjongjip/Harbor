@@ -524,12 +524,12 @@ export function TerminalConversation({
           turns,
           frameWithoutModPanels(term, frame, modSurface?.native),
           blocks,
-          { waiting, pendingHistory },
+          { waiting, pendingHistory, provider },
         );
       }
       return cachedLayout;
     };
-  }, [turns, blocks, waiting, pendingHistory, term, modSurface]);
+  }, [turns, blocks, waiting, pendingHistory, term, modSurface, provider]);
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   const [nativeBusy, setNativeBusy] = useState(false);
   const publishedBuffer = useRef<NativeFlowFrame["bufferType"] | undefined>(

@@ -147,7 +147,7 @@ test(
       assert.equal(
         await page
           .getByRole("button", {
-            name: "일회용 기기 연결 링크 만들기",
+            name: "휴대폰 연결 링크 만들기",
             exact: true,
           })
           .isDisabled(),
@@ -163,16 +163,34 @@ test(
         .waitFor();
       assert.equal(saves.at(-1).mode, "funnel");
       assert.equal(settings.devices.length, 1);
+      assert.match(
+        await page.locator(".mobile-settings").innerText(),
+        /상태: Tailscale 승인 대기/,
+      );
+      assert.equal(
+        await page
+          .getByRole("button", { name: "휴대폰 연결 링크 만들기", exact: true })
+          .isDisabled(),
+        true,
+      );
+      assert.equal(
+        await page
+          .getByRole("button", { name: "PC 연결 링크 만들기", exact: true })
+          .isDisabled(),
+        true,
+      );
       assert.equal(await page.getByRole("status").count(), 0);
       permission = true;
-      await save.click();
+      await page
+        .getByRole("button", { name: "승인 후 다시 확인", exact: true })
+        .click();
       await page
         .getByRole("status")
         .filter({ hasText: "VPN 없는 연결 경로 설정 완료" })
         .waitFor();
       await page
         .getByRole("button", {
-          name: "일회용 기기 연결 링크 만들기",
+          name: "휴대폰 연결 링크 만들기",
           exact: true,
         })
         .click();

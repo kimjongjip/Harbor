@@ -1,5 +1,18 @@
 # Harbor 사용자 설치·실행·업데이트
 
+## 설치 결과 확인 (1.18.35)
+
+`Setup-Harbor.cmd`가 끝나면 **SUCCESS** 또는 **FAILED**가 표시되고 키를 누를 때까지 창을 유지합니다. 로그는 `.runtime/setup.log`, 결과는 `.runtime/setup-result.json`에 저장됩니다. 빌드의 500kB 청크 경고만으로 설치가 실패한 것은 아닙니다.
+
+이전 설치본에서 빌드는 성공했는데 `Run Setup-Harbor.cmd first`로 실행이 중단됐다면, 설치 폴더의 PowerShell에서 다음 명령으로 빠진 Electron 실행 파일만 준비할 수 있습니다.
+
+```powershell
+& ".\.runtime\node-v24.15.0-win-x64\node.exe" ".\node_modules\electron\install.js"
+if ($LASTEXITCODE -eq 0) { .\Start-Harbor.cmd }
+```
+
+Tailscale Funnel을 처음 사용하는 PC에서는 **Tailscale에서 연결 허용** 버튼으로 공식 승인 페이지를 열고, 승인 후 **승인 후 다시 확인**을 누릅니다. `…ts.net` 주소는 승인 페이지가 아닌 실제 접속 주소이므로 공개 연결을 설정하기 전에는 열리지 않을 수 있습니다. 상태가 **Tailscale 승인 대기**이면 기기 등록보다 승인을 먼저 진행하세요.
+
 ## 앱에서 업데이트 (1.18.32)
 
 왼쪽 위 **Harbor 이름 옆 업데이트 버튼** → 변경 내역 확인 → **설치 후 다시 시작**을 누릅니다. 버튼을 누를 때만 GitHub에 접속하며 Git이 없는 ZIP 설치본도 사용할 수 있습니다. 업데이트는 원본 설치 폴더 안 `.runtime/updates`에서 준비하므로 실패해도 기존 앱은 계속 사용할 수 있습니다. 설치 로그는 `.runtime/updates/install.log`에 남습니다.

@@ -41,6 +41,85 @@ const records = (complete = true): MessageItem[] => [
     turnStatus: complete ? "completed" : "inProgress",
   },
 ];
+
+test("pending Claude tool uses one work source across old diff and active command redraws", () => {
+  const items: MessageItem[] = [
+    {
+      id: "q",
+      kind: "user",
+      turnId: "t",
+      text: "A long question no longer on the native screen",
+    },
+    {
+      id: "run",
+      kind: "command",
+      turnId: "t",
+      toolUseId: "run-tool",
+      status: "started",
+      text: "Bash",
+      detail: "command: python fixture.py",
+    },
+  ];
+  const chrome = [
+    "─".repeat(50),
+    "❯ draft",
+    "─".repeat(50),
+    "  esc to interrupt",
+  ];
+  for (const output of [
+    [
+      "● Update(fixture.py)",
+      ...Array.from({ length: 20 }, (_, i) => `${i + 80} + previous edit`),
+    ],
+    [
+      "● Running the fixture · 49s",
+      "  command preview",
+      "  more command preview",
+    ],
+  ]) {
+    const lines = [...output, ...chrome];
+    const frame = {
+      ...liveFrame(lines),
+      cursorRow: output.length + 1,
+      cursorColumn: 7,
+      bracketedPasteMode: true,
+    };
+    const layout = liveTranscriptLayout(conversationTurns(items), frame, [], {
+      waiting: false,
+      provider: "claude",
+    });
+    assert.equal(layout.live, true);
+    assert.equal(
+      layout.nativeStart,
+      layout.chromeStart,
+      "recorded pending tool must not also project an old native diff",
+    );
+  }
+  const complete = [
+    ...items,
+    {
+      id: "result",
+      kind: "tool",
+      turnId: "t",
+      toolUseId: "run-tool",
+      status: "completed",
+      text: "tool result",
+      detail: "finished",
+    } as MessageItem,
+  ];
+  const prose = ["● A new answer is streaming", ...chrome];
+  const streamed = liveTranscriptLayout(
+    conversationTurns(complete),
+    liveFrame(prose),
+    [],
+    { waiting: false, provider: "claude" },
+  );
+  assert.equal(
+    streamed.nativeStart,
+    0,
+    "new answer stays visible once the tool has returned",
+  );
+});
 const frame = (
   lines: string[],
   cursorRow = lines.length - 1,

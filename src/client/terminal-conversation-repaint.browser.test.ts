@@ -24,11 +24,11 @@ import React,{useState,useEffect}from'react';import{createRoot}from'react-dom/cl
 import{Terminal}from'@xterm/xterm';import{TerminalConversation}from'./src/client/TerminalConversation';
 import'@xterm/xterm/css/xterm.css';import'./src/client/styles.css';import'./src/client/themes.css';
 Object.defineProperty(document,'visibilityState',{get:()=> 'visible'});
-window.inputs=[];window.requests=[];
+window.inputs=[];window.requests=[];window.pendingTool=false;
 window.historyReady=new Promise(resolve=>window.releaseHistory=resolve);
 window.fetch=async(url,options)=>{window.requests.push({url:String(url),method:options?.method});await window.historyReady;
 const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn'},
-{id:'command',kind:'command',text:'python3 sample.py',detail:'SAVED COMMAND OUTPUT',turnId:'turn',status:'completed'}];
+{id:'command',kind:'command',text:window.pendingTool?'Bash':'python3 sample.py',detail:window.pendingTool?'command: python fixture.py':'SAVED COMMAND OUTPUT',toolUseId:'fixture-tool',turnId:'turn',status:window.pendingTool?'started':'completed'}];
 return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json'}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
 window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
@@ -403,6 +403,75 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           true,
         );
         assert.deepEqual(errors, []);
+        if (provider === "claude") {
+          await page.evaluate(async () => {
+            const w = window as any;
+            w.pendingTool = true;
+            w.setWaiting(false);
+            await w.partial();
+            await w.footer();
+            w.refreshHistory();
+          });
+          await page.waitForFunction(() =>
+            document
+              .querySelector('[data-work-item="command"]')
+              ?.textContent?.includes("실행 중"),
+          );
+          const heights: number[] = [];
+          for (let cycle = 0; cycle < 6; cycle++) {
+            await page.evaluate(async (cycle) => {
+              const w = window as any;
+              await w.write(
+                "\x1b[2J\x1b[H" +
+                  (cycle % 2
+                    ? "● Running fixture · 49s\r\n  short task preview"
+                    : "● Update(fixture.py)\r\n" +
+                      Array.from(
+                        { length: 9 },
+                        (_, i) =>
+                          "\x1b[42m" + (80 + i) + " + OLD DIFF ROW\x1b[0m",
+                      ).join("\r\n")),
+              );
+              await w.footer();
+            }, cycle);
+            await page.waitForTimeout(120);
+            assert.equal(
+              await surface
+                .locator(".terminal-native-work [data-native-row]")
+                .count(),
+              0,
+              "pending command must not alternate with a duplicated native diff",
+            );
+            heights.push(
+              await surface
+                .locator(".terminal-conversation-body")
+                .evaluate((e) => e.scrollHeight),
+            );
+          }
+          assert.ok(
+            Math.max(...heights) - Math.min(...heights) <= 1,
+            "tool redraws must not move the document height/scroll anchor",
+          );
+          await page.evaluate(() =>
+            (window as any).write("\x1b[14;1H❯ EDITING DURING TOOL\x1b[K"),
+          );
+          await surface
+            .getByText("❯ EDITING DURING TOOL", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            (window as any).setWaiting();
+            return (window as any).write(
+              "\x1b[2J\x1b[HAllow running this command?\r\n❯ 1. Yes\r\n  2. No",
+            );
+          });
+          await surface
+            .getByText("Allow running this command?", { exact: true })
+            .waitFor({ timeout: 2000 });
+          assert.deepEqual(
+            await page.evaluate(() => (window as any).inputs),
+            [],
+          );
+        }
       } finally {
         await desktop?.close();
         server.closeAllConnections();

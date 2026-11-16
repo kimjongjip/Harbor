@@ -1,6 +1,7 @@
 import type { ConversationTurn } from "./conversation-turns";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { typedPrompt } from "./user-origin";
+import { transcriptEntries } from "./transcript-steps";
 import {
   lastNativeBlock,
   nativeChrome,
@@ -20,6 +21,16 @@ const comparable = (text: string) =>
 const promptPrefix = /^\s*[›❯»>]\s?/;
 const markdownListPrefix = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/;
 const nativeListPrefix = /^\s*(?:[-+*•·]|\d{1,9}[.)])[ \t]+/;
+const pendingToolCache = new WeakMap<ConversationTurn["items"], boolean>();
+function hasPendingClaudeTool(items: ConversationTurn["items"]) {
+  const cached = pendingToolCache.get(items);
+  if (cached !== undefined) return cached;
+  const pending = transcriptEntries(items).some(
+    (entry) => entry.kind === "step" && !!entry.call && !entry.result,
+  );
+  pendingToolCache.set(items, pending);
+  return pending;
+}
 
 /** Comparison only: terminal Markdown renders link labels, not their targets.
  * Keep code spans/fences literal and leave ambiguous syntax unchanged. The
@@ -340,7 +351,11 @@ export function liveTranscriptLayout(
   turns: ConversationTurn[],
   frame: TranscriptFrame,
   blocks: RichTerminalBlock[],
-  state: { waiting: boolean; pendingHistory?: boolean },
+  state: {
+    waiting: boolean;
+    pendingHistory?: boolean;
+    provider?: "codex" | "claude";
+  },
 ): LiveTranscriptLayout {
   const chrome = nativeChrome(frame.lines, frame.end, frame);
   // A hook's waiting state includes idle composers, tool waits and approvals.
@@ -381,6 +396,19 @@ export function liveTranscriptLayout(
         end >= 0
           ? skipBlankRows(frame.lines, Math.min(end, limit), limit)
           : limit,
+      chromeStart: limit,
+      live: true,
+    };
+  }
+  // Claude redraws earlier edits/diffs while a foreground tool runs. The saved
+  // tool invocation is already rendered above; showing a second, guessed raw
+  // block makes the document height and bottom-follow jump on every repaint.
+  // Keep the native controls/status live and let the persisted tool result
+  // replace its pending card. Once the tool returns, native prose can stream.
+  if (state.provider === "claude" && hasPendingClaudeTool(last.items)) {
+    return {
+      historyCount: turns.length,
+      nativeStart: limit,
       chromeStart: limit,
       live: true,
     };

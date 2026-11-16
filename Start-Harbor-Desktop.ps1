@@ -69,7 +69,8 @@ if ($harborUsePackage) {
   exit 0
 }
 $harborElectron = Join-Path $harborRoot 'node_modules\electron\dist\electron.exe'
-if (-not (Test-Path -LiteralPath $harborElectron) -or -not (Test-Path -LiteralPath (Join-Path $harborRoot 'dist/server.mjs'))) { throw 'Run Setup-Harbor.cmd first.' }
+if (-not (Test-Path -LiteralPath $harborElectron -PathType Leaf)) { throw 'Electron desktop runtime is missing. Run Setup-Harbor.cmd to download it. Details: .runtime\setup.log' }
+if (-not (Test-Path -LiteralPath (Join-Path $harborRoot 'dist/server.mjs') -PathType Leaf)) { throw 'Harbor build is missing. Run Setup-Harbor.cmd. Details: .runtime\setup.log' }
 Start-Process -FilePath $harborElectron -ArgumentList ('"' + $harborRoot + '"') -WorkingDirectory $harborRoot
 } finally {
   if ($null -ne $harborNodeMode) { $env:ELECTRON_RUN_AS_NODE = $harborNodeMode }
