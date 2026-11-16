@@ -24,11 +24,12 @@ import React,{useState,useEffect}from'react';import{createRoot}from'react-dom/cl
 import{Terminal}from'@xterm/xterm';import{TerminalConversation}from'./src/client/TerminalConversation';
 import'@xterm/xterm/css/xterm.css';import'./src/client/styles.css';import'./src/client/themes.css';
 Object.defineProperty(document,'visibilityState',{get:()=> 'visible'});
-window.inputs=[];window.requests=[];window.pendingTool=false;
+window.inputs=[];window.requests=[];window.pendingTool=false;window.reportText='';
 window.historyReady=new Promise(resolve=>window.releaseHistory=resolve);
 window.fetch=async(url,options)=>{window.requests.push({url:String(url),method:options?.method});await window.historyReady;
 const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn'},
 {id:'command',kind:'command',text:window.pendingTool?'Bash':'python3 sample.py',detail:window.pendingTool?'command: python fixture.py':'SAVED COMMAND OUTPUT',toolUseId:'fixture-tool',turnId:'turn',status:window.pendingTool?'started':'completed'}];
+if(window.reportText)timeline.push({id:'progress',kind:'assistant',text:window.reportText,turnId:'turn',...('${provider}'==='codex'?{phase:'commentary'}:{})});
 return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json'}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
 window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
@@ -472,6 +473,42 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
             [],
           );
         }
+        await page.evaluate(async () => {
+          const w = window as any;
+          w.setWaiting(false);
+          await w.partial();
+          await w.footer();
+          w.reportText = "**INTERMEDIATE REPORT**: testing continues";
+          w.refreshHistory();
+        });
+        const report = surface.locator('[data-history-message="progress"]');
+        await report
+          .locator("strong")
+          .getByText("INTERMEDIATE REPORT", { exact: true })
+          .waitFor();
+        const group = surface.locator(".conversation-work");
+        assert.equal(await group.count(), 1);
+        await group.locator(":scope > summary").click();
+        assert.equal(await work.count(), 0);
+        assert.equal(await report.isVisible(), true);
+        assert.equal(
+          await report.evaluate((node) => !!node.closest(".conversation-work")),
+          false,
+        );
+        await page.evaluate(() => {
+          const w = window as any;
+          w.reportText += " — **NEW FINDING**";
+          w.refreshHistory();
+        });
+        await report
+          .locator("strong")
+          .getByText("NEW FINDING", { exact: true })
+          .waitFor();
+        assert.equal(
+          await group.evaluate((node) => (node as HTMLDetailsElement).open),
+          false,
+        );
+        assert.deepEqual(errors, []);
       } finally {
         await desktop?.close();
         server.closeAllConnections();

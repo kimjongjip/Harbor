@@ -90,6 +90,13 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         },
         { id: "q2", kind: "user", turnId: "two", text: "SECOND QUESTION" },
         {
+          id: "progress2",
+          kind: "assistant",
+          turnId: "two",
+          phase: "commentary",
+          text: "**Progress report** before the tool",
+        },
+        {
           id: "tool2",
           kind: "command",
           turnId: "two",
@@ -191,7 +198,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .waitFor();
       assert.equal(
         await page
-          .locator('.conversation-work[data-work-state="live"] [data-work-item="tool2"]')
+          .locator(
+            '.conversation-work[data-work-state="live"] [data-work-item="tool2"]',
+          )
           .count(),
         1,
       );
@@ -200,9 +209,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         1,
       );
       assert.ok(
-        (await page.locator(".terminal-native-flow").last().innerText()).includes(
-          "UNSENT DRAFT",
-        ),
+        (
+          await page.locator(".terminal-native-flow").last().innerText()
+        ).includes("UNSENT DRAFT"),
       );
       await page.screenshot({ path: join(root, "native-working.png") });
       await page.evaluate(() => (window as any).term.focus());
@@ -217,9 +226,21 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       // A natively completed saved turn folds even before the CLI repaints its
       // answer; the live input line stays native and nothing is resized.
       await page
-        .locator('[data-turn-id="two"] > .conversation-work[data-work-state="done"]:not([open])')
+        .locator(
+          '[data-turn-id="two"] > .conversation-work[data-work-state="done"]:not([open])',
+        )
         .waitFor();
       assert.equal(await page.locator('[data-work-item="tool2"]').count(), 0);
+      const report = page.locator('[data-history-message="progress2"]');
+      assert.equal(await report.isVisible(), true);
+      assert.equal(
+        await report.locator("strong").innerText(),
+        "Progress report",
+      );
+      assert.equal(
+        await report.evaluate((node) => !!node.closest(".conversation-work")),
+        false,
+      );
       assert.equal(
         await page.locator('[data-rich-block="conversation-user-q2"]').count(),
         1,

@@ -6,9 +6,29 @@ import {
   stepTitle,
   toolArguments,
   transcriptEntries,
+  transcriptSections,
 } from "./transcript-steps";
 
 const item = (id: string, kind: MessageItem["kind"], text: string, extra: Partial<MessageItem> = {}): MessageItem => ({ id, kind, text, ...extra });
+
+test("reports stay outside tool groups in order, including unphased Claude prose and late results", () => {
+  const records = [
+    item("q", "user", "question"),
+    item("c", "assistant", "**Progress**", { phase: "commentary" }),
+    item("t", "command", "Bash", { status: "started", toolUseId: "tool" }),
+    item("p", "assistant", "Claude intermediate report"),
+    item("r", "tool", "result", { status: "completed", toolUseId: "tool" }),
+    item("d", "change", "diff"),
+    item("a", "assistant", "final", { phase: "final_answer" }),
+  ];
+  const sections = transcriptSections(records);
+  assert.deepEqual(sections.map(s => [s.kind, s.items.map(i => i.id)]), [
+    ["message", ["q"]], ["message", ["c"]], ["work", ["t", "r"]],
+    ["message", ["p"]], ["work", ["d"]], ["message", ["a"]],
+  ]);
+  assert.equal(sections.flatMap(s => s.items).length, records.length);
+  assert.deepEqual(transcriptEntries(sections[2].items).map(e => e.kind), ["step"]);
+});
 
 test("tool calls pair with results by native id, even when issued in parallel", () => {
   const entries = transcriptEntries([

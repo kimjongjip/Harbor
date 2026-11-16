@@ -26,7 +26,10 @@ const toolResult = (item: MessageItem) =>
 
 export function transcriptEntries(items: MessageItem[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
-  const byToolId = new Map<string, Extract<TranscriptEntry, { kind: "step" }>>();
+  const byToolId = new Map<
+    string,
+    Extract<TranscriptEntry, { kind: "step" }>
+  >();
   // Older servers omit tool ids; results then pair with calls in issue order.
   let unpaired: Extract<TranscriptEntry, { kind: "step" }>[] = [];
   for (const item of items) {
@@ -73,12 +76,48 @@ export function transcriptEntries(items: MessageItem[]): TranscriptEntry[] {
         step.result = item;
         continue;
       }
-      entries.push({ kind: "step", key: `${item.kind}:${item.id}`, result: item });
+      entries.push({
+        kind: "step",
+        key: `${item.kind}:${item.id}`,
+        result: item,
+      });
       continue;
     }
     entries.push({ kind: "item", item });
   }
   return entries;
+}
+
+/** Keep progress reports in reading order, outside collapsible tool runs.
+ * Pair tools first: a result arriving after a report still belongs to its call. */
+export function transcriptSections(items: MessageItem[]) {
+  const sections: {
+    key: string;
+    kind: "message" | "work";
+    items: MessageItem[];
+  }[] = [];
+  for (const entry of transcriptEntries(items)) {
+    const kind =
+      entry.kind === "step" || entry.kind === "item" ? "work" : "message";
+    const records =
+      entry.kind === "step"
+        ? [entry.call, entry.result].filter(
+            (item): item is MessageItem => !!item,
+          )
+        : entry.kind === "system"
+          ? [entry.item, ...entry.outputs]
+          : [entry.item];
+    const previous = sections.at(-1);
+    if (kind === "work" && previous?.kind === "work")
+      previous.items.push(...records);
+    else
+      sections.push({
+        key: `${records[0].kind}:${records[0].id}`,
+        kind,
+        items: records,
+      });
+  }
+  return sections;
 }
 
 const argumentKeys = [
@@ -124,7 +163,12 @@ const displayNames: Record<string, string> = {
 
 /** CLI-like heading: `Update(src/file.ts)`, `Bash(npm test)`, `server - tool (MCP)`. */
 export function stepTitle(call: MessageItem | undefined, cwd = "") {
-  if (!call) return { name: "도구 결과", target: "", args: {} as Record<string, string> };
+  if (!call)
+    return {
+      name: "도구 결과",
+      target: "",
+      args: {} as Record<string, string>,
+    };
   const args = toolArguments(call.detail);
   const mcp = /^mcp__(.+?)__(.+)$/.exec(call.text);
   const name = mcp
@@ -146,10 +190,7 @@ export function stepTitle(call: MessageItem | undefined, cwd = "") {
     args.message ??
     "";
   const base = cwd.replace(/[\\/]+$/, "");
-  if (
-    base &&
-    (target.startsWith(`${base}/`) || target.startsWith(`${base}\\`))
-  )
+  if (base && (target.startsWith(`${base}/`) || target.startsWith(`${base}\\`)))
     target = target.slice(base.length + 1);
   return { name, target, args };
 }

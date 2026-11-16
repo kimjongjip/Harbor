@@ -1,5 +1,11 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 1.18.36 중간 보고
+
+`transcriptSections`는 호출·결과를 먼저 연결한 뒤 연속된 도구 기록과 메시지를 나눈다. Claude의 phase 없는 assistant 메시지와 Codex commentary 모두 작업 그룹 밖에서 Markdown으로 표시한다. 그룹 키는 첫 도구의 ID를 사용하므로 뒤에 보고·결과가 추가되어도 사용자가 접은 상태를 유지한다. native 출력 포털은 그룹 바깥의 고정 노드에 두어 저장 전 중간 보고도 접기에 숨지 않는다. 진행 중 Claude 도구의 중복 native 블록 차단은 그대로 유지한다.
+
+격리 브라우저 테스트는 양쪽 제공자의 작업 중 보고·Markdown·접은 상태에서 새 보고 갱신, 완료 후 보고 유지, 기존 diff 재그리기·입력·승인·복사 동작을 함께 검증한다.
+
 ## 1.18.32 수동 업데이트
 
 데스크톱 IPC만 업데이트 확인·설치·재시작을 제공한다. preload는 사용자 클릭을 확인하고 main은 메인 프레임·로컬 앱 URL을 검증한다. 시작 시에는 상태만 조회하며 네트워크 폴링은 없다. `desktop/updater.cjs`는 고정된 공개 저장소 main SHA의 package/CHANGELOG를 읽고 같은 SHA 아카이브를 `.runtime/updates`에 준비한다. 원본 체크아웃이나 실행 중 node_modules는 덮어쓰지 않는다.

@@ -17,7 +17,7 @@ import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { api } from "./api";
 import { TranscriptItems, type TranscriptItemsProps } from "./TranscriptItems";
 import { Markdown } from "./RichMarkdown";
-import { transcriptEntries } from "./transcript-steps";
+import { transcriptEntries, transcriptSections } from "./transcript-steps";
 import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
 import {
   liveTranscriptLayout,
@@ -48,15 +48,13 @@ const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
   return `${last.kind}:${last.id}`;
 };
-/** One turn's saved work. A running turn's group is open and also hosts the
- * CLI rows newer than history; any group can be folded at any time. */
+/** A consecutive run of tool records; progress reports remain outside. */
 const WorkGroup = memo(function WorkGroup({
   items,
   state,
   busy = false,
   open,
   onToggle,
-  target,
   props,
 }: {
   items: TranscriptItemsProps["items"];
@@ -65,7 +63,6 @@ const WorkGroup = memo(function WorkGroup({
   busy?: boolean;
   open: boolean;
   onToggle(open: boolean): void;
-  target?: (node: HTMLDivElement | null) => void;
   props: Omit<TranscriptItemsProps, "items">;
 }) {
   const count = useMemo(() => transcriptEntries(items).length, [items]);
@@ -113,7 +110,6 @@ const WorkGroup = memo(function WorkGroup({
       {open && !!items.length && (
         <TranscriptItems items={items} {...props} stepsOpen />
       )}
-      {target && <div className="conversation-live-work" ref={target} />}
       {open && (
         <button
           type="button"
@@ -792,23 +788,7 @@ export function TerminalConversation({
               selectionActive: selected,
             };
             const live = running && turnIndex === turns.length - 1;
-            // Old records can lack completion metadata. Group their existing
-            // work together without claiming completion. Only a trailing saved
-            // assistant message stays outside that group. The running turn
-            // keeps all of its saved work in a live group, open by default.
-            const last = turn.items.at(-1);
-            const replyIds = turn.complete
-              ? turn.finalIds
-              : !live &&
-                  turnIndex < turns.length - 1 &&
-                  last?.kind === "assistant"
-                ? new Set([last.id])
-                : new Set<string>();
-            const work = turn.items.filter(
-              (item) => item.kind !== "user" && !replyIds.has(item.id),
-            );
             const state = turn.complete ? "done" : live ? "live" : "saved";
-            const workKey = `${turn.id}:${state}`;
             return (
               <section
                 key={
@@ -819,42 +799,36 @@ export function TerminalConversation({
                 className={`conversation-turn${live ? " running" : ""}`}
                 data-turn-id={turn.id}
               >
-                {turn.complete || turnIndex < turns.length - 1 || live ? (
-                  <>
+                {transcriptSections(turn.items).map((section) => {
+                  const workKey = `${turn.id}:${state}:${section.key}`;
+                  return section.kind === "work" ? (
+                    <WorkGroup
+                      key={section.key}
+                      items={section.items}
+                      state={state}
+                      busy={live && agentBusy}
+                      open={workOpen[workKey] ?? live}
+                      onToggle={(open) =>
+                        setWorkOpen((value) => ({
+                          ...value,
+                          [workKey]: open,
+                        }))
+                      }
+                      props={props}
+                    />
+                  ) : (
                     <TranscriptItems
-                      items={turn.items.filter((item) => item.kind === "user")}
+                      key={section.key}
+                      items={section.items}
                       {...props}
                     />
-                    {(!!work.length ||
-                      (live &&
-                        (agentBusy ||
-                          layout.nativeStart < layout.chromeStart))) && (
-                      <WorkGroup
-                        items={work}
-                        state={state}
-                        busy={live && agentBusy}
-                        open={workOpen[workKey] ?? live}
-                        onToggle={(open) =>
-                          setWorkOpen((value) => ({
-                            ...value,
-                            [workKey]: open,
-                          }))
-                        }
-                        target={live ? setWorkTarget : undefined}
-                        props={props}
-                      />
-                    )}
-                    <TranscriptItems
-                      items={turn.items.filter((item) => replyIds.has(item.id))}
-                      {...props}
-                    />
-                  </>
-                ) : (
-                  <TranscriptItems items={turn.items} {...props} />
-                )}
+                  );
+                })}
               </section>
             );
           })}
+          {/* Unsaved live prose must stay visible when saved tools are folded. */}
+          <div className="conversation-live-work" ref={setWorkTarget} />
           <TerminalNativeFlow
             codexComposer={provider === "codex"}
             term={term}
