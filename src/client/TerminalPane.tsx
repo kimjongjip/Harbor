@@ -1574,12 +1574,15 @@ export default function TerminalPane({
                       ? "일반 SSH 연결"
                       : "")}
         </span>
-        {(info.agentSessionId || info.resumeThreadId) && (
+        {(historySessionId || info.agentSessionId || info.resumeThreadId) && (
           <button
             type="button"
             className="terminal-footer-button"
             aria-pressed={rawOutput}
-            onClick={() => setRawOutput((value) => !value)}
+            onClick={() => {
+              setRawOutput((value) => !value);
+              termRef.current?.focus();
+            }}
             title="같은 터미널의 가공하지 않은 화면을 확인합니다."
           >
             {rawOutput ? "기본 표시로" : "터미널 원문"}

@@ -120,6 +120,7 @@ export function TerminalNativeFlow({
   blocks = emptyBlocks,
   active = true,
   frozen = false,
+  nativeInteraction = false,
   codexComposer = false,
   startRow = 0,
   workTarget,
@@ -132,6 +133,7 @@ export function TerminalNativeFlow({
   blocks?: RichTerminalBlock[];
   active?: boolean;
   frozen?: boolean;
+  nativeInteraction?: boolean;
   codexComposer?: boolean;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
@@ -384,13 +386,13 @@ export function TerminalNativeFlow({
   }, [theme]);
   const hasView = !!view;
   useLayoutEffect(() => {
-    if (!active || frozen || !root.current) return;
+    if (!active || frozen || nativeInteraction || !root.current) return;
     return projectNativeComposition(
       term,
       () => root.current?.querySelector<HTMLElement>("[data-native-cursor]"),
       root.current,
     );
-  }, [term, active, frozen, hasView]);
+  }, [term, active, frozen, hasView, nativeInteraction]);
   if (!view || !active) return null;
   const partsFor = (from: number, to: number) => {
     const lines = view.frame.lines.slice(from, to);

@@ -23,6 +23,79 @@ export interface NativeChromeFrame {
 
 const solidRule = /^\s*[─━]{12,}\s*$/;
 const promptRow = /^\s{0,2}[❯›>»](?:\s|$)/;
+
+/** Interactive pickers need xterm's cursor, reverse video and mouse hit
+ * targets. Inspect the current viewport only; old /commands in scrollback
+ * are conversation history. Keep a picker through its partial redraws. */
+export function nativeMenuVisible(
+  lines: readonly string[],
+  end: number,
+  frame: NativeChromeFrame,
+  previous: boolean,
+) {
+  const cursor = lines[frame.cursorRow] || "";
+  if (/^\s*[❯›»>]\s*\//.test(cursor)) return true;
+  const viewport = lines.slice(frame.baseY, end);
+  const tail = viewport.filter((line) => line.trim()).slice(-4);
+  // Claude positions the cursor independently of the composer on some
+  // terminals. Match its bottom input frame even when the cursor is hidden.
+  for (
+    let bottomRule = viewport.length - 1;
+    bottomRule >= Math.max(2, viewport.length - 5);
+    bottomRule--
+  ) {
+    if (!solidRule.test(viewport[bottomRule])) continue;
+    const input = viewport[bottomRule - 1];
+    if (solidRule.test(viewport[bottomRule - 2]) && promptRow.test(input))
+      return /^\s*[❯›»>]\s*\//.test(input);
+    break;
+  }
+  const belowCursor = lines
+    .slice(frame.cursorRow + 1, end)
+    .filter((line) => line.trim());
+  if (
+    promptRow.test(cursor) &&
+    (solidRule.test(belowCursor[0] || "") ||
+      belowCursor.some((line) => codexFooterRow.test(line)))
+  )
+    return false;
+  const pickerControls = tail.some(
+    (line) =>
+      /^\s*(?:(?:press|use)\s+)?(?:↑|↓|←|→|arrow keys\b|tab\b|enter\b|return\b|esc\b).{0,180}$/iu.test(
+        line,
+      ) &&
+      /(?:navigate|select|confirm|cancel|go back|dismiss|enter\s+continue\s*·\s*esc\s+back)/i.test(line) &&
+      /(?:enter|return|esc)/i.test(line),
+  );
+  const pickerHeading = viewport.some((line) =>
+    /^\s*(?:select|choose|set)\s+(?:(?:a|the|your)\s+)?(?:model|reasoning|effort)\b/i.test(
+      line,
+    ),
+  );
+  const option = viewport.some((line) => /^\s*[❯›»>]\s+\S/.test(line));
+  if (
+    pickerControls &&
+    tail.some((line) => /(?:↑.?↓|←.?→).*\benter\b.*\besc\b/i.test(line))
+  )
+    return true;
+  if (
+    pickerControls &&
+    (pickerHeading || previous || (option && !nativeChoiceDialog(viewport)))
+  )
+    return true;
+  if (pickerHeading && option && (previous || !promptRow.test(cursor)))
+    return true;
+  if (!previous) return false;
+  // Both CLIs can briefly clear even the cursor row between menu levels.
+  // Restore rich history once their ordinary input or shell actually returns.
+  if (promptRow.test(cursor) && !pickerControls) return false;
+  if (
+    tail.some((line) => codexFooterRow.test(line)) &&
+    viewport.some((line) => promptRow.test(line))
+  )
+    return false;
+  return !/^(?:\s*[$#%]\s*|\s*PS\s+[^>]+>\s*)$/i.test(tail.at(-1) || "");
+}
 // Claude's activity line: a glyph in column 0, then a verb/elapsed status.
 const spinnerRow =
   /^[·✢✳✶✻✽✦✧*∗]\s+\S.*(?:…|\.\.\.|\bfor \d|\(\d+(?:m \d+)?s|esc to interrupt)/;

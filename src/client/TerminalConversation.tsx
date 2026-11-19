@@ -39,7 +39,10 @@ import {
 import "./terminal-conversation.css";
 import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
-import { nativeInteractiveReplacement } from "./terminal-native-chrome";
+import {
+  nativeInteractiveReplacement,
+  nativeMenuVisible,
+} from "./terminal-native-chrome";
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
@@ -531,12 +534,27 @@ export function TerminalConversation({
   const publishedBuffer = useRef<NativeFlowFrame["bufferType"] | undefined>(
     undefined,
   );
+  const [nativeMenu, setNativeMenu] = useState(false);
+  const menuVisible = useRef(false);
   useLayoutEffect(() => {
     publishedLayout.current = undefined;
     publishedBuffer.current = undefined;
+    menuVisible.current = false;
+    setNativeMenu(false);
   }, [term, info.id, info.hostId, sessionId, provider]);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
+      const menu = nativeMenuVisible(
+        frame.lines,
+        frame.end,
+        frame,
+        menuVisible.current,
+      );
+      if (menu !== menuVisible.current) {
+        menuVisible.current = menu;
+        setNativeMenu(menu);
+      }
+      if (menu) return { start: frame.end, defer: "repaint" as const };
       const next = layoutForFrame(frame);
       return {
         start: next.nativeStart,
@@ -710,7 +728,8 @@ export function TerminalConversation({
       data-native-live={layout.live ? layout.chromeStart : undefined}
       data-following={following}
       data-selected={selected}
-      hidden={!visible}
+      hidden={!visible || nativeMenu}
+      data-native-menu={visible && nativeMenu ? true : undefined}
       data-native-mods={modSurface ? "preserved" : undefined}
       style={
         modSurface
@@ -727,6 +746,7 @@ export function TerminalConversation({
         className="terminal-conversation-body"
         ref={body}
         onScroll={() => {
+          if (menuVisible.current) return;
           const node = body.current;
           if (!node) return;
           const next =
@@ -834,7 +854,8 @@ export function TerminalConversation({
             term={term}
             blocks={blocks}
             active={visible}
-            frozen={selected || !following}
+            frozen={!nativeMenu && (selected || !following)}
+            nativeInteraction={nativeMenu}
             startRow={nativeRange}
             workTarget={running ? workTarget : null}
             onFrame={updateNativeFrame}

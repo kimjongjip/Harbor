@@ -553,6 +553,81 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           await group.evaluate((node) => (node as HTMLDetailsElement).open),
           false,
         );
+        // Drive xterm's keyboard path. The fake CLI echoes the command,
+        // draws two different picker screens and restores its composer.
+        const reader = page.locator(".terminal-conversation");
+        for (const command of ["/model", "/effort"]) {
+          await page.evaluate(
+            ({ prompt, command }) => {
+              const w = window as any;
+              w.inputs.length = 0;
+              let stage = 0;
+              w.drawPicker = (selected: number) =>
+                w.write(
+                  "\x1b[2J\x1b[H" +
+                    (command === "/model"
+                      ? "Select model"
+                      : "Reasoning effort") +
+                    "\r\n" +
+                    (selected === 0 ? "❯ " : "  ") +
+                    "First option\r\n" +
+                    (selected === 1 ? "❯ " : "  ") +
+                    "Second option\r\n↑/↓ to navigate · Enter to select · Esc to cancel",
+                );
+              w.picker = w.term.onData((s: string) => {
+                if (s === "\r" && stage === 0) {
+                  stage++;
+                  void w.drawPicker(0);
+                } else if (s.endsWith("B") && stage === 1) void w.drawPicker(1);
+                else if ((s === "\r" || s === "\x1b") && stage === 1) {
+                  stage++;
+                  void w.write("\x1b[2J\x1b[H").then(() => w.footer());
+                } else if (stage === 0) void w.write(s);
+              });
+              return w
+                .write("\x1b[2J\x1b[H" + prompt + " ")
+                .then(() => w.term.focus());
+            },
+            { prompt, command },
+          );
+          await page.keyboard.type(command);
+          await page.waitForFunction(() =>
+            document
+              .querySelector(".terminal-conversation")
+              ?.hasAttribute("data-native-menu"),
+          );
+          await page.keyboard.press("Enter");
+          await page.keyboard.press("ArrowDown");
+          await page.waitForFunction(() =>
+            (window as any).term.buffer.active
+              .getLine(2)
+              ?.translateToString(true)
+              .includes("❯ Second option"),
+          );
+          assert.equal(await reader.isVisible(), false);
+          await page.keyboard.press(command === "/model" ? "Enter" : "Escape");
+          await surface.waitFor();
+          assert.equal(await report.isVisible(), true);
+          assert.equal(
+            await group.evaluate((node) => (node as HTMLDetailsElement).open),
+            false,
+          );
+          const keys = await page.evaluate(() => {
+            const w = window as any;
+            w.picker.dispose();
+            return w.inputs.join("");
+          });
+          assert.match(
+            keys,
+            new RegExp(
+              "^" +
+                command +
+                "\\r\\x1b(?:\\[|O)B" +
+                (command === "/model" ? "\\r" : "\\x1b") +
+                "$",
+            ),
+          );
+        }
         assert.deepEqual(errors, []);
       } finally {
         await desktop?.close();

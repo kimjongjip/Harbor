@@ -6,11 +6,52 @@ import {
   nativeTranscriptRepaint,
   nativeInteractiveReplacement,
   nativeChoiceDialog,
+  nativeMenuVisible,
 } from "./terminal-native-chrome";
 
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("an already open Claude effort slider and a hidden-cursor command composer work after tab switching", () => {
+  const frame = { baseY: 0, cursorRow: 0, cursorColumn: 0 };
+  const slider = [
+    "   Effort",
+    " Faster     Smarter",
+    " ──▲─────",
+    " low   medium    high",
+    " ←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel",
+  ];
+  assert.equal(nativeMenuVisible(slider, slider.length, frame, false), true);
+  assert.equal(nativeMenuVisible(["", ""], 2, frame, true), true);
+  const suggestion = [
+    "  ❯ /model   Set the model",
+    rule,
+    "❯ /model ",
+    rule,
+    "  auto mode on",
+  ];
+  assert.equal(
+    nativeMenuVisible(suggestion, suggestion.length, frame, false),
+    true,
+  );
+  const returned = [
+    "❯ /model",
+    "  Kept model",
+    rule,
+    "❯  ",
+    rule,
+    "  auto mode on",
+  ];
+  assert.equal(
+    nativeMenuVisible(
+      returned,
+      returned.length,
+      { ...frame, cursorRow: 4 },
+      true,
+    ),
+    false,
+  );
+});
 test("numbered prompts and quoted control instructions are not native dialogs", () => {
   assert.equal(
     nativeInteractiveReplacement(["Press Enter to continue"], 1, false),
