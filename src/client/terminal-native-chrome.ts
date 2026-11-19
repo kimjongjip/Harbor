@@ -146,9 +146,10 @@ export function nativeInteractiveReplacement(
 function foregroundTask(
   lines: readonly string[],
   last: number,
+  floor = Math.max(0, last - 3),
 ): number | undefined {
   let footer = -1;
-  for (let row = last; row >= Math.max(0, last - 3); row--)
+  for (let row = last; row >= floor; row--)
     if (
       /^\s*\(?ctrl\+b\b.*\b(?:run|move|send)\b.*\bbackground\)?\s*$/i.test(
         lines[row],
@@ -170,6 +171,58 @@ function foregroundTask(
       break;
   }
   return start;
+}
+
+/** Claude can put a task, a pending input and its send shortcut above the
+ * composer, or replace the composer with that activity panel entirely.
+ * Only inspect the current viewport. Scrollback contains obsolete controls. */
+export function claudeActivityStart(
+  lines: readonly string[],
+  end: number,
+  floor: number,
+) {
+  const task = foregroundTask(lines, end - 1, floor);
+  let start = task;
+  for (let row = end - 1; row >= floor; row--) {
+    const line = lines[row].trim();
+    // The binding is configurable. Preserve the actual shortcut and the
+    // queued text, including multiple messages wrapped above the hint.
+    if (
+      /^(?:(?:ctrl|alt|shift|cmd)\+\S+.*\bsend now|click to send now|press up to (?:edit|select) (?:a )?queued messages?\b.*)$/i.test(
+        line,
+      )
+    ) {
+      let first = row;
+      while (first > floor) {
+        const above = lines[first - 1];
+        if (
+          solidRule.test(above) ||
+          spinnerRow.test(above) ||
+          /^[●⏺•]\s/.test(above)
+        )
+          break;
+        first--;
+      }
+      start = Math.min(start ?? first, first);
+    }
+    if (
+      /[·•]\s*summary\s*$/i.test(line) &&
+      (task === undefined || row < task)
+    ) {
+      let first = row;
+      while (
+        first > floor &&
+        !/^[●⏺•]\s/.test(lines[first]) &&
+        lines[first - 1].trim()
+      )
+        first--;
+      if (/^[●⏺•]\s/.test(lines[first])) {
+        start = Math.min(start ?? first, first);
+        break;
+      }
+    }
+  }
+  return start === undefined ? undefined : Math.max(floor, start);
 }
 
 /** A long composer can extend above the small footer search window. Follow the

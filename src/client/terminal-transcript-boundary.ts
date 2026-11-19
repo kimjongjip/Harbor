@@ -3,6 +3,7 @@ import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { typedPrompt } from "./user-origin";
 import { transcriptEntries } from "./transcript-steps";
 import {
+  claudeActivityStart,
   lastNativeBlock,
   nativeChrome,
   nativeChoiceDialog,
@@ -357,7 +358,16 @@ export function liveTranscriptLayout(
     provider?: "codex" | "claude";
   },
 ): LiveTranscriptLayout {
-  const chrome = nativeChrome(frame.lines, frame.end, frame);
+  let chrome = nativeChrome(frame.lines, frame.end, frame);
+  if (state.provider === "claude") {
+    const activity = claudeActivityStart(frame.lines, frame.end, frame.baseY);
+    if (activity !== undefined) {
+      chrome = {
+        start: Math.min(activity, chrome?.start ?? activity),
+        framed: chrome?.framed ?? false,
+      };
+    }
+  }
   // A hook's waiting state includes idle composers, tool waits and approvals.
   // Keep the question above actual choices, but do not use the hook as a
   // display-mode switch (it can lag the native terminal by several seconds).

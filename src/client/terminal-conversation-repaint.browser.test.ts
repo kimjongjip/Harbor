@@ -459,6 +459,51 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           await surface
             .getByText("❯ EDITING DURING TOOL", { exact: true })
             .waitFor();
+          // None of these rows is in saved history. Claude keeps them around
+          // a foreground job even when the spinner and tips displace its footer.
+          await page.evaluate(() =>
+            (window as any).write(
+              [
+                "\x1b[2J\x1b[H● Update(previous.py)",
+                "  42 + OLD EDIT",
+                "● The measurement is ready",
+                "  and validation continues · summary",
+                "",
+                "  Run validation · 2m 31s",
+                "    └ $ run fixture",
+                "    (ctrl+b ctrl+b (twice) to run in background)",
+                "",
+                "· Processing… (17m 34s)",
+                "  └ Tip: adjust effort",
+                "",
+                "✔ Update installed · /restart to apply",
+              ].join("\r\n"),
+            ),
+          );
+          await surface
+            .getByText("● The measurement is ready", { exact: true })
+            .waitFor();
+          await surface
+            .getByText("  Run validation · 2m 31s", { exact: true })
+            .waitFor();
+          assert.equal(await surface.getByText("42 + OLD EDIT").count(), 0);
+          await page.evaluate(async () => {
+            const w = window as any;
+            await w.write(
+              "\x1b[2J\x1b[H· Processing… (18s)\r\n\r\n  Please also check the second case\r\n  and compare the results\r\n  ctrl+x ctrl+s to send now",
+            );
+            await w.footer();
+          });
+          await surface
+            .getByText("Please also check the second case", { exact: true })
+            .waitFor();
+          await surface
+            .getByText("and compare the results", { exact: true })
+            .waitFor();
+          await surface
+            .getByText("ctrl+x ctrl+s to send now", { exact: true })
+            .waitFor();
+          assert.equal(await work.count(), 1);
           await page.evaluate(() => {
             (window as any).setWaiting();
             return (window as any).write(
