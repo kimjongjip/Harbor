@@ -425,12 +425,68 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => {
         window.getSelection()!.removeAllRanges();
       });
-      await page.locator(".terminal-native-flow [data-native-cursor]").click();
+      const paragraph = page
+        .locator('[data-rich-block="conversation-assistant-a2"] .markdown p')
+        .first();
+      const textBox = await paragraph.evaluate((node) => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const box = range.getBoundingClientRect();
+        return {
+          x: box.left + 1,
+          y: box.top + box.height / 2,
+          width: box.width,
+        };
+      });
+      await page.mouse.move(textBox.x, textBox.y);
+      await page.mouse.down();
+      await page.mouse.move(textBox.x + textBox.width * 0.8, textBox.y, {
+        steps: 8,
+      });
+      await page.mouse.up();
+      assert.ok(
+        (
+          await page.evaluate(() => window.getSelection()?.toString() || "")
+        ).includes("SECOND"),
+      );
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      const fold = page.locator(".conversation-work > summary");
+      await fold.click();
+      assert.equal(
+        await page.evaluate(
+          () => document.activeElement === (window as any).term.textarea,
+        ),
+        false,
+        "fold controls keep their own focus",
+      );
+      await fold.click();
+      await paragraph.click();
+      assert.equal(
+        await page.evaluate(
+          () => document.activeElement === (window as any).term.textarea,
+        ),
+        true,
+        "clicking an answer should focus the native prompt",
+      );
       await page.keyboard.type("d");
+      await page.evaluate(() => (window as any).term.textarea.blur());
+      await page
+        .locator(".terminal-conversation-body")
+        .click({ position: { x: 3, y: 15 } });
+      assert.equal(
+        await page.evaluate(
+          () => document.activeElement === (window as any).term.textarea,
+        ),
+        true,
+        "empty reader space should also focus the prompt",
+      );
+      await page.keyboard.type("e");
+      await page.locator(".terminal-native-flow [data-native-cursor]").click();
+      await page.keyboard.type("f");
       await page.waitForTimeout(100);
       assert.equal(
         received.join(""),
-        "abcd",
+        "abcdef",
         "same native input stays usable inline, without a separate composer",
       );
       control.change(id, "fixture-phone", "Fixture iPhone", {
@@ -442,6 +498,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .getByRole("button", { name: "여기서 제어", exact: true })
         .waitFor();
       const beforePeerSizes = sizes.length;
+      await page.evaluate(() => (window as any).term.textarea.blur());
+      await paragraph.click();
+      await page.keyboard.type("view");
+      assert.equal(
+        await page.evaluate(
+          () => document.activeElement === (window as any).term.textarea,
+        ),
+        false,
+      );
       await page
         .getByRole("button", { name: "터미널 원문", exact: true })
         .click();
@@ -449,7 +514,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => (window as any).term.focus());
       await page.keyboard.type("must stay local");
       await page.waitForTimeout(150);
-      assert.equal(received.join(""), "abcd");
+      assert.equal(received.join(""), "abcdef");
       assert.equal(control.view(id)?.clientId, "phone");
       assert.equal(claims, 0);
       assert.equal(sizes.length, beforePeerSizes);

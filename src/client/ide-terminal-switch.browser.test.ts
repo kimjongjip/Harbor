@@ -457,6 +457,38 @@ test(
       );
       assert.equal(input.map((item) => item.text).join(""), "abcdef");
       // Reload only this isolated fixture, never the user's running Harbor.
+      await page
+        .getByRole("button", { name: "터미널 2분할 보기", exact: true })
+        .click();
+      const mark = input.length;
+      for (const [id, key] of [
+        ["two", "g"],
+        ["one", "h"],
+      ]) {
+        const target = page.locator('[data-terminal-id="' + id + '"]');
+        await target
+          .locator(".terminal-conversation-body")
+          .click({ position: { x: 3, y: 12 } });
+        await page.keyboard.type(key);
+        await page.waitForFunction(
+          ({ id, key }) =>
+            document
+              .querySelector(
+                '[data-terminal-id="' + id + '"] .terminal-native-flow',
+              )
+              ?.textContent?.includes(key),
+          { id, key },
+        );
+      }
+      await page.waitForTimeout(100);
+      assert.deepEqual(
+        input.slice(mark),
+        [
+          { id: "two", text: "g" },
+          { id: "one", text: "h" },
+        ],
+        "pane background clicks route typing to the clicked terminal",
+      );
       await page.reload();
       await page.getByRole("button", { name: "IDE", exact: true }).click();
       await resize.waitFor();

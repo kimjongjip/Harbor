@@ -679,6 +679,46 @@ export default function TerminalPane({
       void pasteFiles(images);
     };
     const mount = element.current!;
+    // The typeset transcript and plain terminal share one input. Listen on
+    // the pane's DOM so portalled transcript rows and empty padding both work.
+    const focusSurface =
+      mount.closest<HTMLElement>(".terminal-card") ??
+      container.current ??
+      mount;
+    const focusAfterClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (
+        !(target instanceof Element) ||
+        !visibilityRef.current.active ||
+        readOnlyRef.current ||
+        infoRef.current.exited ||
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.detail !== 1 ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey
+      )
+        return;
+      if (
+        !mount.contains(target) &&
+        !target.closest(".terminal-card-header") &&
+        !target.matches(
+          ".terminal-card, .terminal-card-body, .terminal-instance, .terminal-surface",
+        )
+      )
+        return;
+      if (
+        target.closest(
+          '.xterm, a, button, input, textarea, select, label, summary, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="link"], [role="dialog"], [role="menuitem"]',
+        )
+      )
+        return;
+      if (mount.ownerDocument.getSelection()?.isCollapsed === false) return;
+      if (mount.ownerDocument.activeElement !== term.textarea) term.focus();
+    };
+    focusSurface.addEventListener("click", focusAfterClick);
     const disposeSelection = installTerminalSelection(mount, term, () => true, {
       onChange: () => setHasSelection(Boolean(selectedText())),
       onNotice: (message) => {
@@ -1368,6 +1408,7 @@ export default function TerminalPane({
     connect();
     return () => {
       stopped = true;
+      focusSurface.removeEventListener("click", focusAfterClick);
       annotationEpoch.current++;
       releasePendingAnnotations([...pendingAnnotationNumbers.current]);
       annotationRef.current = null;
