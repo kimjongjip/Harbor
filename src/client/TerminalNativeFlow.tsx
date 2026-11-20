@@ -38,6 +38,7 @@ const emptyBlocks: RichTerminalBlock[] = [];
 /** Rows [start, split) are newer than saved history; [split, end) is the CLI's live area. */
 export interface NativeFlowRange {
   start: number;
+  promptHistory?: boolean;
   split?: number;
   /** Native widgets and their composer remain visible in xterm outside the reader. */
   end?: number;
@@ -47,6 +48,10 @@ export interface NativeFlowRange {
   defer?: boolean | "repaint";
 }
 interface View {
+  /** Last ordinary frame; never chain snapshots as the user moves up/down. */
+  historyBase?: View;
+  promptHistory?: boolean;
+  historyHeight?: number;
   frame: NativeFlowFrame;
   rows: NativeRun[][];
   start: number;
@@ -63,6 +68,17 @@ interface View {
 const typingWindowMs = 250;
 const outputCoalesceMs = 40;
 const incompleteFrameGraceMs = 160;
+
+function composerStart(view: View) {
+  const { lines, end, baseY } = view.frame;
+  for (let row = end - 1; row >= Math.max(view.split, baseY); row--) {
+    if (/^\s{0,2}[❯›»>](?:\s|$)/u.test(lines[row]))
+      return row > view.split && nativeSeparator(lines[row - 1])
+        ? row - 1
+        : row;
+  }
+  return end;
+}
 
 type RowView = ComponentProps<typeof NativeRow>;
 // Keep every row in the DOM for continuous selection, but don't ask React to
@@ -147,6 +163,7 @@ export function TerminalNativeFlow({
 }) {
   const { theme } = useTheme();
   const root = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
     onFrozenFrame,
@@ -286,6 +303,17 @@ export function TerminalNativeFlow({
           : runs;
       });
       const next: View = {
+        promptHistory: range.promptHistory,
+        historyBase: range.promptHistory
+          ? previous.current?.promptHistory
+            ? previous.current.historyBase
+            : (previous.current ?? undefined)
+          : undefined,
+        historyHeight: range.promptHistory
+          ? previous.current?.promptHistory
+            ? previous.current.historyHeight
+            : composer.current?.offsetHeight || undefined
+          : undefined,
         frame: displayFrame,
         start,
         split,
@@ -395,8 +423,15 @@ export function TerminalNativeFlow({
       root.current,
     );
   }, [term, active, frozen, hasView, nativeInteraction]);
+  const historyEntry = view?.promptHistory
+    ? view.frame.lines.slice(view.split, view.split + 2).join("\n")
+    : undefined;
+  useLayoutEffect(() => {
+    if (historyEntry !== undefined && composer.current)
+      composer.current.scrollTop = 0;
+  }, [historyEntry]);
   if (!view || !active) return null;
-  const partsFor = (from: number, to: number) => {
+  const partsFor = (view: View, from: number, to: number) => {
     const lines = view.frame.lines.slice(from, to);
     return (
       mobileFlowParts(lines, view.blocks) ||
@@ -407,7 +442,7 @@ export function TerminalNativeFlow({
         : part,
     );
   };
-  const renderParts = (parts: FlowPart[]) => {
+  const renderParts = (view: View, parts: FlowPart[], showCursor = true) => {
     const nodes: ReactNode[] = [];
     let rows: RowView[] = [];
     const flush = () => {
@@ -437,7 +472,9 @@ export function TerminalNativeFlow({
           ? clipNativeRuns(view.rows[part.row] || [], part.start)
           : view.rows[part.row] || [],
         cursorOffset:
-          row === view.frame.cursorRow ? view.cursorOffset : undefined,
+          showCursor && row === view.frame.cursorRow
+            ? view.cursorOffset
+            : undefined,
         lineHeight: view.lineHeight,
         separator: nativeSeparator(view.frame.lines[row] || ""),
         backgroundColor:
@@ -459,7 +496,7 @@ export function TerminalNativeFlow({
     minWidth: 0,
     userSelect: "text" as const,
   };
-  const click = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const click = (event: ReactMouseEvent<HTMLDivElement>, source: View) => {
     if (
       (event.target as Element).closest(
         "button,a,summary,input,textarea,[role=button]",
@@ -481,7 +518,7 @@ export function TerminalNativeFlow({
         prefix.selectNodeContents(rowNode);
         prefix.setEnd(range.startContainer, range.startOffset);
         const link = nativeFlowLinkAt(
-          view.frame,
+          source.frame,
           Number(rowNode.dataset.nativeRow),
           prefix.toString().length,
         );
@@ -494,11 +531,25 @@ export function TerminalNativeFlow({
     }
     term.focus();
   };
+  const transcript = view.historyBase ?? view;
   const work =
-    view.split > view.start
-      ? renderParts(partsFor(view.start, view.split))
+    transcript.split > transcript.start
+      ? renderParts(
+          transcript,
+          partsFor(transcript, transcript.start, transcript.split),
+          !view.historyBase,
+        )
       : null;
-  const live = renderParts(partsFor(view.split, view.frame.end));
+  const boundary = transcript.promptHistory
+    ? transcript.split
+    : composerStart(transcript);
+  const activity = renderParts(
+    transcript,
+    partsFor(transcript, transcript.split, boundary),
+    !view.historyBase,
+  );
+  const inputStart = view.historyBase ? view.split : boundary;
+  const input = renderParts(view, partsFor(view, inputStart, view.frame.end));
   return (
     <>
       {work && workTarget
@@ -506,7 +557,7 @@ export function TerminalNativeFlow({
             <div
               className="terminal-native-flow terminal-native-work"
               style={style}
-              onClick={click}
+              onClick={(event) => click(event, transcript)}
             >
               {work}
             </div>,
@@ -517,10 +568,37 @@ export function TerminalNativeFlow({
         className="terminal-native-flow"
         ref={root}
         style={style}
-        onClick={click}
+        onClick={(event) =>
+          click(
+            event,
+            (event.target as Element).closest(".terminal-flow-composer")
+              ? view
+              : transcript,
+          )
+        }
       >
         {!workTarget && work}
-        {live}
+        {activity}
+        <div
+          ref={composer}
+          className="terminal-flow-composer"
+          data-history={view.promptHistory ? true : undefined}
+          style={
+            view.promptHistory
+              ? {
+                  height: view.historyHeight,
+                  minHeight: view.lineHeight * 2,
+                  maxHeight: view.historyHeight
+                    ? undefined
+                    : view.lineHeight * 8,
+                  overflowY: "auto",
+                  overscrollBehavior: "contain",
+                }
+              : undefined
+          }
+        >
+          {input}
+        </div>
       </div>
     </>
   );

@@ -595,6 +595,7 @@ export function TerminalConversation({
       if (menu) return { start: frame.end, defer: "repaint" as const };
       return {
         start: next.nativeStart,
+        promptHistory: next.promptHistory,
         split: next.live ? next.chromeStart : next.nativeStart,
         end: modSurface?.native.end,
         panels: modSurface?.native.panels,
@@ -662,6 +663,7 @@ export function TerminalConversation({
       if (
         !current ||
         next.historyCount !== current.historyCount ||
+        next.promptHistory !== current.promptHistory ||
         next.nativeStart !== current.nativeStart ||
         next.chromeStart !== current.chromeStart ||
         next.live !== current.live
@@ -715,7 +717,16 @@ export function TerminalConversation({
         }
       : nextLayout;
   lastLayout.current = { ...layout, turnCount: turns.length };
-  const running = layout.live && turns.length > 0 && !turns.at(-1)!.complete;
+  // History polls continue during recall. Publish them together with the
+  // current native activity when the user returns to the ordinary composer.
+  const lastBody = useRef<
+    { turns: typeof turns; count: number; live: boolean } | undefined
+  >(undefined);
+  if (!layout.promptHistory || !lastBody.current)
+    lastBody.current = { turns, count: layout.historyCount, live: layout.live };
+  const shown = lastBody.current;
+  const running =
+    shown.live && shown.turns.length > 0 && !shown.turns.at(-1)!.complete;
   // Saved steps of a running turn stream in while its CLI works.
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
   // A newly started turn may not exist in history yet. Keep reading even if
@@ -841,7 +852,7 @@ export function TerminalConversation({
             </button>
           )}
           {detail?.notice && <p role="status">{detail.notice}</p>}
-          {turns.slice(0, layout.historyCount).map((turn, turnIndex) => {
+          {shown.turns.slice(0, shown.count).map((turn, turnIndex) => {
             const props = {
               provider: provider === "claude" ? "Claude" : "Codex",
               hostId: info.hostId,
@@ -851,7 +862,7 @@ export function TerminalConversation({
               completed: turn.complete,
               selectionActive: selected,
             };
-            const live = running && turnIndex === turns.length - 1;
+            const live = running && turnIndex === shown.turns.length - 1;
             const state = turn.complete ? "done" : live ? "live" : "saved";
             return (
               <section

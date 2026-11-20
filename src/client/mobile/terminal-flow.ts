@@ -135,7 +135,8 @@ export function trimNativeRow(runs: NativeRun[]): NativeRun[] {
 }
 /** Full-width terminal borders are decoration, not paragraphs to wrap. */
 export function nativeSeparator(text: string): boolean {
-  return /^\s*[─━═╌╍┄┅┈┉_—-]{12,}\s*$/.test(text);
+  return /^\s*[─━═╌╍┄┅┈┉_—-]{12,}\s*$/.test(text) ||
+    /^\s*[─━]+\s*History\s+\d+\s*\/\s*\d+\s*[─━]+\s*$/i.test(text);
 }
 /** Reservation prefixes are ASCII; retain the styled suffix of a frozen row. */
 export function clipNativeRuns(runs: NativeRun[], start: number): NativeRun[] {

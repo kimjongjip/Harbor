@@ -92,6 +92,24 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate(() => (window as any).releaseHistory());
         await work.waitFor();
         await page.waitForTimeout(200);
+        await page.evaluate(async (prompt) => {
+          const w = window as any;
+          w.term.resize(90, 36);
+          await w.write(
+            "\x1b[2J\x1b[H" +
+              prompt +
+              " Update the sample\r\n● Unrecorded fixture progress · summary\r\n  Active fixture command",
+          );
+          await w.footer();
+        }, prompt);
+        const progress = surface.getByText(
+          "● Unrecorded fixture progress · summary",
+          { exact: true },
+        );
+        await progress.waitFor();
+        const initialY = await progress.evaluate(
+          (el) => el.getBoundingClientRect().top,
+        );
         // History recall belongs to the CLI even when its redraw has no
         // recognizable composer, and while navigating past multiple prompts.
         await page.evaluate((prompt) => {
@@ -148,6 +166,41 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
             .getByText("이전 프롬프트 " + index + " LAST", { exact: true })
             .waitFor({ timeout: 2500 });
           assert.equal(await work.isVisible(), true);
+          if (index === 2) {
+            await page.evaluate(() => {
+              const w = window as any;
+              w.reportText = "History arrived while reading the draft";
+              w.refreshHistory();
+            });
+            await page.waitForTimeout(250);
+          }
+          assert.equal(await progress.isVisible(), true);
+          const inputBox = input.locator(
+            ".terminal-flow-composer[data-history]",
+          );
+          assert.equal(
+            await inputBox.evaluate((el) => {
+              if (el.scrollHeight <= el.clientHeight) return false;
+              el.scrollTop = el.scrollHeight;
+              return el.scrollTop > 0;
+            }),
+            true,
+            "long prompts scroll within the composer",
+          );
+          assert.ok(
+            Math.abs(
+              (await progress.evaluate(
+                (el) => el.getBoundingClientRect().top,
+              )) - initialY,
+            ) <= 1,
+            "the activity above the composer must not jump",
+          );
+          assert.equal(
+            await surface
+              .getByText("History arrived while reading the draft")
+              .count(),
+            0,
+          );
           assert.equal(
             await page.evaluate(
               () => document.activeElement === (window as any).term.textarea,
@@ -159,6 +212,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await surface
           .getByText(prompt + " UNSENT DRAFT", { exact: true })
           .waitFor({ timeout: 2500 });
+        await surface
+          .getByText("History arrived while reading the draft")
+          .waitFor({ timeout: 3000 });
         assert.equal(
           await page.evaluate(() => {
             const w = window as any;

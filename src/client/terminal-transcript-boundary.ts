@@ -368,9 +368,15 @@ export function liveTranscriptLayout(
     !!state.navigatingHistory,
   );
   if (historyInput !== undefined) {
+    // Also recover the activity still on the screen if the reader first
+    // opens while the CLI is already browsing history.
+    const activity =
+      state.provider === "claude"
+        ? claudeActivityStart(frame.lines, historyInput, frame.baseY)
+        : undefined;
     return {
       historyCount: turns.length,
-      nativeStart: historyInput,
+      nativeStart: activity ?? historyInput,
       chromeStart: historyInput,
       live: true,
       promptHistory: true,
