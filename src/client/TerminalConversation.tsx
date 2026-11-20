@@ -46,6 +46,29 @@ import {
 
 export type ConversationMode = "auto" | "conversation" | "terminal";
 const emptyBlocks: RichTerminalBlock[] = [];
+// Used only to recognize Down returning to the draft that preceded recall.
+// Rendering the recalled prompt itself never depends on parsing its text.
+function visibleDraft(frame: NativeFlowFrame | undefined) {
+  if (!frame) return;
+  const { lines, cursorRow, baseY, end } = frame;
+  let start = cursorRow;
+  while (
+    start >= baseY &&
+    !/^\s{0,2}[❯›»>](?:\s|$)/u.test(lines[start] || "")
+  ) {
+    if (
+      start !== cursorRow &&
+      !frame.wrapped[start + 1] &&
+      !/^  \S/.test(lines[start] || "")
+    )
+      return;
+    start--;
+  }
+  if (start < baseY) return;
+  let stop = cursorRow + 1;
+  while (stop < end && frame.wrapped[stop]) stop++;
+  return lines.slice(start, stop).join("\n").trimEnd();
+}
 const emptyTimeline: NonNullable<HistoryDetail["timeline"]> = [];
 const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
@@ -536,14 +559,71 @@ export function TerminalConversation({
   );
   const [nativeMenu, setNativeMenu] = useState(false);
   const menuVisible = useRef(false);
+  const latestFrame = useRef<NativeFlowFrame | undefined>(undefined);
+  const recall = useRef<{ draft?: string; down: boolean } | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!active || mode === "terminal" || info.exited) return;
+    const observeInput = (data: string) => {
+      // Observe the original xterm input. The CLI owns the history, including
+      // queued messages and multiline navigation; never replay arrow keys.
+      if (/^\x1b(?:\[|O)A$/.test(data)) {
+        if (recall.current) recall.current.down = false;
+        else if (!menuVisible.current) {
+          recall.current = {
+            draft: visibleDraft(latestFrame.current),
+            down: false,
+          };
+          menuVisible.current = true;
+          setNativeMenu(true);
+        }
+      } else if (recall.current) {
+        if (/^\x1b(?:\[|O)B$/.test(data)) recall.current.down = true;
+        else if (data === "\r" || data === "\x1b" || data === "\x03") {
+          recall.current = undefined;
+          menuVisible.current = false;
+          setNativeMenu(false);
+        }
+      }
+    };
+    const subscription = term.onData(observeInput);
+    // Extended keyboard protocols may encode the same unmodified arrow
+    // differently from CSI/SS3. Observe the physical key in that case.
+    const keys = term.onKey?.(({ key, domEvent }) => {
+      if (
+        domEvent.altKey ||
+        domEvent.ctrlKey ||
+        domEvent.shiftKey ||
+        domEvent.metaKey ||
+        /^\x1b(?:\[|O)[AB]$/.test(key)
+      )
+        return;
+      if (domEvent.key === "ArrowUp") observeInput("\x1b[A");
+      if (domEvent.key === "ArrowDown") observeInput("\x1b[B");
+    });
+    return () => {
+      subscription.dispose();
+      keys?.dispose();
+    };
+  }, [term, active, mode, info.exited]);
   useLayoutEffect(() => {
     publishedLayout.current = undefined;
     publishedBuffer.current = undefined;
+    latestFrame.current = undefined;
+    recall.current = undefined;
     menuVisible.current = false;
     setNativeMenu(false);
-  }, [term, info.id, info.hostId, sessionId, provider]);
+  }, [term, info.id, info.hostId, sessionId, provider, mode, info.exited]);
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
+      latestFrame.current = frame;
+      if (recall.current) {
+        const { draft, down } = recall.current;
+        if (!down || draft === undefined || visibleDraft(frame) !== draft)
+          return { start: frame.end, defer: "repaint" as const };
+        recall.current = undefined;
+      }
       const menu = nativeMenuVisible(
         frame.lines,
         frame.end,

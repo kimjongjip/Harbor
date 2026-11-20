@@ -92,79 +92,93 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate(() => (window as any).releaseHistory());
         await work.waitFor();
         await page.waitForTimeout(200);
-        if (provider === "claude") {
-          await page.evaluate(() => {
-            const w = window as any;
-            w.term.resize(90, 36);
-            w.recall = w.term.onData((data: string) => {
-              if (data === "\x1b[B") {
-                void w.write(
-                  "\x1b[2J\x1b[H✻ Working… (esc to interrupt)\r\n" +
-                    "─".repeat(90) +
-                    "\r\n❯ Current draft\r\n" +
-                    "─".repeat(90) +
-                    "\r\n  esc to interrupt\x1b[3;16H",
-                );
-                return;
-              }
-              if (data !== "\x1b[A") return;
-              void w.write(
-                "\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[H• Saved output\r\n✻ Working… (esc to interrupt)\r\n" +
-                  "─".repeat(90) +
-                  "\r\n❯ Previous prompt FIRST\r\n" +
-                  Array.from(
-                    { length: 23 },
-                    (_, i) => "  recalled prompt line " + i,
-                  ).join("\r\n") +
-                  "\r\n  Previous prompt LAST\r\n" +
-                  "─".repeat(90) +
-                  "\r\n  esc to interrupt\x1b[28;18H",
+        // History recall belongs to the CLI even when its redraw has no
+        // recognizable composer, and while navigating past multiple prompts.
+        await page.evaluate((prompt) => {
+          const w = window as any;
+          let index = 0;
+          w.term.resize(90, 36);
+          w.recall = w.term.onData((data: string) => {
+            if (!/^\x1b(?:\[|O)[AB]$/.test(data)) return;
+            index += data.endsWith("A") ? 1 : -1;
+            if (!index) {
+              void w.write("\x1b[2J\x1b[H").then(() => w.footer());
+              return;
+            }
+            void w.write(
+              "\x1b[2J\x1b[HWorking…\r\n" +
+                prompt +
+                " 이전 프롬프트 " +
+                index +
+                " FIRST\r\n" +
+                Array.from(
+                  { length: 23 },
+                  (_, i) => "  recalled prompt line " + i,
+                ).join("\r\n") +
+                "\r\n  이전 프롬프트 " +
+                index +
+                " LAST\r\n  esc to interrupt",
+            );
+          });
+          w.term.focus();
+        }, prompt);
+        for (const [key, index] of [
+          ["ArrowUp", 1],
+          ["ArrowUp", 2],
+          ["ArrowDown", 1],
+        ] as const) {
+          await page.keyboard.press(key);
+          await page.waitForFunction(
+            (index) => {
+              const w = window as any,
+                t = w.term,
+                b = t.buffer.active;
+              const rows = Array.from(
+                { length: t.rows },
+                (_, i) => b.getLine(b.baseY + i)?.translateToString(true) || "",
               );
-            });
-            w.term.focus();
-          });
-          await page.keyboard.press("ArrowUp");
-          const inputFlow = surface.locator(
-            ".terminal-native-flow:not(.terminal-native-work)",
+              const box = t.element
+                .querySelector(".xterm-screen")
+                .getBoundingClientRect();
+              const hit = document.elementFromPoint(
+                box.left + 10,
+                box.top + 10,
+              );
+              return (
+                rows.some((s) =>
+                  s.includes("이전 프롬프트 " + index + " FIRST"),
+                ) &&
+                rows.some((s) =>
+                  s.includes("이전 프롬프트 " + index + " LAST"),
+                ) &&
+                t.element.contains(hit) &&
+                document.activeElement === t.textarea
+              );
+            },
+            index,
+            { timeout: 2500 },
           );
-          await inputFlow
-            .getByText("❯ Previous prompt FIRST", { exact: true })
-            .waitFor({ timeout: 2000 });
-          await inputFlow
-            .getByText("  Previous prompt LAST", { exact: true })
-            .waitFor({ timeout: 2000 });
-          assert.equal(
-            await work.count(),
-            1,
-            "recalling a prompt must not remove the saved work",
-          );
-          assert.equal(
-            await surface
-              .locator(".terminal-native-work")
-              .getByText("❯ Previous prompt FIRST", { exact: true })
-              .count(),
-            0,
-          );
-          await page.keyboard.press("ArrowDown");
-          await inputFlow
-            .getByText("❯ Current draft", { exact: true })
-            .waitFor({ timeout: 2000 });
-          assert.equal(
-            await inputFlow
-              .getByText("❯ Previous prompt FIRST", { exact: true })
-              .count(),
-            0,
-          );
-          await page.evaluate(async () => {
-            const w = window as any;
-            w.recall.dispose();
-            w.term.reset();
-            w.term.resize(90, 24);
-            w.inputs.length = 0;
-            await w.partial();
-            await w.footer();
-          });
+          assert.equal(await surface.isVisible(), false);
         }
+        await page.keyboard.press("ArrowDown");
+        await surface
+          .getByText(prompt + " UNSENT DRAFT", { exact: true })
+          .waitFor({ timeout: 2500 });
+        assert.deepEqual(await page.evaluate(() => (window as any).inputs), [
+          "\x1b[A",
+          "\x1b[A",
+          "\x1b[B",
+          "\x1b[B",
+        ]);
+        await page.evaluate(async () => {
+          const w = window as any;
+          w.recall.dispose();
+          w.term.reset();
+          w.term.resize(90, 24);
+          w.inputs.length = 0;
+          await w.partial();
+          await w.footer();
+        });
         await page.evaluate(() => {
           (window as any).savedWork = document.querySelector(
             '[data-work-item="command"]',
