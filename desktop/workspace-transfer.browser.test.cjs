@@ -148,10 +148,28 @@ test(
       await tab(main, b).waitFor();
       await tab(main, a).getByRole("button").click();
       const next = app.waitForEvent("window");
+      const openButton = main.getByRole("button", {
+        name: "터미널 새 창: Fixture A",
+        exact: true,
+      });
+      await openButton.hover();
+      let secondary = await next;
+      await secondary.waitForLoadState("load");
+      assert.equal(await secondary.locator("#root").innerHTML(), "");
+      assert.equal(
+        await secondary.evaluate(
+          () =>
+            performance
+              .getEntriesByType("resource")
+              .filter((e) => new URL(e.name).pathname.startsWith("/api/"))
+              .length,
+        ),
+        0,
+      );
+      assert.equal(await tab(main, a).count(), 1);
       await main
         .getByRole("button", { name: "터미널 새 창: Fixture A", exact: true })
         .click();
-      let secondary = await next;
       secondary.setDefaultTimeout(8000);
       await tab(secondary, a).waitFor();
       await tab(main, a).waitFor({ state: "detached" });
@@ -356,6 +374,16 @@ test(
       );
       await floating.close();
       await tab(main, a).waitFor();
+      await main.mouse.move(2, 2);
+      const speculative = app.waitForEvent("window", { timeout: 6000 });
+      await main
+        .getByRole("button", { name: "새 워크스페이스 창", exact: true })
+        .hover();
+      const unused = await speculative;
+      await unused.waitForLoadState("load");
+      assert.equal(await unused.locator("#root").innerHTML(), "");
+      await unused.waitForEvent("close", { timeout: 8500 });
+      assert.equal(await tab(main, a).count(), 1);
       const final = await boot();
       for (const id of [a, b])
         assert.equal(

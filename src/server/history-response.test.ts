@@ -1,7 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { MessageItem } from "../shared/types.js";
-import { serializeHistoryDetailForRead } from "./history-response.js";
+import {
+  serializeHistoryDetailForRead,
+  TerminalHistorySnapshots,
+} from "./history-response.js";
+
+test("history handoff is scoped, consumed once, byte bounded and expires", async () => {
+  const pages = new TerminalHistorySnapshots(60000, 10, 8);
+  pages.remember("a", "12345", 2);
+  pages.remember("a", "older", 1);
+  assert.equal(pages.take("b"), undefined);
+  assert.equal(pages.take("a"), "12345");
+  assert.equal(pages.take("a"), undefined);
+  pages.remember("a", "123456", 3);
+  pages.remember("b", "123456", 4);
+  assert.equal(pages.take("a"), undefined);
+  pages.remember("b", "123456789", 5);
+  assert.equal(pages.take("b"), undefined);
+  const expired = new TerminalHistorySnapshots(5);
+  expired.remember("a", "expired", 0);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(expired.take("a"), undefined);
+});
 
 test("compact history keeps ordered kind:id references and one copy of questions/answers/notices", () => {
   const user: MessageItem = { id: "same:id", kind: "user", text: "Question", imageCount: 1 };

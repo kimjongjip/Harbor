@@ -13,23 +13,59 @@ const empty: AppState = {
   discussions: [],
   terminals: [],
 };
+export interface WorkspaceBootstrap {
+  token: string;
+  state: AppState;
+  workspace?: DesktopWorkspace;
+  sshAliases: string[];
+  localCwd: string;
+  credentialStorageAvailable?: boolean;
+  capabilities?: Record<string, boolean>;
+}
+export async function readBootstrap(
+  signal: AbortSignal,
+): Promise<WorkspaceBootstrap> {
+  const response = await fetch("/api/bootstrap", { signal });
+  if (!response.ok) {
+    if (remoteDesktop && response.status === 401)
+      window.dispatchEvent(new Event("harbor:device-expired"));
+    throw new Error("Harbor 서버에 연결할 수 없습니다.");
+  }
+  return response.json();
+}
+export interface WorkspaceStartup {
+  current?: { data?: WorkspaceBootstrap; request: Promise<WorkspaceBootstrap> };
+}
 export function useHarbor(
   openIds: string[],
   onError: (message: string) => void,
+  startup?: WorkspaceStartup,
 ) {
-  const [state, setState] = useState<AppState>(empty);
+  const initial = startup?.current?.data;
+  const [state, setState] = useState<AppState>(initial?.state ?? empty);
   const [views, setViews] = useState<Record<string, SessionView>>({});
   const [connected, setConnected] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [workspace, setWorkspace] = useState<DesktopWorkspace>();
-  const [aliases, setAliases] = useState<string[]>([]);
-  const [localCwd, setLocalCwd] = useState("");
-  const [credentialStorageAvailable, setCredentialStorageAvailable] =
-    useState(false);
-  const [terminalColorsSupported, setTerminalColorsSupported] = useState(false);
-  const [terminalInputOptimized, setTerminalInputOptimized] = useState(false);
-  const [terminalReplayState, setTerminalReplayState] = useState(false);
-  const [claudeIntegration, setClaudeIntegration] = useState(false);
+  const [ready, setReady] = useState(!!initial);
+  const [workspace, setWorkspace] = useState<DesktopWorkspace | undefined>(
+    initial?.workspace,
+  );
+  const [aliases, setAliases] = useState<string[]>(initial?.sshAliases ?? []);
+  const [localCwd, setLocalCwd] = useState(initial?.localCwd ?? "");
+  const [credentialStorageAvailable, setCredentialStorageAvailable] = useState(
+    !!initial?.credentialStorageAvailable,
+  );
+  const [terminalColorsSupported, setTerminalColorsSupported] = useState(
+    !!initial?.capabilities?.terminalColors,
+  );
+  const [terminalInputOptimized, setTerminalInputOptimized] = useState(
+    !!initial?.capabilities?.terminalInputOptimized,
+  );
+  const [terminalReplayState, setTerminalReplayState] = useState(
+    !!initial?.capabilities?.terminalReplayState,
+  );
+  const [claudeIntegration, setClaudeIntegration] = useState(
+    !!initial?.capabilities?.claudeIntegration,
+  );
   const socketRef = useRef<WebSocket | null>(null);
   const idsRef = useRef(openIds);
   idsRef.current = openIds;
@@ -63,15 +99,9 @@ export function useHarbor(
       bootstrap = new AbortController();
       const deadline = setTimeout(() => bootstrap?.abort(), 12000);
       try {
-        const response = await fetch("/api/bootstrap", {
-          signal: bootstrap.signal,
-        });
-        if (!response.ok) {
-          if (remoteDesktop && response.status === 401)
-            window.dispatchEvent(new Event("harbor:device-expired"));
-          throw new Error("Harbor 서버에 연결할 수 없습니다.");
-        }
-        const data = await response.json();
+        const request = startup?.current?.request;
+        if (startup) startup.current = undefined;
+        const data = await (request ?? readBootstrap(bootstrap.signal));
         clearTimeout(deadline);
         if (!current()) return;
         setToken(data.token);

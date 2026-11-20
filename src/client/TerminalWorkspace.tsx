@@ -706,6 +706,7 @@ export default function TerminalWorkspace({
         <button
           className="icon-button compact"
           title="별도 창에서 열기"
+          data-prepare-window
           aria-label={`터미널 새 창: ${terminalLabel(info, terminals)}`}
           onClick={() => void openWindow(info.id)}
         >
@@ -825,6 +826,7 @@ export default function TerminalWorkspace({
           <button
             className="button secondary small"
             title="새 워크스페이스 창 · Ctrl+Shift+N"
+            data-prepare-window
             aria-label="새 워크스페이스 창"
             onClick={() =>
               void window.harborDesktop

@@ -43,6 +43,7 @@ export async function api<T = any>(
   body?: unknown,
   method = "POST",
   signal?: AbortSignal,
+  onResponse?: (response: Response) => void,
 ): Promise<T> {
   const response = await fetch(`/api${path}`, {
     signal,
@@ -59,6 +60,7 @@ export async function api<T = any>(
       response.status,
       value.code,
     );
+  onResponse?.(response);
   return value;
 }
 export const sid = (id: string) => `/sessions/${encodeURIComponent(id)}`;

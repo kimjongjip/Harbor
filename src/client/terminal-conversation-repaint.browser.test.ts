@@ -25,12 +25,17 @@ import{Terminal}from'@xterm/xterm';import{TerminalConversation}from'./src/client
 import'@xterm/xterm/css/xterm.css';import'./src/client/styles.css';import'./src/client/themes.css';
 Object.defineProperty(document,'visibilityState',{get:()=> 'visible'});
 window.inputs=[];window.requests=[];window.pendingTool=false;window.reportText='';
+window.harborDesktop={workspaceTabs:()=>({})};
 window.historyReady=new Promise(resolve=>window.releaseHistory=resolve);
+window.freshReady=new Promise(resolve=>window.releaseFresh=resolve);
 window.fetch=async(url,options)=>{window.requests.push({url:String(url),method:options?.method});await window.historyReady;
+const preview = new URL(url,location.href).searchParams.has('reopen');
+if(!preview) await window.freshReady;
 const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn'},
 {id:'command',kind:'command',text:window.pendingTool?'Bash':'python3 sample.py',detail:window.pendingTool?'command: python fixture.py':'SAVED COMMAND OUTPUT',toolUseId:'fixture-tool',turnId:'turn',status:window.pendingTool?'started':'completed'}];
 if(window.reportText)timeline.push({id:'progress',kind:'assistant',text:window.reportText,turnId:'turn',...('${provider}'==='codex'?{phase:'commentary'}:{})});
-return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json'}})};
+if(preview)timeline.push({id:'provisional',kind:'assistant',text:'Last known handoff report',turnId:'turn',phase:'commentary'});
+return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json',...(preview?{'X-Harbor-History-Snapshot':'1'}:{})}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
 window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
 window.refreshHistory=()=>document.dispatchEvent(new Event('visibilitychange'));
@@ -90,6 +95,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         assert.equal(await surface.getByText(/OLD RAW DIFF/).count(), 0);
         assert.equal(await surface.getByText("대화를 불러오는 중…").count(), 1);
         await page.evaluate(() => (window as any).releaseHistory());
+        const provisional = surface.getByText("Last known handoff report", {
+          exact: true,
+        });
+        await provisional.waitFor();
+        await page.waitForFunction(() =>
+          (window as any).requests.some(
+            (r: any) =>
+              r.url.includes("terminalView=") && !r.url.includes("reopen="),
+          ),
+        );
+        await page.evaluate(() => (window as any).releaseFresh());
+        await provisional.waitFor({ state: "detached", timeout: 2500 });
         await work.waitFor();
         await page.waitForTimeout(200);
         await page.evaluate(async (prompt) => {

@@ -7,6 +7,7 @@ interface WorkspaceTabPlacement {
 interface Window {
   harborDesktop?: {
     readonly platform: string;
+    awaitWorkspaceActivation?: () => Promise<boolean>;
     readonly version: string;
     updateState?: () => Promise<import("./UpdateButton").DesktopUpdateState>;
     checkUpdate?: () => Promise<

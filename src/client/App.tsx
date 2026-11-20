@@ -30,7 +30,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
-import { useHarbor } from "./useHarbor";
+import { useHarbor, type WorkspaceStartup } from "./useHarbor";
 import { BackendStatus } from "./BackendStatus";
 import { UpdateButton } from "./UpdateButton";
 import { version } from "../../package.json";
@@ -100,7 +100,7 @@ type HistoryDrop = {
   edge?: DropEdge;
   scope?: DropScope;
 };
-export default function App() {
+export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const [error, setError] = useState("");
   const onError = useCallback((message: string) => setError(message), []);
   const {
@@ -113,7 +113,7 @@ export default function App() {
     terminalInputOptimized,
     terminalReplayState,
     claudeIntegration,
-  } = useHarbor(noSessions, onError);
+  } = useHarbor(noSessions, onError, startup);
   const { hosts: orderedHosts, moveHost, moveBy } = useServerOrder(state.hosts);
   const { theme, setTheme } = useTheme();
   const [typographyOpen, setTypographyOpen] = useState(false);

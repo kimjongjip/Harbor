@@ -39,7 +39,10 @@ import { Terminals } from "./terminals.js";
 import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
 import { History } from "./history.js";
-import { serializeHistoryDetailForRead } from "./history-response.js";
+import {
+  serializeHistoryDetailForRead,
+  TerminalHistorySnapshots,
+} from "./history-response.js";
 import { historyActivities } from "./history-activity.js";
 import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
@@ -111,6 +114,7 @@ const codexUsageHistory = new CodexUsageHistory();
 const codexAgentTelemetry = new CodexAgentTelemetry();
 const claudeHistory = new ClaudeHistory();
 const historyProvider = z.enum(["codex", "claude"]).default("codex");
+const historySnapshots = new TerminalHistorySnapshots();
 const historyReader = (provider: "codex" | "claude") =>
   provider === "claude" ? claudeHistory : history;
 const notices = new TerminalNotices();
@@ -1109,7 +1113,11 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.44" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.45" }),
+);
+// The desktop window broker only needs IDs to validate tab ownership.
+app.get("/api/terminals/ids", (_req, res) =>
+  res.json(terminals.list().map((terminal) => terminal.id)),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({
@@ -1952,21 +1960,56 @@ app.get("/api/hosts/:id/history/:threadId/activity/:ref", (req, res) => {
 });
 app.get("/api/hosts/:id/history/:threadId", async (req, res) => {
   const host = hub.host(String(req.params.id));
-  res.json(
-    serializeHistoryDetailForRead(
-      await historyReader(historyProvider.parse(req.query.provider)).read(
-        host,
-        await passwordFor(host.id),
-        historyThreadId.parse(req.params.threadId),
-        z.string().max(4000).optional().parse(req.query.cursor),
-        {
-          includeActivity:
-            z.enum(["0", "1"]).optional().parse(req.query.includeActivity) ===
-            "1",
-        },
-      ),
+  const provider = historyProvider.parse(req.query.provider);
+  const sessionId = historyThreadId.parse(req.params.threadId);
+  const cursor = z.string().max(4000).optional().parse(req.query.cursor);
+  const includeActivity =
+    z.enum(["0", "1"]).optional().parse(req.query.includeActivity) === "1";
+  const terminal =
+    !desktop.device(req) &&
+    !cursor &&
+    includeActivity &&
+    typeof req.query.terminalView === "string"
+      ? terminals
+          .list()
+          .find(
+            (t) =>
+              t.id === req.query.terminalView &&
+              !t.exited &&
+              t.hostId === host.id &&
+              (t.agentKind ||
+                (t.program?.startsWith("claude") ? "claude" : "codex")) ===
+                provider &&
+              (t.agentSessionId || t.resumeThreadId) === sessionId,
+          )
+      : undefined;
+  const key = terminal
+    ? JSON.stringify([host, provider, sessionId, terminal.id])
+    : undefined;
+  if (key && req.query.reopen === "1") {
+    const previous = historySnapshots.take(key);
+    if (previous !== undefined) {
+      res.set("X-Harbor-History-Snapshot", "1").type("json").send(previous);
+      return;
+    }
+  }
+  const started = performance.now();
+  const detail = serializeHistoryDetailForRead(
+    await historyReader(provider).read(
+      host,
+      await passwordFor(host.id),
+      sessionId,
+      cursor,
+      { includeActivity },
     ),
   );
+  if (!key) {
+    res.json(detail);
+    return;
+  }
+  const body = JSON.stringify(detail);
+  historySnapshots.remember(key, body, started);
+  res.type("json").send(body);
 });
 const historyResumer = new HistoryResumer(
   terminals,
@@ -2376,6 +2419,17 @@ if (development) {
   const clientDirectory = resolve("dist/client");
   if (!existsSync(join(clientDirectory, "index.html")))
     throw new Error("먼저 npm run build를 실행하세요.");
+  // Vite content-hashes generated assets. Keep HTML and API responses on
+  // their existing cache policy so a new build always selects its own assets.
+  app.use(
+    "/assets",
+    express.static(join(clientDirectory, "assets"), {
+      setHeaders(res, file) {
+        if (/-[\w-]{8,}\.[\w]+$/.test(file))
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      },
+    }),
+  );
   app.use(express.static(clientDirectory));
   app.get("/{*path}", (_req, res) =>
     res.sendFile(join(clientDirectory, "index.html")),

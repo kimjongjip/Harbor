@@ -1,4 +1,36 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const activation = process.argv?.includes("--harbor-prepared-workspace")
+  ? new Promise((resolve) =>
+      ipcRenderer.once("harbor:activate-workspace", () => resolve(true)),
+    )
+  : undefined;
+let hoverTimer;
+document.addEventListener("pointerdown", () => clearTimeout(hoverTimer), true);
+document.addEventListener(
+  "pointerover",
+  (event) => {
+    if (!event.isTrusted || !(event.target instanceof Element)) return;
+    const control = event.target.closest("[data-prepare-window]");
+    if (!control || control.contains(event.relatedTarget)) return;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(
+      () => ipcRenderer.send("harbor:prepare-workspace"),
+      100,
+    );
+  },
+  true,
+);
+document.addEventListener(
+  "pointerout",
+  (event) => {
+    const control =
+      event.target instanceof Element &&
+      event.target.closest("[data-prepare-window]");
+    if (control && !control.contains(event.relatedTarget))
+      clearTimeout(hoverTimer);
+  },
+  true,
+);
 // No filesystem, shell, credential or unrestricted IPC access is exposed to the UI.
 let nativeDrag;
 let acceptedDrop;
@@ -77,7 +109,8 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.18.44",
+    ...(activation ? { awaitWorkspaceActivation: () => activation } : {}),
+    version: "1.18.45",
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
     checkUpdate: () =>
       navigator.userActivation.isActive

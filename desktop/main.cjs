@@ -34,6 +34,34 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535)
   throw new Error("Invalid HARBOR_PORT");
 const origin = `http://127.0.0.1:${port}`;
 const windows = new Set();
+const windowDocuments = new WeakMap();
+let prepared;
+function discardPrepared(source) {
+  if (!prepared || (source && prepared.source !== source)) return;
+  const entry = prepared;
+  prepared = undefined;
+  clearTimeout(entry.timer);
+  if (!entry.win.isDestroyed()) entry.win.destroy();
+}
+function prepareWorkspace(source) {
+  if (quitting || prepared || !windows.has(source) || source.isDestroyed())
+    return;
+  const key = randomUUID();
+  let win;
+  try {
+    win = createWindow(origin + "/", newWindowBounds({ source }), key, true);
+  } catch {
+    return;
+  } // An optional preparation must never cancel the real drag.
+  if (!win) return;
+  prepared = {
+    key,
+    win,
+    source,
+    timer: setTimeout(() => discardPrepared(), 5000),
+  };
+  prepared.timer.unref();
+}
 const { WorkspaceTabs } = require("./workspace-tabs.cjs");
 let workspaceTabs;
 const workspaceKeys = new Map();
@@ -41,8 +69,9 @@ const detaching = new Map();
 const terminalFocusRequests = new Map();
 const tabDrags = new Map();
 let dragEscapeRegistered = false;
-function cancelTabDrag(contentsId) {
+function cancelTabDrag(contentsId, keepPrepared = false) {
   const drag = tabDrags.get(contentsId);
+  if (drag && !keepPrepared) discardPrepared(drag.source);
   if (drag) clearTimeout(drag.timeout);
   tabDrags.delete(contentsId);
   if (!tabDrags.size && dragEscapeRegistered) {
@@ -362,8 +391,34 @@ function newWindowBounds({ terminal = false, source, point } = {}) {
     y: Math.max(area.y, Math.min(y, area.y + area.height - height)),
   };
 }
-function createWindow(url = origin + "/", bounds, key) {
+function createWindow(
+  url = origin + "/",
+  bounds,
+  key,
+  prepareOnly = false,
+  waitForTab = false,
+) {
   if (quitting || !isAppPage(url)) return;
+  if (!key && url === origin + "/" && prepared && !prepared.win.isDestroyed()) {
+    const entry = prepared;
+    prepared = undefined;
+    clearTimeout(entry.timer);
+    const win = entry.win;
+    workspaceTabs.add(entry.key);
+    workspaceKeys.set(win, entry.key);
+    windows.add(win);
+    const requested =
+      bounds || newWindowBounds({ source: BrowserWindow.getFocusedWindow() });
+    win.setMinimumSize(requested.minWidth, requested.minHeight);
+    win.setBounds(requested);
+    win.setSkipTaskbar(false);
+    const doc = windowDocuments.get(win);
+    doc.waitForTab = waitForTab;
+    if (doc.domReady && !waitForTab)
+      win.webContents.send("harbor:activate-workspace");
+    if (doc.painted && process.env.HARBOR_DESKTOP_HIDDEN !== "1") win.show();
+    return win;
+  }
   key ??= workspaceTabs.add();
   const target = new URL(url);
   if (key !== "main") target.searchParams.set("workspace", key);
@@ -395,9 +450,12 @@ function createWindow(url = origin + "/", bounds, key) {
     title: "Harbor",
     backgroundColor: "#ffffff",
     show: false,
+    skipTaskbar: prepareOnly,
     icon: iconPath,
     autoHideMenuBar: true,
     webPreferences: {
+      additionalArguments:
+        prepareOnly || waitForTab ? ["--harbor-prepared-workspace"] : [],
       preload: path.join(root, "desktop", "preload.cjs"),
       contextIsolation: true,
       sandbox: true,
@@ -430,12 +488,34 @@ function createWindow(url = origin + "/", bounds, key) {
       relaunchDisplayName: "Harbor",
     });
   }
-  windows.add(win);
-  workspaceKeys.set(win, key);
+  if (!prepareOnly) {
+    windows.add(win);
+    workspaceKeys.set(win, key);
+  }
+  const doc = { domReady: false, painted: false, waitForTab };
+  windowDocuments.set(win, doc);
+  // Register before navigation: a prepared renderer may be ready before
+  // the user releases the mouse. Reloads of adopted windows also activate.
+  doc.ready = new Promise((resolve, reject) => {
+    win.webContents.once("dom-ready", resolve);
+    win.webContents.once("did-fail-load", () =>
+      reject(Error("창을 열지 못했습니다.")),
+    );
+    win.once("closed", () => reject(Error("창이 닫혔습니다.")));
+  });
+  doc.ready.catch(() => {});
+  win.webContents.on("dom-ready", () => {
+    doc.domReady = true;
+    if ((prepareOnly || waitForTab) && !doc.waitForTab && windows.has(win))
+      win.webContents.send("harbor:activate-workspace");
+  });
   win.once("ready-to-show", () => {
-    if (process.env.HARBOR_DESKTOP_HIDDEN !== "1") win.show();
+    doc.painted = true;
+    if (windows.has(win) && process.env.HARBOR_DESKTOP_HIDDEN !== "1")
+      win.show();
   });
   win.on("close", (event) => {
+    if (!windows.has(win)) return;
     workspaceTabs.bounds[key] = win.getNormalBounds();
     workspaceTabs.save();
     if (!quitting && windows.size === 1) {
@@ -444,6 +524,12 @@ function createWindow(url = origin + "/", bounds, key) {
     }
   });
   win.on("closed", () => {
+    if (prepared?.win === win) {
+      clearTimeout(prepared.timer);
+      prepared = undefined;
+    }
+    if (!windows.has(win)) return;
+    discardPrepared(win);
     windows.delete(win);
     terminalFocusRequests.delete(contentsId);
     cancelTabDrag(contentsId);
@@ -484,6 +570,10 @@ function createWindow(url = origin + "/", bounds, key) {
     recordLifecycle("window-responsive", { windowId: win.id }),
   );
   win.webContents.on("render-process-gone", (_event, details) => {
+    if (prepared?.win === win) {
+      discardPrepared();
+      return;
+    }
     recordLifecycle("renderer-exit", {
       windowId: win.id,
       reason: details.reason,
@@ -498,7 +588,9 @@ function createWindow(url = origin + "/", bounds, key) {
           "보기 메뉴의 새로고침으로 다시 연결할 수 있습니다. 서버 작업은 별도로 유지됩니다.",
       });
   });
-  void win.loadURL(url);
+  void win.loadURL(url).catch(() => {
+    if (prepared?.win === win) discardPrepared();
+  });
   return win;
 }
 
@@ -532,13 +624,11 @@ function trustedWindow(event) {
   return win;
 }
 async function terminalInventory() {
-  const response = await fetch(origin + "/api/bootstrap", {
+  const response = await fetch(origin + "/api/terminals/ids", {
     signal: AbortSignal.timeout(3000),
   });
   if (!response.ok) throw new Error("터미널 목록을 확인할 수 없습니다.");
-  return (await response.json()).state.terminals
-    .map((t) => t.id)
-    .filter(validTerminalId);
+  return (await response.json()).filter(validTerminalId);
 }
 function outside(point, bounds, margin = 0) {
   return (
@@ -566,6 +656,11 @@ async function moveTab(id, target, before, inventory, select = true) {
   )
     return false;
   broadcastTerminalWindows();
+  const doc = windowDocuments.get(target);
+  if (doc?.waitForTab) {
+    doc.waitForTab = false;
+    if (doc.domReady) target.webContents.send("harbor:activate-workspace");
+  }
   if (select) selectInWindow(target, id);
   return true;
 }
@@ -573,26 +668,33 @@ async function detachTerminalWindow(id, source, point) {
   if (quitting || !validTerminalId(id)) return false;
   if (detaching.has(id)) return detaching.get(id);
   const task = (async () => {
-    const ids = await terminalInventory();
-    if (source.isDestroyed() || !ids.includes(id)) return false;
+    if (source.isDestroyed()) return false;
     const owner = ownerWindow(id);
     if (owner !== source) {
       if (owner) selectInWindow(owner, id);
       return !!owner;
     }
-    const win = createWindow(origin + "/", popoutBounds(point, source));
+    const win = createWindow(
+      origin + "/",
+      popoutBounds(point, source),
+      undefined,
+      false,
+      true,
+    );
     if (!win) return false;
     try {
-      await new Promise((resolve, reject) => {
-        win.webContents.once("did-finish-load", resolve);
-        win.webContents.once("did-fail-load", () =>
-          reject(Error("창을 열지 못했습니다.")),
-        );
-        win.once("closed", () => reject(Error("창이 닫혔습니다.")));
-      });
-      if (source.isDestroyed() || ownerWindow(id) !== source || quitting)
+      await windowDocuments.get(win).ready;
+      const ids = await terminalInventory();
+      if (
+        source.isDestroyed() ||
+        ownerWindow(id) !== source ||
+        quitting ||
+        !ids.includes(id)
+      ) {
+        if (!win.isDestroyed()) win.close();
         return false;
-      return await moveTab(id, win, null, await terminalInventory());
+      }
+      return await moveTab(id, win, null, ids);
     } catch (error) {
       if (!win.isDestroyed()) win.close();
       throw error;
@@ -606,6 +708,13 @@ async function detachTerminalWindow(id, source, point) {
   }
 }
 function setupTerminalWindows() {
+  ipcMain.on("harbor:prepare-workspace", (event) => {
+    try {
+      prepareWorkspace(trustedWindow(event));
+    } catch {
+      /* Source was closed or navigated. */
+    }
+  });
   ipcMain.handle("harbor:new-workspace", (event) => {
     const source = trustedWindow(event);
     return !!createWindow(origin + "/", newWindowBounds({ source }));
@@ -711,6 +820,7 @@ function setupTerminalWindows() {
     const drag = { token, id, at: Date.now(), source };
     cancelTabDrag(contentsId);
     tabDrags.set(contentsId, drag);
+    prepareWorkspace(source);
     if (!dragEscapeRegistered)
       dragEscapeRegistered = globalShortcut.register("Escape", () => {
         for (const key of [...tabDrags.keys()]) cancelTabDrag(key);
@@ -755,7 +865,7 @@ function setupTerminalWindows() {
       drag.timeout.unref();
       return false;
     }
-    cancelTabDrag(contentsId);
+    cancelTabDrag(contentsId, true);
     return detachTerminalWindow(drag.id, source, point);
   });
   ipcMain.on("harbor:tab-drag-cancel", (event, token) => {
@@ -920,6 +1030,7 @@ function setupDesktop() {
 }
 app.on("before-quit", (event) => {
   quitting = true;
+  discardPrepared();
   backendSupervisor.stop();
   for (const contentsId of [...tabDrags.keys()]) cancelTabDrag(contentsId);
   if (!backend) return;

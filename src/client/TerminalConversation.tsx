@@ -193,7 +193,9 @@ export function TerminalConversation({
       !!body.current?.contains(selection.anchorNode)
     );
   };
-  const apply = (result: HistoryDetail, more: boolean) => {
+  const firstRead = useRef(true),
+    provisional = useRef(false);
+  const apply = (result: HistoryDetail, more: boolean, replace = false) => {
     result = { ...result, timeline: expandTimeline(result) };
     const merge = (previous: HistoryDetail | null) =>
       previous
@@ -213,9 +215,9 @@ export function TerminalConversation({
           }
         : result;
     // Prepending old pages must not also expose a queued live edit/completion.
-    const next = merge(
-      more ? latest.current : pending.current || latest.current,
-    );
+    const next = replace
+      ? result
+      : merge(more ? latest.current : pending.current || latest.current);
     if (more) loadedOlder.current = true;
     if (more && pending.current) pending.current = merge(pending.current);
     // Polls must never replace selected DOM or collapse a work group during a drag.
@@ -277,11 +279,24 @@ export function TerminalConversation({
           ? { cursor: previous.nextCursor }
           : {}),
       });
+      const desktopReader = !!window.harborDesktop?.workspaceTabs;
+      if (desktopReader && !more) {
+        params.set("terminalView", info.id);
+        if (firstRead.current) params.set("reopen", "1");
+      }
+      firstRead.current = false;
+      let snapshot = false;
       const result = await api<HistoryDetail>(
         `/hosts/${encodeURIComponent(info.hostId)}/history/${encodeURIComponent(sessionId)}?${params}`,
         undefined,
         "GET",
         AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
+        desktopReader
+          ? (response) => {
+              snapshot =
+                response.headers.get("X-Harbor-History-Snapshot") === "1";
+            }
+          : undefined,
       );
       if (
         controller.signal.aborted ||
@@ -292,7 +307,13 @@ export function TerminalConversation({
       if (more && result.nextCursor === previous?.nextCursor)
         throw new Error("이전 대화를 읽지 못했습니다. 다시 시도하세요.");
       if (more) olderCursors.current.add(previous!.nextCursor!);
-      apply(result, more);
+      apply(
+        result,
+        more,
+        !more && !loadedOlder.current && provisional.current && !snapshot,
+      );
+      if (!more) provisional.current = snapshot;
+      if (snapshot) refreshQueued.current = true;
     } catch (cause) {
       failed = true;
       if (!controller.signal.aborted) {
@@ -322,6 +343,8 @@ export function TerminalConversation({
     }
   };
   useEffect(() => {
+    firstRead.current = true;
+    provisional.current = false;
     latest.current = null;
     pending.current = null;
     loadedOlder.current = false;

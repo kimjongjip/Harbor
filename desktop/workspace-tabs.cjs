@@ -68,8 +68,7 @@ class WorkspaceTabs {
       console.warn("Could not save Harbor window layout");
     }
   }
-  add() {
-    const key = randomUUID();
+  add(key = randomUUID()) {
     this.groups.set(key, []);
     this.save();
     return key;
