@@ -283,36 +283,71 @@ test(
       await tab(main, b).waitFor();
       await secondary.close();
       await tab(main, a).waitFor();
-      const token = await arm(main, a);
-      assert.ok(token);
-      const detached = app.waitForEvent("window");
-      const moved = await app.evaluate(
-        async ({ BrowserWindow, ipcMain, screen }, { url, token }) => {
+      // Drive Chromium's trusted dragstart and dragend on a hidden test tab.
+      // Stand in for the OS pointer at release so the user's mouse stays put.
+      const destinationDisplay = await app.evaluate(
+        ({ BrowserWindow, screen }, url) => {
           const win = BrowserWindow.getAllWindows().find(
             (w) => w.webContents.getURL() === url,
           );
           const bounds = win.getBounds(),
-            point = { x: bounds.x + bounds.width + 64, y: bounds.y + 48 };
+            other = screen
+              .getAllDisplays()
+              .find((d) => d.id !== screen.getDisplayMatching(bounds).id);
+          const point = other
+            ? {
+                x: other.workArea.x + Math.floor(other.workArea.width / 2),
+                y: other.workArea.y + Math.floor(other.workArea.height / 2),
+              }
+            : { x: bounds.x + bounds.width + 64, y: bounds.y + 48 };
           const original = screen.getCursorScreenPoint;
-          screen.getCursorScreenPoint = () => point;
-          try {
-            return await ipcMain._invokeHandlers.get("harbor:tab-drag-end")(
-              {
-                sender: win.webContents,
-                senderFrame: win.webContents.mainFrame,
-              },
-              token,
-              { ...point, cancelled: false },
-            );
-          } finally {
+          globalThis.restoreFixtureCursor = () => {
             screen.getCursorScreenPoint = original;
-          }
+          };
+          globalThis.releaseFixtureCursor = () => {
+            screen.getCursorScreenPoint = () => point;
+          };
+          screen.getCursorScreenPoint = () => ({
+            x: bounds.x + 80,
+            y: bounds.y + 70,
+          });
+          return screen.getDisplayNearestPoint(point).id;
         },
-        { url: main.url(), token },
+        main.url(),
       );
-      assert.equal(moved, true);
-      const floating = await detached;
+      let floating;
+      try {
+        const box = await tab(main, a).boundingBox();
+        const newWindow = app.waitForEvent("window", { timeout: 5000 });
+        newWindow.catch(() => {});
+        await main.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await main.mouse.down();
+        await main.mouse.move(
+          box.x + box.width / 2 + 12,
+          box.y + box.height / 2,
+          { steps: 4 },
+        );
+        await main.mouse.move(3, 3, { steps: 6 });
+        await app.evaluate(() => globalThis.releaseFixtureCursor());
+        await main.mouse.up();
+        floating = await newWindow;
+      } finally {
+        await app.evaluate(() => {
+          globalThis.restoreFixtureCursor();
+          delete globalThis.restoreFixtureCursor;
+          delete globalThis.releaseFixtureCursor;
+        });
+      }
       await tab(floating, a).waitFor();
+      assert.equal(
+        await app.evaluate(({ BrowserWindow, screen }, url) => {
+          const win = BrowserWindow.getAllWindows().find(
+            (w) => w.webContents.getURL() === url,
+          );
+          return screen.getDisplayMatching(win.getBounds()).id;
+        }, floating.url()),
+        destinationDisplay,
+      );
       await tab(main, a).waitFor({ state: "detached" });
       assert.equal(
         await main.evaluate((id) => window.harborDesktop.receiveTab(id), a),

@@ -706,64 +706,56 @@ function setupTerminalWindows() {
   ipcMain.handle("harbor:tab-drag-start", async (event, id) => {
     const source = trustedWindow(event);
     if (!validTerminalId(id) || ownerWindow(id) !== source) return null;
-    const point = screen.getCursorScreenPoint();
-    if (outside(point, source.getBounds(), 8)) return null;
     const token = randomUUID();
-    const drag = { token, id, start: point, at: Date.now(), source };
-    cancelTabDrag(event.sender.id);
-    tabDrags.set(event.sender.id, drag);
-    // Windows' native OLE drag loop consumes Escape before DOM/Electron input
-    // events. Register only for this short gesture, then release the shortcut.
+    const contentsId = event.sender.id;
+    const drag = { token, id, at: Date.now(), source };
+    cancelTabDrag(contentsId);
+    tabDrags.set(contentsId, drag);
     if (!dragEscapeRegistered)
       dragEscapeRegistered = globalShortcut.register("Escape", () => {
-        for (const contentsId of [...tabDrags.keys()])
-          cancelTabDrag(contentsId);
+        for (const key of [...tabDrags.keys()]) cancelTabDrag(key);
       });
-    if (!dragEscapeRegistered) {
-      cancelTabDrag(event.sender.id);
-      return null;
-    }
-    drag.timeout = setTimeout(() => cancelTabDrag(event.sender.id), 60000);
+    drag.timeout = setTimeout(() => cancelTabDrag(contentsId), 60000);
     drag.timeout.unref();
-    if (
-      !(await terminalInventory()).includes(id) ||
-      tabDrags.get(event.sender.id) !== drag
-    ) {
-      if (tabDrags.get(event.sender.id) === drag)
-        cancelTabDrag(event.sender.id);
-      return null;
-    }
+    // Both move and detach validate the live inventory before committing.
     return token;
   });
   ipcMain.handle("harbor:tab-drag-end", async (event, token, end) => {
     const source = trustedWindow(event);
-    const drag = tabDrags.get(event.sender.id);
-    cancelTabDrag(event.sender.id); // One-use token, including rejected/cancelled gestures.
+    const contentsId = event.sender.id;
+    const drag = tabDrags.get(contentsId);
+    if (!drag || drag.token !== token || drag.source !== source) return false;
     if (
-      !drag ||
-      drag.token !== token ||
-      drag.source !== source ||
       Date.now() - drag.at > 60000 ||
-      end?.cancelled !== false
-    )
+      end?.cancelled !== false ||
+      (!dragEscapeRegistered && (end.nullPoint || end.buttonDown))
+    ) {
+      cancelTabDrag(contentsId);
       return false;
+    }
+    // Compare the OS pointer and window bounds in a single Electron DIP
+    // coordinate space. A renderer may report dragend in the source DPI.
     const point = screen.getCursorScreenPoint();
-    // Coordinates come from the trusted native dragend event in preload. They
-    // are cross-checked against the OS pointer and never accepted as navigation.
-    if (
-      !Number.isFinite(end.x) ||
-      !Number.isFinite(end.y) ||
-      Math.abs(end.x) > 100000 ||
-      Math.abs(end.y) > 100000 ||
-      (end.x === 0 && end.y === 0)
-    )
-      return false;
-    if (Math.hypot(end.x - point.x, end.y - point.y) > 96) return false;
     if (
       !outside(point, source.getBounds(), 8) ||
-      Math.hypot(point.x - drag.start.x, point.y - drag.start.y) < 24
-    )
+      [...windows].some(
+        (win) =>
+          win !== source &&
+          !win.isDestroyed() &&
+          win.isVisible() &&
+          !win.isMinimized() &&
+          !outside(point, win.getBounds()),
+      )
+    ) {
+      // A different renderer may still be delivering the trusted drop.
+      clearTimeout(drag.timeout);
+      drag.timeout = setTimeout(() => {
+        if (tabDrags.get(contentsId) === drag) cancelTabDrag(contentsId);
+      }, 750);
+      drag.timeout.unref();
       return false;
+    }
+    cancelTabDrag(contentsId);
     return detachTerminalWindow(drag.id, source, point);
   });
   ipcMain.on("harbor:tab-drag-cancel", (event, token) => {

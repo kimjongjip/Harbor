@@ -51,6 +51,7 @@ interface Window {
     onTerminalSelection?: (callback: (id: string) => void) => () => void;
     detachTerminal: (id: string) => Promise<boolean>;
     startTabDrag: (id: string) => Promise<string | null>;
+    readonly nativeTabTearOff?: boolean;
     endTabDrag: (token: string) => Promise<boolean>;
     cancelTabDrag: (token: string) => void;
   };

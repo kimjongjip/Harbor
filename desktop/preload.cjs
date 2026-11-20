@@ -19,12 +19,22 @@ document.addEventListener(
       event.target instanceof Element &&
       event.target.closest("[data-terminal-tab]");
     if (!event.isTrusted || !tab) return;
-    nativeDrag = {
+    const drag = {
       id: tab.dataset.terminalTab,
       at: Date.now(),
       cancelled: false,
       ended: false,
     };
+    nativeDrag = drag;
+    drag.pending = ipcRenderer
+      .invoke("harbor:tab-drag-start", drag.id)
+      .then((token) => {
+        drag.token = token;
+        if (drag.cancelled && token)
+          ipcRenderer.send("harbor:tab-drag-cancel", token);
+        return token;
+      });
+    drag.pending.catch(() => {});
   },
   true,
 );
@@ -43,12 +53,23 @@ document.addEventListener(
   "dragend",
   (event) => {
     if (!event.isTrusted || !nativeDrag) return;
-    nativeDrag.ended = true;
-    nativeDrag.x = event.screenX;
-    nativeDrag.y = event.screenY;
-    // Chromium reports the null screen point for a cancelled native drag.
-    if ((!event.screenX && !event.screenY) || event.buttons & 1)
-      nativeDrag.cancelled = true;
+    const drag = nativeDrag;
+    if (drag.ended) return;
+    drag.ended = true;
+    const nullPoint = !event.screenX && !event.screenY;
+    const buttonDown = Boolean(event.buttons & 1);
+    // Complete the native gesture even if its React source disappeared, or
+    // the OS desktop reported a successful drop outside Chromium.
+    drag.result = drag.pending.then((token) =>
+      token
+        ? ipcRenderer.invoke("harbor:tab-drag-end", token, {
+            cancelled: drag.cancelled,
+            nullPoint,
+            buttonDown,
+          })
+        : false,
+    );
+    drag.result.catch(() => {});
   },
   true,
 );
@@ -56,7 +77,7 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.18.43",
+    version: "1.18.44",
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
     checkUpdate: () =>
       navigator.userActivation.isActive
@@ -135,22 +156,14 @@ contextBridge.exposeInMainWorld(
       const drag = nativeDrag;
       if (!drag || drag.id !== id || drag.ended || Date.now() - drag.at > 1000)
         return null;
-      const token = await ipcRenderer.invoke("harbor:tab-drag-start", id);
-      if (nativeDrag === drag) drag.token = token;
-      if (drag.cancelled && token)
-        ipcRenderer.send("harbor:tab-drag-cancel", token);
-      return token;
+      return drag.pending;
     },
+    nativeTabTearOff: true,
     endTabDrag: (token) => {
       const drag = nativeDrag;
-      nativeDrag = undefined;
       if (!drag || !drag.ended || drag.token !== token)
         return Promise.resolve(false);
-      return ipcRenderer.invoke("harbor:tab-drag-end", token, {
-        x: drag.x,
-        y: drag.y,
-        cancelled: drag.cancelled,
-      });
+      return drag.result;
     },
     cancelTabDrag: (token) => {
       if (nativeDrag?.token === token) nativeDrag.cancelled = true;

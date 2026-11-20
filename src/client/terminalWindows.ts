@@ -204,7 +204,7 @@ export function useTabDetach(onError: (message: string) => void) {
         if (current.cancelled) window.harborDesktop.cancelTabDrag(token);
         // The destination renderer can deliver its drop IPC after the source
         // renderer's dragend. Allow it to consume this one-use native drag.
-        else if (handledDrop)
+        else if (handledDrop && !window.harborDesktop.nativeTabTearOff)
           window.setTimeout(
             () => window.harborDesktop?.cancelTabDrag(token),
             750,
