@@ -748,6 +748,16 @@ export function TerminalConversation({
   if (!layout.promptHistory || !lastBody.current)
     lastBody.current = { turns, count: layout.historyCount, live: layout.live };
   const shown = lastBody.current;
+  // Compare against what is actually on screen (including a frozen history
+  // view), not every message in the most recently fetched page.
+  const renderedAnswers = useMemo(() => {
+    if (provider !== "claude" || !sessionId) return;
+    const messages = new Map<string, string>();
+    for (const turn of shown.turns.slice(0, shown.count))
+      for (const item of turn.items)
+        if (item.kind === "assistant") messages.set(item.id, item.text);
+    return { sessionId, messages };
+  }, [provider, sessionId, shown.turns, shown.count]);
   const running =
     shown.live && shown.turns.length > 0 && !shown.turns.at(-1)!.complete;
   // Saved steps of a running turn stream in while its CLI works.
@@ -928,6 +938,7 @@ export function TerminalConversation({
           {/* Unsaved live prose must stay visible when saved tools are folded. */}
           <div className="conversation-live-work" ref={setWorkTarget} />
           <TerminalNativeFlow
+            renderedAnswers={renderedAnswers}
             codexComposer={provider === "codex"}
             term={term}
             blocks={blocks}

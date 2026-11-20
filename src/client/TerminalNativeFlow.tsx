@@ -133,6 +133,7 @@ const NativeAnswer = memo(function NativeAnswer({
 /** A selectable native buffer projection. It never writes, resizes or replays PTY input. */
 export function TerminalNativeFlow({
   term,
+  renderedAnswers,
   blocks = emptyBlocks,
   active = true,
   frozen = false,
@@ -147,6 +148,10 @@ export function TerminalNativeFlow({
   onLink,
 }: {
   term: Terminal;
+  renderedAnswers?: {
+    sessionId: string;
+    messages: ReadonlyMap<string, string>;
+  };
   blocks?: RichTerminalBlock[];
   active?: boolean;
   frozen?: boolean;
@@ -442,6 +447,7 @@ export function TerminalNativeFlow({
         : part,
     );
   };
+  const emitted = new Set<string>();
   const renderParts = (view: View, parts: FlowPart[], showCursor = true) => {
     const nodes: ReactNode[] = [];
     let rows: RowView[] = [];
@@ -452,6 +458,18 @@ export function TerminalNativeFlow({
     };
     for (const part of parts) {
       if (part.kind === "answer") {
+        const block = part.block;
+        if (
+          block &&
+          renderedAnswers &&
+          block.sessionId === renderedAnswers.sessionId &&
+          renderedAnswers.messages.get(block.requestId) === block.text
+        )
+          continue;
+        // Work, activity and composer are projected separately. A reservation
+        // straddling two of those ranges still denotes a single answer.
+        if (emitted.has(part.id)) continue;
+        emitted.add(part.id);
         flush();
         nodes.push(
           <NativeAnswer

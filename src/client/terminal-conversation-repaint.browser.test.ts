@@ -34,9 +34,11 @@ if(!preview) await window.freshReady;
 const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn'},
 {id:'command',kind:'command',text:window.pendingTool?'Bash':'python3 sample.py',detail:window.pendingTool?'command: python fixture.py':'SAVED COMMAND OUTPUT',toolUseId:'fixture-tool',turnId:'turn',status:window.pendingTool?'started':'completed'}];
 if(window.reportText)timeline.push({id:'progress',kind:'assistant',text:window.reportText,turnId:'turn',...('${provider}'==='codex'?{phase:'commentary'}:{})});
+if(window.finalRow)timeline.push(window.finalRow);
 if(preview)timeline.push({id:'provisional',kind:'assistant',text:'Last known handoff report',turnId:'turn',phase:'commentary'});
 return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json',...(preview?{'X-Harbor-History-Snapshot':'1'}:{})}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
+const [blocks,setBlocks]=useState([]);window.setBlocks=setBlocks;
 window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
 window.refreshHistory=()=>document.dispatchEvent(new Event('visibilitychange'));
 useEffect(()=>{const t=new Terminal({cols:90,rows:24,fontSize:14,allowProposedApi:true});t.open(document.getElementById('native'));t.onData(data=>window.inputs.push(data));window.term=t;
@@ -44,7 +46,7 @@ window.write=data=>new Promise(done=>t.write(data,done));
 window.partial=()=>window.write('\\x1b[2J\\x1b[H${prompt} Update the sample\\r\\n\\x1b[41m184 - OLD RAW DIFF\\x1b[0m\\r\\n\\x1b[42m184 + NEW RAW DIFF\\x1b[0m');
 window.footer=()=>window.write('\\x1b[13;1H'+('${provider}'==='claude'?'─'.repeat(90)+'\\r\\n❯ UNSENT DRAFT\\r\\n'+'─'.repeat(90):'• Working\\r\\n› UNSENT DRAFT')+'\\r\\n  ? for shortcuts\\x1b[14;15H');
 (async()=>{await window.partial();await window.footer();setTerm(t)})();return()=>t.dispose()},[]);
-return <><div style={{position:'relative',height:650,width:1000}}><div id="native"/></div>{term&&<TerminalConversation term={term} info={info}/>}</>}
+return <><div style={{position:'relative',height:650,width:1000}}><div id="native"/></div>{term&&<TerminalConversation term={term} info={info} blocks={blocks}/>}</>}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
           resolveDir: process.cwd(),
           sourcefile: "repaint-fixture.tsx",
@@ -797,6 +799,68 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
                 (command === "/model" ? "\\r" : "\\x1b") +
                 "$",
             ),
+          );
+        }
+        if (provider === "claude") {
+          await page.evaluate(async () => {
+            const w = window as any;
+            w.block = {
+              id: "0123456789abcdef0123",
+              requestId: "fixture-answer",
+              sessionId: "session",
+              text: "Fixture answer with a table\n\n| One | Two |\n| --- | --- |\n| A | B |",
+              marker: "~HBR:0123456789abcdef0123~",
+              rows: 1,
+              renderer: "rows-v2",
+              state: "ready",
+              columns: 90,
+              viewportRows: 24,
+              createdAt: Date.now(),
+            };
+            w.setBlocks([w.block]);
+            await w.write(
+              "\x1b[2J\x1b[H● Progress before completion · summary\r\n\r\n  Ran 1 shell command\r\n~HBR:0123456789abcdef0123:0~\r\n✻ Finished · 2 shells still running",
+            );
+            await w.footer();
+          });
+          await surface.locator(".terminal-native-answer table").waitFor();
+          await page.evaluate(() => {
+            const w = window as any;
+            w.finalRow = {
+              id: w.block.requestId,
+              kind: "assistant",
+              text: w.block.text,
+              turnId: "turn",
+              phase: "final_answer",
+              turnStatus: "completed",
+            };
+            w.refreshHistory();
+          });
+          await surface
+            .locator('[data-history-message="fixture-answer"] table')
+            .waitFor();
+          assert.equal(
+            await surface.locator("table").count(),
+            1,
+            "saved final and its live reservation must render once",
+          );
+          await surface
+            .getByText("● Progress before completion · summary", {
+              exact: true,
+            })
+            .waitFor();
+          await surface
+            .getByText("✻ Finished · 2 shells still running", { exact: true })
+            .waitFor();
+          await page.evaluate(() => {
+            const w = window as any;
+            w.setBlocks([{ ...w.block, requestId: "another-request" }]);
+          });
+          await surface.locator(".terminal-native-answer table").waitFor();
+          assert.equal(
+            await surface.locator("table").count(),
+            2,
+            "identical prose from separate messages remains distinct",
           );
         }
         assert.deepEqual(errors, []);
