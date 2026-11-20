@@ -1,3 +1,5 @@
+import type { IBuffer } from "@xterm/xterm";
+
 /**
  * Locate the CLI's own interactive area at the bottom of its screen: the
  * composer, its status/spinner (and todo) lines, or a permission dialog.
@@ -23,6 +25,50 @@ export interface NativeChromeFrame {
 
 const solidRule = /^\s*[─━]{12,}\s*$/;
 const promptRow = /^\s{0,2}[❯›>»](?:\s|$)/;
+
+/** A Codex modal overwrites a rectangle of the current viewport. Text on both
+ * sides of it (and the normal composer below) still belongs to the background. */
+export function insetChoiceDialog(buffer: IBuffer, lines?: readonly string[]) {
+  const floor = buffer.baseY,
+    end = lines?.length ?? buffer.length;
+  const textAt = (row: number) =>
+    lines?.[row] ?? buffer.getLine(row)?.translateToString(true) ?? "";
+  const footer =
+    /^\s{0,5}(?:enter|return)\s+(?:to\s+)?(?:select|confirm|continue)\s*[·•]\s*esc\s+(?:to\s+)?(?:back|cancel|close)\b/i;
+  for (let foot = end - 1; foot >= floor; foot--) {
+    if (!/\besc\s+(?:to\s+)?(?:back|cancel|close)\b/i.test(textAt(foot)))
+      continue;
+    for (let row = foot - 1; row >= floor; row--) {
+      if (!/[›❯»>]\s*\d+[.)]\s+\S/u.test(textAt(row))) continue;
+      const line = buffer.getLine(row);
+      if (!line) continue;
+      // String offsets differ from terminal columns after Korean/wide glyphs.
+      for (let col = 0; col < line.length; col++) {
+        if (!/^[›❯»>]$/u.test(line.getCell(col)?.getChars() || "")) continue;
+        const number = /^[›❯»>]\s+(\d+)[.)]\s+\S/u.exec(
+          line.translateToString(true, col),
+        );
+        if (
+          !number ||
+          !footer.test(buffer.getLine(foot)?.translateToString(true, col) || "")
+        )
+          continue;
+        const selected = line.getCell(col + 2);
+        if (!selected || (selected.isBgDefault() && !selected.isInverse()))
+          continue;
+        for (let other = Math.max(floor, row - 8); other < foot; other++) {
+          if (other === row) continue;
+          const sibling = /^\s{1,4}(\d+)[.)]\s+\S/u.exec(
+            buffer.getLine(other)?.translateToString(true, col) || "",
+          );
+          if (sibling && Math.abs(Number(sibling[1]) - Number(number[1])) === 1)
+            return true;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 /** Interactive pickers need xterm's cursor, reverse video and mouse hit
  * targets. Inspect the current viewport only; old /commands in scrollback
@@ -64,7 +110,9 @@ export function nativeMenuVisible(
       /^\s*(?:(?:press|use)\s+)?(?:↑|↓|←|→|arrow keys\b|tab\b|enter\b|return\b|esc\b).{0,180}$/iu.test(
         line,
       ) &&
-      /(?:navigate|select|confirm|cancel|go back|dismiss|enter\s+continue\s*·\s*esc\s+back)/i.test(line) &&
+      /(?:navigate|select|confirm|cancel|go back|dismiss|enter\s+continue\s*·\s*esc\s+back)/i.test(
+        line,
+      ) &&
       /(?:enter|return|esc)/i.test(line),
   );
   const pickerHeading = viewport.some((line) =>

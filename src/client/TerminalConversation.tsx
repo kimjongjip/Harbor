@@ -40,6 +40,7 @@ import "./terminal-conversation.css";
 import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
 import {
+  insetChoiceDialog,
   nativeInteractiveReplacement,
   nativeMenuVisible,
 } from "./terminal-native-chrome";
@@ -615,9 +616,26 @@ export function TerminalConversation({
     menuVisible.current = false;
     setNativeMenu(false);
   }, [term, info.id, info.hostId, sessionId, provider, mode, info.exited]);
+  const revealInsetDialog = useCallback(
+    (frame?: NativeFlowFrame) => {
+      if (
+        provider !== "codex" ||
+        !insetChoiceDialog(term.buffer.active, frame?.lines)
+      )
+        return false;
+      if (!menuVisible.current) {
+        menuVisible.current = true;
+        setNativeMenu(true);
+      }
+      return true;
+    },
+    [provider, term],
+  );
   const nativeRange = useCallback(
     (frame: NativeFlowFrame) => {
       latestFrame.current = frame;
+      if (revealInsetDialog(frame))
+        return { start: frame.end, defer: "repaint" as const };
       if (recall.current) {
         const { draft, down } = recall.current;
         if (!down || draft === undefined || visibleDraft(frame) !== draft)
@@ -660,7 +678,14 @@ export function TerminalConversation({
             : false,
       };
     },
-    [layoutForFrame, modSurface, info.exited, info.agentState, nativeBusy],
+    [
+      layoutForFrame,
+      modSurface,
+      info.exited,
+      info.agentState,
+      nativeBusy,
+      revealInsetDialog,
+    ],
   );
   // A running CLI shows "esc to interrupt" in its live area even when no
   // native event reported working (poll-only sessions).
@@ -936,6 +961,7 @@ export function TerminalConversation({
             active={visible}
             frozen={!nativeMenu && (selected || !following)}
             nativeInteraction={nativeMenu}
+            onFrozenFrame={provider === "codex" ? revealInsetDialog : undefined}
             startRow={nativeRange}
             workTarget={running ? workTarget : null}
             onFrame={updateNativeFrame}

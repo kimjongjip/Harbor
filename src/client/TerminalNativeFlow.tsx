@@ -121,6 +121,7 @@ export function TerminalNativeFlow({
   active = true,
   frozen = false,
   nativeInteraction = false,
+  onFrozenFrame,
   codexComposer = false,
   startRow = 0,
   workTarget,
@@ -134,6 +135,7 @@ export function TerminalNativeFlow({
   active?: boolean;
   frozen?: boolean;
   nativeInteraction?: boolean;
+  onFrozenFrame?(): void;
   codexComposer?: boolean;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
@@ -147,6 +149,7 @@ export function TerminalNativeFlow({
   const root = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
+    onFrozenFrame,
     blocks,
     active,
     frozen,
@@ -157,6 +160,7 @@ export function TerminalNativeFlow({
     workTarget,
   });
   latest.current = {
+    onFrozenFrame,
     blocks,
     active,
     frozen,
@@ -206,13 +210,7 @@ export function TerminalNativeFlow({
       // A parsed write can observe a selection before selectionchange is
       // delivered. Remember it so clearing that range releases deferred output.
       if (hasSelection) hadSelection = true;
-      if (
-        disposed ||
-        !latest.current.active ||
-        latest.current.frozen ||
-        hasSelection
-      )
-        return;
+      if (disposed || !latest.current.active) return;
       if (term.modes.synchronizedOutputMode) {
         timer = setTimeout(() => {
           timer = undefined;
@@ -221,6 +219,10 @@ export function TerminalNativeFlow({
         return;
       }
       lastCapture = performance.now();
+      if (latest.current.frozen || hasSelection) {
+        latest.current.onFrozenFrame?.();
+        return;
+      }
       const frame = reader.frame();
       const requested =
         typeof latest.current.startRow === "function"

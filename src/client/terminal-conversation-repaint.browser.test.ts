@@ -570,6 +570,81 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         // Drive xterm's keyboard path. The fake CLI echoes the command,
         // draws two different picker screens and restores its composer.
         const reader = page.locator(".terminal-conversation");
+        if (provider === "codex") {
+          // Keep both sides of the underlying transcript and its ordinary
+          // composer, as Codex does when drawing a centered permission dialog.
+          await page.evaluate(async () => {
+            const w = window as any;
+            w.inputs.length = 0;
+            const background = Array.from({ length: 20 }, () =>
+              "한글 기록 ".repeat(10),
+            ).join("\r\n");
+            await w.write(
+              "\x1b[2J\x1b[H" +
+                background +
+                "\x1b[21;1H› Ask Codex to do anything\r\n  ? for shortcuts\x1b[21;3H",
+            );
+            w.paintChoices = (cancel: boolean) =>
+              w.write(
+                "\x1b7\x1b[5;16H Enable full access?                   " +
+                  "\x1b[6;16H Exercise caution                      " +
+                  "\x1b[8;16H" +
+                  (cancel ? "  " : "\x1b[44m› ") +
+                  "1. Yes, continue anyway             \x1b[0m" +
+                  "\x1b[9;16H" +
+                  (cancel ? "\x1b[44m› " : "  ") +
+                  "2. Cancel                           \x1b[0m" +
+                  "\x1b[11;16H  enter select · esc back            \x1b8",
+              );
+            w.choiceKeys = w.term.onData((s: string) => {
+              if (s.endsWith("B")) void w.paintChoices(true);
+              if (s === "\x1b")
+                void w.write("\x1b[2J\x1b[H").then(() => w.footer());
+            });
+            await w.paintChoices(false);
+            w.term.focus();
+          });
+          await reader.waitFor({ state: "hidden", timeout: 2000 });
+          assert.deepEqual(
+            await page.evaluate(() => (window as any).inputs),
+            [],
+          );
+          await page.keyboard.press("ArrowDown");
+          await page.waitForFunction(
+            () => {
+              const t = (window as any).term,
+                b = t.buffer.active,
+                box = t.element
+                  .querySelector(".xterm-screen")
+                  .getBoundingClientRect();
+              return (
+                b
+                  .getLine(b.baseY + 8)
+                  ?.translateToString(true)
+                  .includes("› 2. Cancel") &&
+                t.element.contains(
+                  document.elementFromPoint(
+                    box.left + box.width / 2,
+                    box.top + box.height / 2,
+                  ),
+                )
+              );
+            },
+            undefined,
+            { timeout: 2000 },
+          );
+          await page.keyboard.press("Escape");
+          await surface.waitFor({ timeout: 2000 });
+          assert.equal(await report.isVisible(), true);
+          assert.deepEqual(
+            await page.evaluate(() => {
+              const w = window as any;
+              w.choiceKeys.dispose();
+              return w.inputs;
+            }),
+            ["\x1b[B", "\x1b"],
+          );
+        }
         for (const command of ["/model", "/effort"]) {
           await page.evaluate(
             ({ prompt, command }) => {
@@ -612,11 +687,16 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           );
           await page.keyboard.press("Enter");
           await page.keyboard.press("ArrowDown");
-          await page.waitForFunction(() =>
-            (window as any).term.buffer.active
-              .getLine(2)
-              ?.translateToString(true)
-              .includes("❯ Second option"),
+          await page.waitForFunction(
+            () => {
+              const buffer = (window as any).term.buffer.active;
+              return buffer
+                .getLine(buffer.baseY + 2)
+                ?.translateToString(true)
+                .includes("❯ Second option");
+            },
+            undefined,
+            { timeout: 2500 },
           );
           assert.equal(await reader.isVisible(), false);
           await page.keyboard.press(command === "/model" ? "Enter" : "Escape");
