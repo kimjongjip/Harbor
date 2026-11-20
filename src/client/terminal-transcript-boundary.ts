@@ -3,6 +3,7 @@ import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { typedPrompt } from "./user-origin";
 import { transcriptEntries } from "./transcript-steps";
 import {
+  promptHistoryStart,
   claudeActivityStart,
   lastNativeBlock,
   nativeChrome,
@@ -311,6 +312,7 @@ function questionEnd(lookup: FrameLookup, text: string, limit: number): number {
 }
 
 export interface LiveTranscriptLayout {
+  promptHistory?: boolean;
   historyCount: number;
   /** First native row shown. */
   nativeStart: number;
@@ -356,8 +358,24 @@ export function liveTranscriptLayout(
     waiting: boolean;
     pendingHistory?: boolean;
     provider?: "codex" | "claude";
+    navigatingHistory?: boolean;
   },
 ): LiveTranscriptLayout {
+  const historyInput = promptHistoryStart(
+    frame.lines,
+    frame.end,
+    frame,
+    !!state.navigatingHistory,
+  );
+  if (historyInput !== undefined) {
+    return {
+      historyCount: turns.length,
+      nativeStart: historyInput,
+      chromeStart: historyInput,
+      live: true,
+      promptHistory: true,
+    };
+  }
   let chrome = nativeChrome(frame.lines, frame.end, frame);
   if (state.provider === "claude") {
     const activity = claudeActivityStart(frame.lines, frame.end, frame.baseY);

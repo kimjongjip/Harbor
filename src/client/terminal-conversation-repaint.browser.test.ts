@@ -97,6 +97,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await page.evaluate((prompt) => {
           const w = window as any;
           let index = 0;
+          w.modeChanges = [];
+          w.modeObserver = new MutationObserver((changes) =>
+            w.modeChanges.push(...changes),
+          );
+          w.modeObserver.observe(
+            document.querySelector(".terminal-conversation"),
+            { attributes: true, attributeFilter: ["hidden"] },
+          );
           w.term.resize(90, 36);
           w.recall = w.term.onData((data: string) => {
             if (!/^\x1b(?:\[|O)[AB]$/.test(data)) return;
@@ -128,42 +136,38 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           ["ArrowDown", 1],
         ] as const) {
           await page.keyboard.press(key);
-          await page.waitForFunction(
-            (index) => {
-              const w = window as any,
-                t = w.term,
-                b = t.buffer.active;
-              const rows = Array.from(
-                { length: t.rows },
-                (_, i) => b.getLine(b.baseY + i)?.translateToString(true) || "",
-              );
-              const box = t.element
-                .querySelector(".xterm-screen")
-                .getBoundingClientRect();
-              const hit = document.elementFromPoint(
-                box.left + 10,
-                box.top + 10,
-              );
-              return (
-                rows.some((s) =>
-                  s.includes("이전 프롬프트 " + index + " FIRST"),
-                ) &&
-                rows.some((s) =>
-                  s.includes("이전 프롬프트 " + index + " LAST"),
-                ) &&
-                t.element.contains(hit) &&
-                document.activeElement === t.textarea
-              );
-            },
-            index,
-            { timeout: 2500 },
+          const input = surface.locator(
+            ".terminal-native-flow:not(.terminal-native-work)",
           );
-          assert.equal(await surface.isVisible(), false);
+          await input
+            .getByText(prompt + " 이전 프롬프트 " + index + " FIRST", {
+              exact: true,
+            })
+            .waitFor({ timeout: 2500 });
+          await input
+            .getByText("이전 프롬프트 " + index + " LAST", { exact: true })
+            .waitFor({ timeout: 2500 });
+          assert.equal(await work.isVisible(), true);
+          assert.equal(
+            await page.evaluate(
+              () => document.activeElement === (window as any).term.textarea,
+            ),
+            true,
+          );
         }
         await page.keyboard.press("ArrowDown");
         await surface
           .getByText(prompt + " UNSENT DRAFT", { exact: true })
           .waitFor({ timeout: 2500 });
+        assert.equal(
+          await page.evaluate(() => {
+            const w = window as any;
+            w.modeObserver.disconnect();
+            return w.modeChanges.length;
+          }),
+          0,
+          "recall must never expose the raw screen between frames",
+        );
         assert.deepEqual(await page.evaluate(() => (window as any).inputs), [
           "\x1b[A",
           "\x1b[A",

@@ -7,11 +7,41 @@ import {
   nativeInteractiveReplacement,
   nativeChoiceDialog,
   nativeMenuVisible,
+  promptHistoryStart,
 } from "./terminal-native-chrome";
 
 // Bottom rows recorded from real fullscreen CLIs (Claude Code 2.1.319, Codex
 // 0.167.0) in an isolated workspace with synthetic prompts; rules shortened.
 const rule = "─".repeat(40);
+test("a framed recalled prompt starts at the History rule even with the cursor on the spinner", () => {
+  const lines = [
+    "❯ saved question",
+    "✻ Working…",
+    "─── History 2/3 ─────────",
+    "❯ /model",
+    "  second line",
+    rule,
+    "  manual mode on",
+  ];
+  assert.equal(
+    promptHistoryStart(lines, lines.length, { baseY: 0, cursorRow: 1 }, false),
+    2,
+  );
+  const idle = [...lines, rule, "❯ new draft", rule, "  manual mode on"];
+  const command = ["› /model", "  ? for shortcuts"];
+  assert.equal(
+    promptHistoryStart(command, 2, { baseY: 0, cursorRow: 0 }, true),
+    0,
+  );
+  assert.equal(
+    promptHistoryStart(command, 2, { baseY: 0, cursorRow: 0 }, false),
+    undefined,
+  );
+  assert.equal(
+    promptHistoryStart(idle, idle.length, { baseY: 0, cursorRow: 8 }, true),
+    undefined,
+  );
+});
 test("an already open Claude effort slider and a hidden-cursor command composer work after tab switching", () => {
   const frame = { baseY: 0, cursorRow: 0, cursorColumn: 0 };
   const slider = [

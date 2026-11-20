@@ -26,6 +26,58 @@ export interface NativeChromeFrame {
 const solidRule = /^\s*[─━]{12,}\s*$/;
 const promptRow = /^\s{0,2}[❯›>»](?:\s|$)/;
 
+/** Claude replaces the top composer rule with “── History 1/3 ──” and may
+ * leave its terminal cursor on the spinner. Use the composer frame itself. */
+export function promptHistoryStart(
+  lines: string[],
+  end: number,
+  frame: NativeChromeFrame,
+  navigating: boolean,
+) {
+  const floor = Math.max(0, frame.baseY);
+  let last = end - 1;
+  while (last >= floor && !lines[last].trim()) last--;
+  // A recalled slash command is still a draft until the user submits it.
+  const slashDraft =
+    navigating &&
+    frame.cursorRow >= floor &&
+    /^\s*[❯›»>]\s*\//.test(lines[frame.cursorRow] || "");
+  for (let bottom = last; bottom >= Math.max(floor + 2, last - 6); bottom--) {
+    if (!solidRule.test(lines[bottom])) continue;
+    for (let row = bottom - 2; row >= floor; row--) {
+      if (
+        /^\s*[─━]+\s*History\s+\d+\s*\/\s*\d+\s*[─━]+\s*$/i.test(lines[row]) &&
+        promptRow.test(lines[row + 1])
+      )
+        return row;
+      if (solidRule.test(lines[row])) break;
+    }
+    if (
+      slashDraft &&
+      frame.cursorRow < bottom &&
+      solidRule.test(lines[frame.cursorRow - 1] || "")
+    )
+      return frame.cursorRow - 1;
+    return;
+  }
+  if (
+    slashDraft &&
+    lines
+      .slice(frame.cursorRow + 1, end)
+      .every((line) => !line.trim() || /^ {2}/.test(line))
+  )
+    return frame.cursorRow;
+  // A CLI can also repaint a multiline history entry without any rules.
+  // Only treat its contiguous draft and working footer as input during recall.
+  if (!navigating || !/^\s*esc to interrupt\s*$/i.test(lines[last] || ""))
+    return;
+  for (let row = last - 1; row >= floor; row--) {
+    if (promptRow.test(lines[row])) return row;
+    if (lines[row].trim() && !frame.wrapped?.[row] && !/^ {2}/.test(lines[row]))
+      return;
+  }
+}
+
 /** A Codex modal overwrites a rectangle of the current viewport. Text on both
  * sides of it (and the normal composer below) still belongs to the background. */
 export function insetChoiceDialog(buffer: IBuffer, lines?: readonly string[]) {
