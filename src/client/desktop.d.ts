@@ -1,3 +1,9 @@
+interface WorkspaceTabPlacement {
+  key: string;
+  home: string;
+  own: string[];
+  other: string[];
+}
 interface Window {
   harborDesktop?: {
     readonly platform: string;
@@ -30,6 +36,16 @@ interface Window {
     retryBackend?: () => Promise<unknown>;
     writeClipboardText?: (text: string) => Promise<boolean>;
     detachedTerminals: () => Promise<string[]>;
+    workspaceTabs?: () => WorkspaceTabPlacement;
+    newWorkspace?: () => Promise<boolean>;
+    onWorkspaceTabs?: (
+      callback: (value: WorkspaceTabPlacement) => void,
+    ) => () => void;
+    receiveTab?: (
+      id: string,
+      before?: string,
+      paneDrop?: boolean,
+    ) => Promise<boolean>;
     onDetachedTerminals: (callback: (ids: string[]) => void) => () => void;
     focusTerminalWindow: (id: string) => Promise<boolean>;
     onTerminalSelection?: (callback: (id: string) => void) => () => void;

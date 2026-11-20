@@ -293,12 +293,19 @@ export function NewTerminalDialog({
   );
 }
 
+const workspaceKey = window.harborDesktop?.workspaceTabs
+  ? new URLSearchParams(location.search).get("workspace")
+  : null;
+const treeStorageKey = workspaceKey
+  ? "harbor.terminalTree." + workspaceKey
+  : "harbor.terminalTree";
 function savedTree(): TerminalTree {
   try {
     const tree = decodeTree(
-      JSON.parse(localStorage.getItem("harbor.terminalTree") || "null"),
+      JSON.parse(localStorage.getItem(treeStorageKey) || "null"),
     );
     if (tree) return tree;
+    if (workspaceKey) return { tree: null, focusedId: "" };
     const legacy = JSON.parse(
       localStorage.getItem("harbor.terminalPanes") || "null",
     );
@@ -396,7 +403,7 @@ export default function TerminalWorkspace({
   useEffect(() => {
     if (!popoutId && ready) {
       try {
-        localStorage.setItem("harbor.terminalTree", paneKey);
+        localStorage.setItem(treeStorageKey, paneKey);
       } catch {}
     }
   }, [paneKey, popoutId, ready]);
@@ -592,6 +599,16 @@ export default function TerminalWorkspace({
       onFocus(terminalId);
       return;
     }
+    if (terminalId && window.harborDesktop?.receiveTab) {
+      void window.harborDesktop
+        .receiveTab(terminalId, undefined, true)
+        .then((ok) => {
+          if (ok) setPlacements((p) => [...p, { terminalId, ...location }]);
+          else onError("탭을 옮기지 못했습니다. 다시 끌어 주세요.");
+        })
+        .catch((e) => onError(String(e)));
+      return;
+    }
     try {
       const payload = JSON.parse(
         event.dataTransfer.getData("application/x-harbor-history"),
@@ -735,7 +752,49 @@ export default function TerminalWorkspace({
       }}
     >
       <div className="terminal-workspace-toolbar">
-        <div className="terminal-tabs" aria-label="열린 터미널">
+        <div
+          className="terminal-tabs"
+          aria-label="열린 터미널"
+          onDragOver={(event) => {
+            if (
+              window.harborDesktop?.receiveTab &&
+              event.dataTransfer.types.includes(
+                "application/x-harbor-terminal-tab",
+              )
+            ) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }
+          }}
+          onDrop={(event) => {
+            const id = event.dataTransfer.getData(
+              "application/x-harbor-terminal-tab",
+            );
+            if (!id || !window.harborDesktop?.receiveTab) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const target = (event.target as Element).closest<HTMLElement>(
+              "[data-terminal-tab]",
+            );
+            let before = target?.dataset.terminalTab;
+            if (
+              target &&
+              before &&
+              event.clientX >
+                target.getBoundingClientRect().left + target.offsetWidth / 2
+            )
+              before =
+                displayTerminals[
+                  displayTerminals.findIndex((t) => t.id === before) + 1
+                ]?.id;
+            void window.harborDesktop
+              .receiveTab(id, before)
+              .then((ok) => {
+                if (!ok) onError("탭을 옮기지 못했습니다. 다시 끌어 주세요.");
+              })
+              .catch((e) => onError(String(e)));
+          }}
+        >
           {displayTerminals.map((t) => (
             <div
               className={`terminal-tab ${focusId === t.id ? "active" : ""} ${draggingId === t.id ? "is-dragging" : ""}`}
@@ -762,6 +821,20 @@ export default function TerminalWorkspace({
           ))}
           {!terminals.length && <span className="muted">열린 터미널 없음</span>}
         </div>
+        {window.harborDesktop?.newWorkspace && (
+          <button
+            className="button secondary small"
+            title="새 워크스페이스 창 · Ctrl+Shift+N"
+            aria-label="새 워크스페이스 창"
+            onClick={() =>
+              void window.harborDesktop
+                ?.newWorkspace?.()
+                .catch((e) => onError(String(e)))
+            }
+          >
+            새 창
+          </button>
+        )}
         {shown.length === 1 && (
           <div
             className="terminal-toolbar-actions"
@@ -850,6 +923,7 @@ export default function TerminalWorkspace({
                 {shown.length > 1 && (
                   <header
                     className="terminal-card-header"
+                    data-terminal-tab={info.id}
                     draggable={!popoutId}
                     onDragStart={(event) => startDrag(event, info.id)}
                     onDragEnd={(event) => void endDrag(event)}
@@ -950,33 +1024,39 @@ export default function TerminalWorkspace({
           <h2>
             {popoutId
               ? "종료된 터미널입니다"
-              : detachedIds.length
-                ? "터미널이 별도 창에 있습니다"
-                : "첫 터미널을 열어보세요"}
+              : window.harborDesktop?.receiveTab
+                ? "이 창에 열린 터미널이 없습니다"
+                : detachedIds.length
+                  ? "터미널이 별도 창에 있습니다"
+                  : "첫 터미널을 열어보세요"}
           </h2>
           <p>
             {popoutId
               ? "전체 워크스페이스에서 새 터미널을 열 수 있습니다."
-              : detachedIds.length
-                ? "별도 창을 닫으면 이 작업 공간에 다시 표시됩니다."
-                : "로컬과 SSH 서버를 한곳에. 각 터미널에서 codex, 셸, 개발 도구를 그대로 사용하세요."}
+              : window.harborDesktop?.receiveTab
+                ? "다른 창의 터미널 탭을 여기로 끌어오거나 새 터미널을 여세요."
+                : detachedIds.length
+                  ? "별도 창을 닫으면 이 작업 공간에 다시 표시됩니다."
+                  : "로컬과 SSH 서버를 한곳에. 각 터미널에서 codex, 셸, 개발 도구를 그대로 사용하세요."}
           </p>
-          {!popoutId && detachedIds.length > 0 && (
-            <div className="terminal-detached-list">
-              {terminals
-                .filter((t) => detachedIds.includes(t.id))
-                .map((t) => (
-                  <button
-                    className="button secondary"
-                    key={t.id}
-                    onClick={() => void focusTerminalWindow(t.id)}
-                  >
-                    <ExternalLink size={15} />
-                    {t.title} 창으로 이동
-                  </button>
-                ))}
-            </div>
-          )}
+          {!popoutId &&
+            !window.harborDesktop?.receiveTab &&
+            detachedIds.length > 0 && (
+              <div className="terminal-detached-list">
+                {terminals
+                  .filter((t) => detachedIds.includes(t.id))
+                  .map((t) => (
+                    <button
+                      className="button secondary"
+                      key={t.id}
+                      onClick={() => void focusTerminalWindow(t.id)}
+                    >
+                      <ExternalLink size={15} />
+                      {t.title} 창으로 이동
+                    </button>
+                  ))}
+              </div>
+            )}
           {!popoutId && (
             <div className="terminal-host-shortcuts">
               {hosts.map((host) => (

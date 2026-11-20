@@ -9,6 +9,9 @@ import { StringDecoder } from "node:string_decoder";
 // https://developers.openai.com/api/docs/models/gpt-6-sol
 // This is not a ChatGPT subscription charge or a credits/quota estimate.
 const rates: Record<string, readonly [number, number, number]> = {
+  // Standard, 30-minute cache write. Verified 2026-11-20:
+  // https://developers.openai.com/api/docs/models/gpt-6.2-astra
+  "gpt-6.2-astra": [8, 0.4, 40],
   "gpt-6-astra": [10, 1, 50],
   "gpt-6-sol": [2, 0.2, 10],
   "gpt-6.1-sol": [2, 0.1, 10],

@@ -1,6 +1,17 @@
 const { contextBridge, ipcRenderer } = require("electron");
 // No filesystem, shell, credential or unrestricted IPC access is exposed to the UI.
 let nativeDrag;
+let acceptedDrop;
+document.addEventListener(
+  "drop",
+  (event) => {
+    const id =
+      event.isTrusted &&
+      event.dataTransfer?.getData("application/x-harbor-terminal-tab");
+    acceptedDrop = id ? { id, at: Date.now() } : undefined;
+  },
+  true,
+);
 document.addEventListener(
   "dragstart",
   (event) => {
@@ -45,7 +56,7 @@ contextBridge.exposeInMainWorld(
   "harborDesktop",
   Object.freeze({
     platform: process.platform,
-    version: "1.18.42",
+    version: "1.18.43",
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
     checkUpdate: () =>
       navigator.userActivation.isActive
@@ -79,6 +90,29 @@ contextBridge.exposeInMainWorld(
         ? ipcRenderer.invoke("harbor:clipboard-write-text", text)
         : Promise.resolve(false),
     detachedTerminals: () => ipcRenderer.invoke("harbor:terminal-windows"),
+    workspaceTabs: () => ipcRenderer.sendSync("harbor:workspace-tabs"),
+    newWorkspace: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:new-workspace")
+        : Promise.resolve(false),
+    onWorkspaceTabs: (callback) => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on("harbor:workspace-tabs", listener);
+      return () =>
+        ipcRenderer.removeListener("harbor:workspace-tabs", listener);
+    },
+    receiveTab: (id, before, paneDrop) => {
+      const drop = acceptedDrop;
+      acceptedDrop = undefined;
+      return drop?.id === id && Date.now() - drop.at < 1000
+        ? ipcRenderer.invoke(
+            "harbor:receive-tab",
+            id,
+            before,
+            paneDrop === true,
+          )
+        : Promise.resolve(false);
+    },
     onDetachedTerminals: (callback) => {
       const listener = (_event, ids) => callback(ids);
       ipcRenderer.on("harbor:terminal-windows", listener);
@@ -119,7 +153,7 @@ contextBridge.exposeInMainWorld(
       });
     },
     cancelTabDrag: (token) => {
-      if (nativeDrag) nativeDrag.cancelled = true;
+      if (nativeDrag?.token === token) nativeDrag.cancelled = true;
       ipcRenderer.send("harbor:tab-drag-cancel", token);
     },
   }),

@@ -16,7 +16,14 @@ export function taskName(command: string, executable = "process"): string {
       /(?:[a-zA-Z0-9_./\\:-]+\.(?:py|sh|ps1|js|mjs|log|out|yaml|yml|json))(?=\s|["']|$)/g,
     ) || [];
   const base = (s: string) => s.split(/[\\/]/).pop()!.slice(0, 100);
-  return [base(executable), ...files.slice(0, 3).map(base)]
+  const module = /^python(?:w|[0-9.]*)?(?:\.exe)?$/i.test(base(executable))
+    ? /(?:^|\s)-m\s+([a-zA-Z_][\w.]{0,79})(?=\s|$)/.exec(command)?.[1]
+    : undefined;
+  return [
+    base(executable),
+    ...(module ? ["-m " + module] : []),
+    ...files.slice(0, 3).map(base),
+  ]
     .filter((v, i, all) => all.indexOf(v) === i)
     .join(" · ");
 }
@@ -25,10 +32,14 @@ export function workKind(
   gpu?: number,
 ): TerminalWork["kind"] | null {
   if (gpu !== undefined) return "gpu";
+  if (
+    /^python(?:w|[0-9.]*)?(?:\.exe)? · -m (?:mcp|codex)(?:[._ ]|$)/i.test(task)
+  )
+    return null;
   if (/monitor|watch|tail|nvidia-smi|tensorboard/i.test(task)) return "monitor";
   if (/simulat|ramulator|gem5|gpgpu|accel.?sim|verilator|vvp/i.test(task))
     return "simulator";
-  if (/python|\.py\b|\.sh\b|\.ps1\b|train|benchmark|torch|jupyter/i.test(task))
+  if (/ · -m |\.py\b|\.sh\b|\.ps1\b|train|benchmark|torch|jupyter/i.test(task))
     return "background";
   return null;
 }
@@ -44,6 +55,7 @@ except Exception: pass
 jobs=[]
 for p in [x for x in os.listdir('/proc') if x.isdigit()][:16384]:
  try:
+  if int(p)==os.getpid(): continue
   root='/proc/'+p
   if os.stat(root).st_uid!=os.getuid(): continue
   with open(root+'/environ','rb') as f: env=f.read(131072).split(b'\\0')
@@ -54,6 +66,9 @@ for p in [x for x in os.listdir('/proc') if x.isdigit()][:16384]:
   if fields[0]=='Z': continue
   exe=os.path.basename(args[0])
   names=[os.path.basename(x)[:100] for x in args[1:] if re.fullmatch(r'[a-zA-Z0-9_./:-]+\\.(py|sh|ps1|js|mjs|log|out|yaml|yml|json)',x)]
+  if re.fullmatch(r'python[0-9.]*',exe) and '-m' in args:
+   module=args[args.index('-m')+1]
+   if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,79}',module): names.insert(0,'-m '+module)
   if exe in ('watch','timeout'): names=[x for x in args[1:] if x in ('nvidia-smi','tail','top','htop')]+names
   job={'pid':int(p),'id':p+':'+fields[19],'task':' · '.join([exe]+names[:3])}
   if int(p) in gpu: job['memoryMiB']=gpu[int(p)]

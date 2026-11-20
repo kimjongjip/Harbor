@@ -8,6 +8,19 @@ import {
 } from "react";
 
 let detachedIds: string[] = [];
+export function useWorkspaceTabs() {
+  const [placement, setPlacement] = useState(() =>
+    window.harborDesktop?.workspaceTabs?.(),
+  );
+  useEffect(() => {
+    const api = window.harborDesktop;
+    if (!api?.onWorkspaceTabs) return;
+    const off = api.onWorkspaceTabs(setPlacement);
+    setPlacement(api.workspaceTabs?.());
+    return off;
+  }, []);
+  return placement;
+}
 const listeners = new Set<() => void>();
 const browserWindows = new Map<string, Window>();
 const browserReady = new Set<string>();
@@ -188,8 +201,14 @@ export function useTabDetach(onError: (message: string) => void) {
       if (window.harborDesktop?.endTabDrag) {
         const token = await current.token;
         if (!token) return;
-        if (current.cancelled || handledDrop)
-          window.harborDesktop.cancelTabDrag(token);
+        if (current.cancelled) window.harborDesktop.cancelTabDrag(token);
+        // The destination renderer can deliver its drop IPC after the source
+        // renderer's dragend. Allow it to consume this one-use native drag.
+        else if (handledDrop)
+          window.setTimeout(
+            () => window.harborDesktop?.cancelTabDrag(token),
+            750,
+          );
         else await window.harborDesktop.endTabDrag(token);
       }
     } catch (error) {

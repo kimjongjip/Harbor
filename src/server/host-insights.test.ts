@@ -314,6 +314,14 @@ test("background jobs show script/log targets without credentials or arbitrary c
   assert.equal(workKind("tail · simulation.log"), "monitor");
   assert.equal(workKind(name, 1024), "gpu");
   assert.equal(workKind("codex"), null);
+  assert.equal(workKind("python3"), null);
+  assert.equal(workKind("python.exe"), null);
+  assert.equal(workKind("python3", 64), "gpu");
+  assert.equal(
+    workKind(taskName("python.exe -m project.worker", "python.exe")),
+    "background",
+  );
+  assert.equal(workKind("python3 · -m mcp.server"), null);
 });
 
 test(

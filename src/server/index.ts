@@ -1109,7 +1109,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.42" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.43" }),
 );
 app.get("/api/bootstrap", (req, res) =>
   res.json({
@@ -1883,6 +1883,7 @@ app.post("/api/terminals", async (req, res) => {
     throw error;
   }
   broadcastState();
+  res.set("X-Harbor-New-Terminal", terminal.id);
   res.json({ ...terminal, autoApproval: autoApproval.state(terminal.id) });
 });
 app.patch("/api/terminals/:id/auto-approval", (req, res) => {
@@ -1984,7 +1985,11 @@ app.post("/api/hosts/:id/history/:threadId/resume", async (req, res) => {
     .parse(req.body || {});
   const host = hub.host(String(req.params.id));
   const threadId = historyThreadId.parse(req.params.threadId);
-  res.json(await historyResumer.resume(host, threadId, body));
+  const alreadyOpen = new Set(terminals.list().map((t) => t.id));
+  const terminal = await historyResumer.resume(host, threadId, body);
+  if (!alreadyOpen.has(terminal.id))
+    res.set("X-Harbor-New-Terminal", terminal.id);
+  res.json(terminal);
 });
 app.post("/api/terminals/:id/close", async (req, res) => {
   await terminals.close(String(req.params.id));

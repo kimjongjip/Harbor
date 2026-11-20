@@ -35,7 +35,14 @@ export function useDesktopWorkspace(
       const preferences: DesktopWorkspace["preferences"] = {};
       for (const key of desktopPreferenceKeys) {
         try {
-          const value = localStorage.getItem(key);
+          const windowKey =
+            window.harborDesktop?.workspaceTabs &&
+            new URLSearchParams(location.search).get("workspace");
+          const value = localStorage.getItem(
+            key === "harbor.terminalTree" && windowKey
+              ? key + "." + windowKey
+              : key,
+          );
           if (value !== null) preferences[key] = value;
         } catch {}
       }

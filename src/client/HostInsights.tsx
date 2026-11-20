@@ -99,7 +99,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
     120000,
     true,
   );
-  if (!hostId) return null;
+  if (!hostId || (data && !Array.isArray(data.accounts))) return null;
   return (
     <section className="account-usage-panel" aria-label="AI 구독 한도">
       <header>
@@ -350,7 +350,8 @@ export const TerminalWorkList = memo(function TerminalWorkList({
     monitor: "모니터링",
     background: "백그라운드",
   };
-  if (data && !error && !data.error && !data.jobs.length) return null;
+  const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+  if (data && !error && !data.error && !jobs.length) return null;
   return (
     <section className="terminal-work-list" aria-label="백그라운드 작업">
       <h4>
@@ -359,7 +360,7 @@ export const TerminalWorkList = memo(function TerminalWorkList({
       {(error || data?.error) && (
         <p className="insights-warning">{error || data?.error}</p>
       )}
-      {data?.jobs.map((job) => (
+      {jobs.map((job) => (
         <article key={job.id} className={job.state === "ended" ? "ended" : ""}>
           {job.state === "running" ? (
             <Cpu size={18} className="work-pulse" />
@@ -381,9 +382,6 @@ export const TerminalWorkList = memo(function TerminalWorkList({
           </div>
         </article>
       ))}
-      {data && !data.error && !data.jobs.length && (
-        <p>이 터미널에서 실행한 작업이 없습니다.</p>
-      )}
       {!data && !error && <p>작업 확인 중…</p>}
     </section>
   );

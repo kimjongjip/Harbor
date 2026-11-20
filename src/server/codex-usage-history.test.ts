@@ -49,6 +49,9 @@ test("Codex USD uses each request model, cache discount, and deduplicated cumula
 });
 
 test("API conversion includes long context and cache writes without double counting reasoning", () => {
+  const usage = { input: 200000, cached: 50000, write: 50000, output: 10000 };
+  assert.equal(codexApiCost("gpt-6.2-astra", usage, 272000), 1.72);
+  assert.equal(codexApiCost("gpt-6.2-astra", usage, 272001), 3.24);
   assert.equal(
     codexApiCost(
       "gpt-6-astra",

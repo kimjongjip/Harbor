@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -55,6 +56,7 @@ import { useServerOrder } from "./server-order";
 import {
   focusTerminalWindow,
   useDetachedTerminals,
+  useWorkspaceTabs,
   useTerminalSelection,
 } from "./terminalWindows";
 import RuntimeUpdateNotice from "./RuntimeUpdateNotice";
@@ -85,6 +87,9 @@ const RemoteConnectButton = lazy(() =>
 const noSessions: string[] = [];
 const popoutId = new URLSearchParams(location.search).get("terminal");
 const initialFocusId = new URLSearchParams(location.search).get("focus");
+const nativeWindowKey = window.harborDesktop?.workspaceTabs
+  ? new URLSearchParams(location.search).get("workspace") || "main"
+  : null;
 type HistoryDrop = {
   provider?: "codex" | "claude";
   sshSessionMode?: "direct" | "tmux";
@@ -132,7 +137,12 @@ export default function App() {
   const [activeId, setActiveId] = useState(() => {
     if (popoutId || initialFocusId) return popoutId || initialFocusId || "";
     try {
-      return sessionStorage.getItem("harbor.activeTerminal") || "";
+      return (
+        (nativeWindowKey &&
+          localStorage.getItem("harbor.windowFocus." + nativeWindowKey)) ||
+        sessionStorage.getItem("harbor.activeTerminal") ||
+        ""
+      );
     } catch {
       return "";
     }
@@ -181,12 +191,50 @@ export default function App() {
   const [historyPlacements, setHistoryPlacements] = useState<
     TerminalPlacement[]
   >([]);
-  const active = state.terminals.find((item) => item.id === activeId);
-  const detached = useDetachedTerminals();
+  const placement = useWorkspaceTabs();
+  const legacyDetached = useDetachedTerminals();
+  const localTerminals = useMemo(() => {
+    if (!placement) return state.terminals;
+    const positions = new Map(placement.own.map((id, i) => [id, i]));
+    const other = new Set(placement.other);
+    return state.terminals
+      .filter((t) =>
+        placement.key === placement.home
+          ? !other.has(t.id)
+          : positions.has(t.id),
+      )
+      .sort(
+        (a, b) =>
+          (positions.get(a.id) ?? positions.size) -
+          (positions.get(b.id) ?? positions.size),
+      );
+  }, [state.terminals, placement]);
+  const detached = useMemo(
+    () =>
+      placement
+        ? state.terminals
+            .filter((t) => !localTerminals.some((s) => s.id === t.id))
+            .map((t) => t.id)
+        : legacyDetached,
+    [placement, state.terminals, localTerminals, legacyDetached],
+  );
+  const active = localTerminals.find((item) => item.id === activeId);
+  useEffect(() => {
+    if (
+      !ready ||
+      !placement ||
+      active ||
+      (activeId && pendingSelection.current === activeId)
+    )
+      return;
+    const next = localTerminals.find((t) => !t.exited);
+    setActiveId(next?.id || "");
+    if (next) setHostId(next.hostId);
+  }, [ready, placement, activeId, active, localTerminals]);
   useDesktopWorkspace(
     ready,
     { activeId, page, workspaceView, sidebar, sidebarVisible },
-    !!popoutId,
+    !!popoutId || placement?.key !== placement?.home,
   );
   const workspaceApplied = useRef(false);
   useEffect(() => {
@@ -225,7 +273,11 @@ export default function App() {
       void focus(selected.id);
       if (remoteDesktop && workspace && !initialFocusId)
         setPage(workspace.page);
-    } else if (!remoteDesktop && !state.terminals.some((t) => !t.exited)) {
+    } else if (
+      !remoteDesktop &&
+      placement?.key === placement?.home &&
+      !state.terminals.some((t) => !t.exited)
+    ) {
       const local = state.hosts.find((h) => h.kind === "local");
       if (local) void connect(local, true);
     }
@@ -236,6 +288,11 @@ export default function App() {
       if (!popoutId) {
         try {
           sessionStorage.setItem("harbor.activeTerminal", active.id);
+          if (nativeWindowKey)
+            localStorage.setItem(
+              "harbor.windowFocus." + nativeWindowKey,
+              active.id,
+            );
         } catch {}
       }
     }
@@ -378,7 +435,7 @@ export default function App() {
               colors: terminalColors(theme),
             },
           );
-          if (!popoutId && !detached.includes(terminal.id)) {
+          if (!popoutId && !belongsToOtherWindow(terminal.id)) {
             await dismissUnusedStartup(terminal.id);
             // Placement owns focus: changing activeId first would replace the
             // currently focused pane before the requested drop target is known.
@@ -497,10 +554,20 @@ export default function App() {
     if (popoutId) return;
     const ids = new Set(
       latestTerminals.current
-        .filter((t) => t.startupPlaceholder && !t.exited)
+        .filter(
+          (t) =>
+            t.startupPlaceholder &&
+            !t.exited &&
+            (!placement || localTerminals.some((local) => local.id === t.id)),
+        )
         .map((t) => t.id),
     );
-    if (startupTerminalId.current) ids.add(startupTerminalId.current);
+    if (
+      startupTerminalId.current &&
+      (!placement ||
+        localTerminals.some((t) => t.id === startupTerminalId.current))
+    )
+      ids.add(startupTerminalId.current);
     for (const id of ids) {
       if (id !== keepId)
         await api(
@@ -508,6 +575,13 @@ export default function App() {
           {},
         ).catch((e) => onError((e as Error).message));
     }
+  }
+  function belongsToOtherWindow(id: string) {
+    const current = window.harborDesktop?.workspaceTabs?.();
+    if (!current) return detached.includes(id);
+    return current.key === current.home
+      ? current.other.includes(id)
+      : !current.own.includes(id);
   }
   async function created(terminal: TerminalInfo) {
     pendingSelection.current = null;
@@ -526,10 +600,12 @@ export default function App() {
         );
       return;
     }
-    if (!popoutId && detached.includes(terminal.id)) {
+    if (!popoutId && belongsToOtherWindow(terminal.id)) {
       const moved = await focusTerminalWindow(terminal.id).catch(() => false);
       if (request !== focusRequest.current || moved) return;
     }
+    if (!latestTerminals.current.some((t) => t.id === terminal.id))
+      pendingSelection.current = terminal.id;
     setActiveId(terminal.id);
     setIdeNewChat(false);
     setHostId(terminal.hostId);
@@ -1391,7 +1467,7 @@ export default function App() {
                   >
                     <TerminalWorkspace
                       key="mounted-terminal-workspace"
-                      terminals={state.terminals}
+                      terminals={localTerminals}
                       hosts={orderedHosts}
                       activeId={activeId}
                       showHarborPanel={!ideMode}
