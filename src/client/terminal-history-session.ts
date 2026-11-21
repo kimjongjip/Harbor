@@ -3,6 +3,10 @@ import type { HistoryDetail, HistoryPage } from "../shared/history";
 import { conversationTurns, expandTimeline } from "./conversation-turns";
 import { nativeFlowFrame } from "./terminal-native-flow";
 import { hasNativeCompletedAnswer } from "./terminal-transcript-boundary";
+import { codexShortcutsFooter } from "./terminal-native-chrome";
+
+const clippedEnd = /(?:…|\.\.\.)$/;
+const titlePrefix = (title: string) => title.replace(clippedEnd, "").trimEnd();
 
 /** Inspect only the live footer, never scrollback, prompts or shell commands. */
 export function codexHistoryTitle(term: Terminal): string | undefined {
@@ -13,12 +17,7 @@ export function codexHistoryTitle(term: Terminal): string | undefined {
   const line = (row: number) =>
     buffer.getLine(row)?.translateToString(true) || "";
   while (last >= floor && !line(last).trim()) last--;
-  if (
-    !/^ {2,}.*\? for shortcuts(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?\s*$/.test(
-      line(last),
-    )
-  )
-    return;
+  if (!codexShortcutsFooter(line(last))) return;
   const status =
     /^ {2,}(?:gpt-[\w.-]+|o\d[\w.-]*|codex[\w.-]*)(?: [\w-]+)? · [^\r\n]+? · (.+)$/i.exec(
       line(last - 1),
@@ -27,13 +26,15 @@ export function codexHistoryTitle(term: Terminal): string | undefined {
   if (
     title &&
     title.length <= 180 &&
-    !/[\x00-\x1f\x7f]|(?:…|\.\.\.)$/.test(title)
+    !/[\x00-\x1f\x7f]/.test(title) &&
+    (!clippedEnd.test(title) ||
+      titlePrefix(title).replace(/\s/g, "").length >= 12)
   )
     return title;
 }
 
-/** The history API is read-only. Fail closed on duplicates, extra pages,
- * mismatched scope, clipped titles or a different answer on the live screen. */
+/** A clipped footer can narrow the search, but only one matching catalog
+ * title plus completed-answer evidence can identify the conversation. */
 export async function recoverTerminalHistorySession(
   term: Terminal,
   hostId: string,
@@ -41,11 +42,15 @@ export async function recoverTerminalHistorySession(
   read: <T>(path: string) => Promise<T>,
 ): Promise<string | undefined> {
   const path = `/hosts/${encodeURIComponent(hostId)}/history`;
+  const clipped = clippedEnd.test(title);
+  const search = clipped ? titlePrefix(title) : title;
   const page = await read<HistoryPage>(
-    `${path}?${new URLSearchParams({ provider: "codex", search: title })}`,
+    `${path}?${new URLSearchParams({ provider: "codex", search })}`,
   );
   if (page.nextCursor || !Array.isArray(page.data)) return;
-  const matches = page.data.filter((thread) => thread.title === title);
+  const matches = page.data.filter((thread) =>
+    clipped ? thread.title.startsWith(search) : thread.title === title,
+  );
   if (matches.length !== 1) return;
   const thread = matches[0];
   if (
@@ -61,7 +66,7 @@ export async function recoverTerminalHistorySession(
   if (
     detail.thread.id !== thread.id ||
     detail.thread.hostId !== hostId ||
-    detail.thread.title !== title ||
+    detail.thread.title !== thread.title ||
     (detail.thread.provider && detail.thread.provider !== "codex") ||
     codexHistoryTitle(term) !== title
   )

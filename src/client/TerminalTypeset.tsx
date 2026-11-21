@@ -323,6 +323,7 @@ export function TerminalRich({
   info,
   blocks,
   covered = false,
+  raw = false,
 }: {
   term: Terminal;
   info: TerminalInfo;
@@ -330,6 +331,7 @@ export function TerminalRich({
   /** The conversation view hides this layer: skip per-write repositioning.
    * New answers are still measured so the CLI receives its row allocation. */
   covered?: boolean;
+  raw?: boolean;
 }) {
   const [frame, setFrame] = useState(0);
   const currentSession = info.agentSessionId || info.resumeThreadId;
@@ -515,7 +517,14 @@ export function TerminalRich({
     !hasDiagramCard &&
     nativeDiagramUnsupported(lines);
   return createPortal(
-    <div ref={layer} className="terminal-rich-layer" data-frame={frame}>
+    <div
+      ref={layer}
+      className="terminal-rich-layer"
+      data-frame={frame}
+      inert={raw}
+      aria-hidden={raw || undefined}
+      style={raw ? { opacity: 0 } : undefined}
+    >
       {native
         .filter(
           (b) =>

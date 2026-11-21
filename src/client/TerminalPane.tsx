@@ -139,6 +139,9 @@ export default function TerminalPane({
     info,
     active,
   );
+  const canSwitchView = Boolean(
+    historySessionId || info.agentKind || info.agentConnected,
+  );
   const { push, isServerNoticeEnabled } = useNotifications();
   const openRef = useRef(open);
   openRef.current = open;
@@ -1601,6 +1604,12 @@ export default function TerminalPane({
           {copyStatus ||
             imageStatus ||
             linkHint ||
+            (!rawOutput &&
+              canSwitchView &&
+              !historySessionId &&
+              !info.exited &&
+              info.connectionState === "connected" &&
+              "대화 기록 미연결 · 원문 표시") ||
             (info.exited
               ? info.disconnectReason || "터미널이 종료됐습니다."
               : info.connectionState === "disconnected"
@@ -1615,7 +1624,7 @@ export default function TerminalPane({
                       ? "일반 SSH 연결"
                       : "")}
         </span>
-        {(historySessionId || info.agentSessionId || info.resumeThreadId) && (
+        {canSwitchView && (
           <button
             type="button"
             className="terminal-footer-button"
@@ -1624,7 +1633,7 @@ export default function TerminalPane({
               setRawOutput((value) => !value);
               termRef.current?.focus();
             }}
-            title="같은 터미널의 가공하지 않은 화면을 확인합니다."
+            title={rawOutput ? "기본 보기로 전환합니다." : "터미널 원문으로 전환합니다."}
           >
             {rawOutput ? "기본 표시로" : "터미널 원문"}
           </button>
@@ -1891,6 +1900,7 @@ export default function TerminalPane({
           info={info}
           blocks={richBlocks}
           covered={!rawOutput && !!historySessionId}
+          raw={rawOutput}
         />
       )}
       {nativeTerminal && historySessionId && (

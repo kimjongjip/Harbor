@@ -88,7 +88,7 @@ test("shared Codex history recovers from a unique title and a completed native a
     f.native.dispose();
   }
 });
-test("a quoted footer, shell, disabled parser or clipped title never starts recovery", async () => {
+test("a quoted footer, shell, disabled parser or short clipped title never starts recovery", async () => {
   const f = screen();
   try {
     await f.seed(answer, title + "…");
@@ -107,6 +107,51 @@ test("a quoted footer, shell, disabled parser or clipped title never starts reco
       ),
     );
     assert.equal(codexHistoryTitle(f.term), undefined);
+  } finally {
+    f.native.dispose();
+  }
+});
+test("goal and warning footer recovers a unique clipped title only with the matching answer", async () => {
+  const f = screen(),
+    h = history();
+  const prefix = "A shared conversation with a long title";
+  const full = prefix + " about rendering";
+  const paint = async (ending: string) => {
+    await f.seed(answer, prefix + ending);
+    await new Promise<void>((done) =>
+      f.native.write(
+        "\x1b[44;1H\x1b[2K  ← for agents · ? for shortcuts     Goal achieved (6h 40m) · ⚠ 1 warning · f2 to view\x1b[41;15H",
+        done,
+      ),
+    );
+  };
+  try {
+    h.detail.thread.title = full;
+    for (const ending of ["…", "..."]) {
+      await paint(ending);
+      assert.equal(codexHistoryTitle(f.term), prefix + ending);
+      const resolve = () =>
+        recoverTerminalHistorySession(
+          f.term,
+          "fixture",
+          prefix + ending,
+          async <T>(path: string) => {
+            if (path.includes(id)) return h.detail as T;
+            assert.equal(
+              new URL(path, "https://fixture.test").searchParams.get("search"),
+              prefix,
+            );
+            return h.page as T;
+          },
+        );
+      assert.equal(await resolve(), id);
+      h.page.data.push({ ...h.detail.thread, title: prefix + " elsewhere" });
+      assert.equal(await resolve(), undefined);
+      h.page.data.pop();
+      h.detail.items[0].text = "Foreign answer ".repeat(20);
+      assert.equal(await resolve(), undefined);
+      h.detail.items[0].text = answer;
+    }
   } finally {
     f.native.dispose();
   }

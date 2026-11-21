@@ -36,7 +36,7 @@ test(
       "This completed response has a distinctive ending that must match the actual native terminal before its saved conversation can be displayed safely. The native input stays in the same place and keeps the current unsent draft while the saved Markdown answer appears in the reader above it.";
     const markdown = `## Rendered shared answer\n\n| Item | State |\n| --- | --- |\n| Reader | Ready |\n\n${ending}`;
     const output = () =>
-      `\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[HRendered shared answer\r\nItem State\r\nReader Ready\r\n${ending}\x1b[${dimensions.rows - 6};1H  Worked for 1m 2s\x1b[${dimensions.rows - 3};1H› UNSENT DRAFT\x1b[${dimensions.rows - 1};1H  GPT-6-Astra xhigh · ~ · ${title}\x1b[${dimensions.rows};1H  ← for agents · ? for shortcuts\x1b[${dimensions.rows - 3};15H`;
+      `\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[HRendered shared answer\r\nItem State\r\nReader Ready\r\n${ending}\x1b[${dimensions.rows - 6};1H  Worked for 1m 2s\x1b[${dimensions.rows - 3};1H› UNSENT DRAFT\x1b[${dimensions.rows - 1};1H  GPT-6-Astra xhigh · ~ · ${title.slice(0, 18)}…\x1b[${dimensions.rows};1H  ← for agents · ? for shortcuts    Goal achieved (6h 40m) · ⚠ 1 warning · f2 to view\x1b[${dimensions.rows - 3};15H`;
     screen.resize(dimensions.cols, dimensions.rows);
     screen.append(output());
     await build({
@@ -46,7 +46,7 @@ import React,{useState}from'react';import{createRoot}from'react-dom/client';impo
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/terminal-layout.css';import'./src/client/workspace.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
 window.mounts=0;window.renders=0;const open=Terminal.prototype.open;Terminal.prototype.open=function(...args){window.term=this;window.mounts++;return open.apply(this,args);};
-function Fixture(){const[kind,setKind]=useState('codex'),[active,setActive]=useState(true);window.setKind=setKind;window.setActive=setActive;return <div style={{height:'100vh',display:'flex',flexDirection:'column'}}><TerminalPane info={{id:'${id}',hostId:'fixture',title:'Shared Codex',cwd:'/fixture',exited:false,program:'shell',agentKind:kind,agentConnected:true,agentState:'idle',integration:'ready',peerDelivery:'poll'}} active={active}/></div>;}
+function Fixture(){const[kind,setKind]=useState('codex'),[active,setActive]=useState(true);window.setKind=setKind;window.setActive=setActive;return <div style={{height:'100vh',display:'flex',flexDirection:'column'}}><TerminalPane info={{id:'${id}',hostId:'fixture',title:'Shared Codex',cwd:'/fixture',exited:false,program:'shell',agentKind:kind,agentConnected:true,agentState:'idle',connectionState:'connected',integration:'ready',peerDelivery:'poll'}} active={active}/></div>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "shared-session-fixture.tsx",
@@ -226,6 +226,11 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         "duplicate titles preserve the original CLI",
       );
       assert.equal(requests.filter((r) => r.path.endsWith(session)).length, 0);
+      await page.getByText("대화 기록 미연결 · 원문 표시", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "터미널 원문", exact: true }).click();
+      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("inert"), "");
+      await page.getByRole("button", { name: "기본 표시로", exact: true }).click();
+      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("inert"), null);
       ambiguous = false;
       title = "Recovered shared conversation";
       repaint();
