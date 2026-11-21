@@ -276,6 +276,11 @@ export class MobileGateway {
   output(id: string, data: string) {
     this.terminalEvent(id, { type: "data", id, data });
   }
+  answersChanged(id: string) {
+    // Only invalidate. The authenticated answers endpoint checks the binding
+    // again before releasing any answer text.
+    this.terminalEvent(id, { type: "answers-changed", id });
+  }
   resize(id: string, cols: number, rows: number) {
     this.terminalEvent(id, { type: "resize", id, cols, rows });
   }
@@ -309,7 +314,7 @@ export class MobileGateway {
         this.send(socket, {
           type: "state",
           state: this.stateFor(view.deviceId),
-          protocol: 4,
+          protocol: 5,
         });
       if (this.previous) {
         const oldRequests = new Set(this.previous.requests.map((r) => r.id));
@@ -1095,7 +1100,7 @@ export class MobileGateway {
         this.send(ws, {
           type: "state",
           state: this.stateFor(view.deviceId),
-          protocol: 4,
+          protocol: 5,
         });
         ws.on("close", () => this.views.delete(ws));
         ws.on("pong", () => {

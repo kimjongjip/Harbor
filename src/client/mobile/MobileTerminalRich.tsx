@@ -1,17 +1,59 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useMemo,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { claudeModPanels, projectNativeRow } from "./claude-mod-panels";
 import {
-  mobileFlowParts,
-  nativeRow,
+  phoneFlowParts,
   trimNativeRow,
   nativeSeparator,
   clipNativeRuns,
   terminalContentEnd,
   type NativeRun,
+  type FlowPart,
 } from "./terminal-flow";
+import { NativeFlowReader } from "../terminal-native-flow";
+import {
+  nativeChrome,
+  nativeInteractiveReplacement,
+} from "../terminal-native-chrome";
+
+const PhoneRow = memo(function PhoneRow({
+  row,
+  line,
+  runs,
+  start,
+  height,
+}: {
+  row: number;
+  line: string;
+  runs: NativeRun[];
+  start: number;
+  height: number;
+}) {
+  const separator = nativeSeparator(line);
+  return (
+    <div
+      className={`mobile-native-row${separator ? " mobile-native-separator" : ""}`}
+      data-native-row={row}
+      style={{ minHeight: height, lineHeight: `${height}px` }}
+    >
+      {!separator &&
+        trimNativeRow(clipNativeRuns(runs, start)).map((run, i) => (
+          <span key={i} style={run.style}>
+            {run.text}
+          </span>
+        ))}
+    </div>
+  );
+});
 
 interface ReadingSnapshot {
   lines: string[];
@@ -33,6 +75,7 @@ export function MobileTerminalRich({
   onFlow,
   renderAnswer,
   renderHistory,
+  onMissingAnswer,
 }: {
   term?: Terminal;
   blocks: RichTerminalBlock[];
@@ -44,6 +87,7 @@ export function MobileTerminalRich({
   onFlow(node: HTMLElement | null): void;
   renderAnswer(text: string): ReactNode;
   renderHistory?(beforeTexts: string[]): ReactNode;
+  onMissingAnswer?(): void;
 }) {
   const [limit, setLimit] = useState(400);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -56,12 +100,17 @@ export function MobileTerminalRich({
     cellHeight: 0,
     fontSize: 14,
     fontFamily: "monospace",
+    parts: [] as FlowPart[],
+    sourceBlocks: undefined as RichTerminalBlock[] | undefined,
   });
   const prepend = useRef<{ height: number; top: number } | undefined>(
     undefined,
   );
   const frozen = useRef<ReadingSnapshot | undefined>(undefined);
   const projection = useRef(hideMods && !preserveModal);
+  const latestBlocks = useRef(blocks);
+  latestBlocks.current = blocks;
+  const showingAnswer = useRef(false);
   const restoreScroll = useRef<number | undefined>(undefined);
   const screen = term?.element?.querySelector<HTMLElement>(".xterm-screen");
   const scroller = screen?.closest<HTMLElement>(".terminal-scroll");
@@ -77,11 +126,20 @@ export function MobileTerminalRich({
   }, [following]);
   useLayoutEffect(() => {
     if (!term || !screen || !scroller || !active || !updating) return;
-    let frame = 0;
+    const reader = new NativeFlowReader(term);
+    let missingSince = 0,
+      syncSince: number | undefined;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    let scheduled: ReturnType<typeof setTimeout> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const capture = (start: number, end: number): ReadingSnapshot => {
       const buffer = term.buffer.active;
-      const panels = claudeModPanels(buffer, term.cols, term.rows);
+      const current = reader.frame();
+      const styled = reader.rows(current, start);
+      const panels =
+        !following || hideMods
+          ? claudeModPanels(buffer, term.cols, term.rows)
+          : [];
       const result: ReadingSnapshot = {
         lines: [],
         rows: [],
@@ -91,8 +149,8 @@ export function MobileTerminalRich({
       };
       for (let row = start; row < end; row++) {
         const line = buffer.getLine(row);
-        const text = line?.translateToString(true) || "";
-        const runs = nativeRow(line, term.cols, 0, term.options.theme || {});
+        const text = current.lines[row] || "";
+        const runs = styled[row - start];
         const masked = panels.some(
           (panel) => row >= panel.top && row < panel.bottom,
         )
@@ -125,9 +183,14 @@ export function MobileTerminalRich({
     else if (!frozen.current && !term.modes.synchronizedOutputMode)
       frozen.current = capture(0, terminalContentEnd(term.buffer.active));
     const update = () => {
-      frame = 0;
+      scheduled = undefined;
+      if (document.visibilityState === "hidden") return;
       if (!screen.clientHeight || !scroller.clientHeight) return;
-      if (term.modes.synchronizedOutputMode) {
+      if (!term.modes.synchronizedOutputMode) syncSince = undefined;
+      else syncSince ??= performance.now();
+      // The native canvas is hidden on a phone and its paint watchdog may be
+      // paused. Do not wait forever for a lost synchronized-output terminator.
+      if (syncSince !== undefined && performance.now() - syncSince < 1000) {
         clearTimeout(timer);
         timer = setTimeout(() => {
           timer = undefined;
@@ -155,16 +218,37 @@ export function MobileTerminalRich({
       const hidden = filtered ? source.hidden.slice(offset) : [];
       // Every screen uses the phone projection, including tool output and code.
       // xterm remains the unchanged ANSI decoder; no PTY resize/input is sent.
-      const parts =
-        mobileFlowParts(lines, []) ||
-        lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }));
-      const rows: NativeRun[][] = [];
-      for (const part of parts)
-        if (part.kind === "row")
-          rows[part.row] = clipNativeRuns(sourceRows[part.row], part.start);
+      const sourceBlocks = latestBlocks.current,
+        parts = phoneFlowParts(lines, sourceBlocks);
+      // A split SSH repaint can clear the old marker before drawing its new
+      // rows. Keep the last readable frame through that gap; a real control
+      // or a stable replacement must still appear without further output.
+      if (
+        following &&
+        showingAnswer.current &&
+        !parts.some((p) => p.kind === "answer") &&
+        !nativeChrome(lines) &&
+        !nativeInteractiveReplacement(lines)
+      ) {
+        missingSince ||= performance.now();
+        const left = 400 - (performance.now() - missingSince);
+        if (left > 0) {
+          if (!settleTimer)
+            settleTimer = setTimeout(() => {
+              settleTimer = undefined;
+              schedule();
+            }, Math.ceil(left));
+          return;
+        }
+      }
+      missingSince = 0;
+      clearTimeout(settleTimer);
+      settleTimer = undefined;
       setView({
         lines,
-        rows,
+        rows: sourceRows,
+        parts,
+        sourceBlocks,
         hidden,
         start,
         width: screen.clientWidth,
@@ -174,7 +258,7 @@ export function MobileTerminalRich({
       });
     };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(update);
+      if (scheduled === undefined) scheduled = setTimeout(update, 0);
     };
     const output = () => {
       if (!following && frozen.current) return;
@@ -182,17 +266,21 @@ export function MobileTerminalRich({
         timer = setTimeout(() => {
           timer = undefined;
           schedule();
-        }, 60);
+        }, 40);
     };
     const listeners = [term.onWriteParsed(output), term.onResize(schedule)];
     const resize = new ResizeObserver(schedule);
     resize.observe(screen);
     resize.observe(scroller);
+    document.addEventListener("visibilitychange", schedule);
     schedule();
     return () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(scheduled);
+      document.removeEventListener("visibilitychange", schedule);
       clearTimeout(timer);
+      clearTimeout(settleTimer);
       resize.disconnect();
+      reader.dispose();
       listeners.forEach((listener) => listener.dispose());
     };
   }, [
@@ -238,9 +326,22 @@ export function MobileTerminalRich({
       cancelAnimationFrame(frame);
     };
   }, [active, updating, scroller, view.start, following]);
-  const parts =
-    mobileFlowParts(view.lines, blocks) ||
-    view.lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }));
+  const parts = useMemo(
+    () =>
+      view.sourceBlocks === blocks
+        ? view.parts
+        : phoneFlowParts(view.lines, blocks),
+    [view, blocks],
+  );
+  const missing = parts
+    .flatMap((p) => (p.kind === "answer" && !p.block ? [p.id] : []))
+    .join(",");
+  useLayoutEffect(() => {
+    showingAnswer.current = parts.some((p) => p.kind === "answer" && !!p.block);
+  }, [parts]);
+  useLayoutEffect(() => {
+    if (missing && active && updating) onMissingAnswer?.();
+  }, [missing, active, updating, onMissingAnswer]);
   if (!term || !scroller || !active || !view.width) return null;
   return createPortal(
     <div
@@ -287,22 +388,14 @@ export function MobileTerminalRich({
             </div>
           </section>
         ) : view.hidden[part.row] ? null : (
-          <div
+          <PhoneRow
             key={`row:${view.start + part.row}`}
-            className={`mobile-native-row${nativeSeparator(view.lines[part.row]) ? " mobile-native-separator" : ""}`}
-            data-native-row={view.start + part.row}
-            style={{
-              minHeight: view.cellHeight,
-              lineHeight: `${view.cellHeight}px`,
-            }}
-          >
-            {!nativeSeparator(view.lines[part.row]) &&
-              trimNativeRow(view.rows[part.row] || []).map((run, i) => (
-                <span key={i} style={run.style}>
-                  {run.text}
-                </span>
-              ))}
-          </div>
+            row={view.start + part.row}
+            line={view.lines[part.row]}
+            runs={view.rows[part.row]}
+            start={part.start}
+            height={view.cellHeight}
+          />
         ),
       )}
     </div>,

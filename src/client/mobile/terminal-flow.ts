@@ -71,6 +71,75 @@ export function terminalContentEnd(buffer: IBuffer) {
   return end;
 }
 
+const answerSignatures = new WeakMap<RichTerminalBlock, string>();
+/** Some Codex answers have no reservation; Claude may redraw a reservation
+ * as text. Replace only a complete match beginning at an assistant bullet.
+ * Keep prompts, tool output and partial/ambiguous matches in their own rows. */
+export function phoneFlowParts(
+  lines: string[],
+  blocks: RichTerminalBlock[],
+): FlowPart[] {
+  const parts =
+    mobileFlowParts(lines, blocks) ??
+    lines.map((_, row) => ({ kind: "row" as const, row, start: 0 }));
+  if (!blocks.length) return parts;
+  const present = new Set(
+    parts.flatMap((p) => (p.kind === "answer" ? [p.id] : [])),
+  );
+  const candidates = blocks
+    .filter((b) => !present.has(b.id))
+    .map((block) => {
+      let text = answerSignatures.get(block);
+      if (text === undefined) {
+        text = block.text.replace(/\s+/gu, "");
+        answerSignatures.set(block, text);
+      }
+      return { block, text };
+    })
+    .filter((c) => c.text.length >= 12);
+  if (!candidates.length) return parts;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i];
+    if (part.kind !== "row" || part.start) continue;
+    const marker = /^\s{0,2}[●•⏺]\s+(.+)$/u.exec(lines[part.row]);
+    if (!marker) continue;
+    const prefix = marker[1].replace(/\s+/gu, "");
+    let length = prefix.length;
+    let possible = candidates.filter(
+      (c) => !present.has(c.block.id) && c.text.startsWith(prefix),
+    );
+    let found: { block: RichTerminalBlock; end: number } | undefined;
+    for (let j = i; possible.length; j++) {
+      const exact = possible.filter((c) => c.text.length === length);
+      if (exact.length === 1) found = { block: exact[0].block, end: j };
+      else if (exact.length > 1) found = undefined;
+      const next = parts[j + 1];
+      if (!next || next.kind !== "row" || next.start) break;
+      const line = lines[next.row];
+      if (/^\s{0,2}[›❯»●•⏺]\s/u.test(line)) break;
+      const chunk = line.replace(/\s+/gu, "");
+      if (!chunk) continue;
+      possible = possible.filter((c) => c.text.startsWith(chunk, length));
+      length += chunk.length;
+    }
+    if (found) {
+      // Keep trailing empty rows after the last text line.
+      while (found.end > i) {
+        const p = parts[found.end];
+        if (p.kind !== "row" || lines[p.row].trim()) break;
+        found.end--;
+      }
+      present.add(found.block.id);
+      parts.splice(i, found.end - i + 1, {
+        kind: "answer",
+        id: found.block.id,
+        block: found.block,
+      });
+    }
+  }
+  return parts;
+}
+
 const palette = [
   "#000000",
   "#cd0000",
@@ -135,8 +204,10 @@ export function trimNativeRow(runs: NativeRun[]): NativeRun[] {
 }
 /** Full-width terminal borders are decoration, not paragraphs to wrap. */
 export function nativeSeparator(text: string): boolean {
-  return /^\s*[─━═╌╍┄┅┈┉_—-]{12,}\s*$/.test(text) ||
-    /^\s*[─━]+\s*History\s+\d+\s*\/\s*\d+\s*[─━]+\s*$/i.test(text);
+  return (
+    /^\s*[─━═╌╍┄┅┈┉_—-]{12,}\s*$/.test(text) ||
+    /^\s*[─━]+\s*History\s+\d+\s*\/\s*\d+\s*[─━]+\s*$/i.test(text)
+  );
 }
 /** Reservation prefixes are ASCII; retain the styled suffix of a frozen row. */
 export function clipNativeRuns(runs: NativeRun[], start: number): NativeRun[] {

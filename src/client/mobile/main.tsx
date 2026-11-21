@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -218,9 +219,11 @@ function App() {
       } catch {}
       return 14;
     }),
-    [answers, setAnswers] = useState<RichTerminalBlock[]>([]),
+    [answers, setAnswers] = useState<{
+      key: string;
+      blocks: RichTerminalBlock[];
+    }>({ key: "", blocks: [] }),
     [answerError, setAnswerError] = useState(""),
-    [answerRevision, setAnswerRevision] = useState(0),
     [nativeTerminal, setNativeTerminal] = useState<Terminal>();
   const [keysOpen, setKeysOpen] = useState(false),
     [viewOptions, setViewOptions] = useState(false),
@@ -292,9 +295,19 @@ function App() {
     (node: HTMLElement | null) => viewportRef.current?.setFlow(node),
     [],
   );
-  const currentAnswers = answers.filter(
-    (a) => !terminal?.agentSessionId || a.sessionId === terminal.agentSessionId,
+  const answerSession = terminal?.agentSessionId || terminal?.resumeThreadId;
+  const currentAnswers = useMemo(
+    () =>
+      answers.key === cacheKey
+        ? answers.blocks.filter(
+            (a) => !answerSession || a.sessionId === answerSession,
+          )
+        : [],
+    [answers, cacheKey, answerSession],
   );
+  const refreshAnswers = useRef<() => void>(() => {});
+  const requestMissingAnswer = useCallback(() => refreshAnswers.current(), []);
+  const answerNotifications = useRef(false);
   useEffect(() => {
     const viewport = window.visualViewport;
     const size = () => {
@@ -655,6 +668,7 @@ function App() {
           reuseSocket.current = value.protocol >= 2;
           canPreload.current = value.protocol >= 3;
           setSharedControl(value.protocol >= 4);
+          answerNotifications.current = value.protocol >= 5;
           setState(value.state);
           return;
         }
@@ -667,6 +681,10 @@ function App() {
           return;
         }
         if (value.id !== selected) return;
+        if (value.type === "answers-changed") {
+          refreshAnswers.current();
+          return;
+        }
         if (value.type === "snapshot") liveReceived = true;
         queuedBytes += event.data.length;
         if (queuedBytes > 12 * 1024 * 1024) {
@@ -689,7 +707,7 @@ function App() {
               );
               if (restored) {
                 viewport.afterReplay();
-                setAnswerRevision((value) => value + 1);
+                refreshAnswers.current();
                 markReady(true);
                 setStatus("연결됨");
                 attempt = 0;
@@ -780,6 +798,33 @@ function App() {
       setNativeTerminal(undefined);
     };
   }, [paired, selected, cacheKey]);
+  const lastCompletion = useRef({
+    key: cacheKey,
+    hash: terminal?.agentCompletion?.textHash,
+    state: terminal?.agentState,
+  });
+  useEffect(() => {
+    const next = {
+      key: cacheKey,
+      hash: terminal?.agentCompletion?.textHash,
+      state: terminal?.agentState,
+    };
+    const previous = lastCompletion.current;
+    lastCompletion.current = next;
+    if (
+      paired &&
+      !answerNotifications.current &&
+      previous.key === next.key &&
+      ((next.hash && previous.hash !== next.hash) ||
+        (previous.state === "working" && next.state === "idle"))
+    )
+      refreshAnswers.current();
+  }, [
+    paired,
+    cacheKey,
+    terminal?.agentCompletion?.textHash,
+    terminal?.agentState,
+  ]);
   useEffect(() => {
     if (!paired) {
       screenCache.current.clear();
@@ -804,20 +849,33 @@ function App() {
     } catch {}
   }, [font]);
   useEffect(() => {
-    setAnswers(screenCache.current.get(cacheKey)?.blocks || []);
+    setAnswers({
+      key: cacheKey,
+      blocks: screenCache.current.get(cacheKey)?.blocks || [],
+    });
     setAnswerError("");
     viewportRef.current?.latest();
   }, [cacheKey]);
   useEffect(() => {
     if (!paired || !selected) return;
-    let cancelled = false;
+    let cancelled = false,
+      inFlight = false,
+      queued = false;
+    let previous = screenCache.current.get(cacheKey)?.blocks;
     let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
     const load = async () => {
-      if (document.visibilityState === "hidden") {
-        timer = setTimeout(load, 5000);
+      clearTimeout(timer);
+      if (cancelled) return;
+      if (inFlight) {
+        queued = true;
         return;
       }
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      inFlight = true;
+      let failed = false;
       try {
         const response = await fetch(
           `/mobile-api/terminals/${selected}/answers`,
@@ -833,23 +891,60 @@ function App() {
         if (!response.ok)
           throw new Error(data.error || "답변을 불러오지 못했습니다.");
         if (!cancelled) {
-          screenCache.current.answers(cacheKey, data);
-          setAnswers(data);
+          if (!Array.isArray(data))
+            throw new Error("답변 목록을 읽지 못했습니다.");
+          const old = previous;
+          if (
+            !old ||
+            old.length !== data.length ||
+            old.some(
+              (block, i) =>
+                Object.keys(block).some(
+                  (k) => block[k as keyof RichTerminalBlock] !== data[i]?.[k],
+                ) ||
+                Object.keys(data[i] || {}).length !== Object.keys(block).length,
+            )
+          ) {
+            screenCache.current.answers(cacheKey, data);
+            previous = data;
+            setAnswers({ key: cacheKey, blocks: data });
+          }
           setAnswerError("");
         }
       } catch (e) {
+        failed = true;
         if (!cancelled) setAnswerError((e as Error).message);
       } finally {
-        if (!cancelled) timer = setTimeout(load, 5000);
+        inFlight = false;
+        if (!cancelled)
+          timer = setTimeout(
+            load,
+            queued
+              ? 0
+              : !failed && answerNotifications.current && readyRef.current
+                ? 30000
+                : 5000,
+          );
+        queued = false;
       }
     };
+    const refresh = () => {
+      void load();
+    };
+    refreshAnswers.current = refresh;
+    const wake = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", wake);
     void load();
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", wake);
+      refreshAnswers.current = () => {};
       controller.abort();
       clearTimeout(timer);
     };
-  }, [paired, selected, cacheKey, answerRevision]);
+  }, [paired, selected, cacheKey]);
   async function send(key?: string, submit = true) {
     if (!inputEnabled || !state || !terminal) return;
     setBusy(true);
@@ -864,9 +959,7 @@ function App() {
         requestId: crypto.randomUUID(),
         runtimeId: state.runtimeId,
         terminalId: target,
-        sessionId: key
-          ? terminal.agentSessionId
-          : draftSession,
+        sessionId: key ? terminal.agentSessionId : draftSession,
         bracketed: termRef.current?.modes.bracketedPasteMode || false,
         ...(key ? { key } : { text }),
         submit,
@@ -926,7 +1019,9 @@ function App() {
       const value = await res.json();
       if (!res.ok) throw new Error(value.error);
       const latestState = inputStateRef.current;
-      const destination = latestState?.terminals.find((item) => item.id === target);
+      const destination = latestState?.terminals.find(
+        (item) => item.id === target,
+      );
       if (
         latestState?.runtimeId !== state?.runtimeId ||
         !destination ||
@@ -934,7 +1029,9 @@ function App() {
         destination.hostId !== terminal.hostId ||
         destination.agentSessionId !== terminal.agentSessionId
       )
-        throw new Error("첨부 중 대화가 변경되었습니다. 현재 세션에서 다시 첨부하세요.");
+        throw new Error(
+          "첨부 중 대화가 변경되었습니다. 현재 세션에서 다시 첨부하세요.",
+        );
       const previous = drafts.current.get(target) || "";
       const next = `${previous}${previous ? "\n" : ""}${terminalPathForPaste(value.path, false)} `;
       drafts.current.set(target, next);
@@ -1280,7 +1377,7 @@ function App() {
             {answerError && (
               <div className="answer-notice" role="status">
                 <span>답변 조판을 불러오지 못했습니다.</span>
-                <button onClick={() => setAnswerRevision((value) => value + 1)}>
+                <button onClick={() => refreshAnswers.current()}>
                   다시 불러오기
                 </button>
               </div>
@@ -1296,6 +1393,7 @@ function App() {
                 <MobileTerminalRich
                   key={`${selected}:${terminal?.agentSessionId || terminal?.resumeThreadId || ""}`}
                   onFlow={setTerminalFlow}
+                  onMissingAnswer={requestMissingAnswer}
                   term={nativeTerminal}
                   blocks={currentAnswers}
                   active={tab === "terminal"}
@@ -1317,7 +1415,7 @@ function App() {
                       active={tab === "terminal"}
                       blocks={currentAnswers}
                       answerId=""
-                      revision={answerRevision}
+                      revision={0}
                       scroller={scrollRef}
                       following={terminalFollowRef}
                       embeddedBefore={beforeTexts}

@@ -1113,7 +1113,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.47" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.48" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -2439,6 +2439,7 @@ await mobile.start();
 await terminals.restore();
 terminalAnnotations.retain(new Set(terminals.list().map((t) => t.id)));
 richTerminals.on("block", (id, block) => {
+  mobile.answersChanged(id);
   for (const [socket, subscription] of subscriptions)
     if (subscription.terminals.has(id))
       send(socket, { type: "terminal-rich", id, block });

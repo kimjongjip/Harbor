@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import headless from "@xterm/headless";
 import {
   mobileFlowParts,
+  phoneFlowParts,
   nativeRow,
   nativeSeparator,
   clipNativeRuns,
@@ -24,6 +25,42 @@ const block: RichTerminalBlock = {
   rows: 50,
   renderer: "rows-v2",
 };
+test("markerless phone replies keep one rich answer across native line wraps and preserve surrounding work", () => {
+  const b: RichTerminalBlock = {
+    ...block,
+    text: "A measured answer\n\n| test | value |\n|---|---|\n| A | 5 |",
+    placement: "card",
+  };
+  const lines = [
+    "› prior question",
+    "• A measured",
+    "  answer",
+    "",
+    "  | test | value |",
+    "  |---|---|",
+    "  | A | 5 |",
+    "› another question",
+  ];
+  const parts = phoneFlowParts(lines, [b]);
+  assert.deepEqual(
+    parts.map((p) => (p.kind === "row" ? p.row : p.id)),
+    [0, b.id, 7],
+  );
+  assert.ok(
+    phoneFlowParts(lines.slice(0, 6), [b]).every((p) => p.kind === "row"),
+  );
+  assert.ok(
+    phoneFlowParts(
+      lines.map((l) => l.replace("•", "›")),
+      [b],
+    ).every((p) => p.kind === "row"),
+  );
+  assert.ok(
+    phoneFlowParts(lines, [b, { ...b, id: "different" }]).every(
+      (p) => p.kind === "row",
+    ),
+  );
+});
 test("phone borders do not wrap while code punctuation remains literal", () => {
   assert.equal(nativeSeparator("─".repeat(180)), true);
   assert.equal(nativeSeparator("  " + "-".repeat(90)), true);

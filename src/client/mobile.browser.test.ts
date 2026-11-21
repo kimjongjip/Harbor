@@ -279,6 +279,92 @@ test(
       const inline = page.locator(`[data-mobile-rich="${blockId}"]`);
       await inline.locator("table").waitFor();
       await inline.locator(".katex").first().waitFor();
+      const originalNode = await inline.elementHandle();
+      await page
+        .getByRole("button", { name: "최신 내용으로 이동", exact: true })
+        .click();
+      await page.waitForTimeout(100);
+      await page
+        .locator(".jump-latest")
+        .waitFor({ state: "detached", timeout: 2000 });
+      const blank = "\x1b[2J\x1b[H";
+      f.screen.append(blank);
+      f.gateway.output(f.id, blank);
+      await page.waitForTimeout(210);
+      assert.equal(
+        await originalNode!.evaluate((el) => el.isConnected),
+        true,
+        "a partial clear must not remove the rendered answer",
+      );
+      // A genuine replacement still arrives, even without another PTY packet.
+      await inline.waitFor({ state: "detached", timeout: 2200 });
+      f.screen.append(reservedScreen);
+      f.gateway.output(f.id, reservedScreen);
+      await inline.locator("table").waitFor();
+      const restoredNode = await inline.elementHandle();
+      // An answer notification alone should render fresh Markdown without
+      // waiting for the periodic fallback or requiring further terminal bytes.
+      const initial = answer.text;
+      const normalRead = f.operations.answers;
+      let unblock: (() => void) | undefined,
+        reads = 0;
+      f.operations.answers = (id) => {
+        reads++;
+        if (reads !== 1) return normalRead(id);
+        const snapshot = structuredClone(normalRead(id));
+        return new Promise((resolve) => {
+          unblock = () => resolve(snapshot);
+        });
+      };
+      f.gateway.answersChanged(f.id);
+      for (let i = 0; !unblock && i < 100; i++) await page.waitForTimeout(20);
+      assert.ok(unblock, "phone requests updated answers on a gateway event");
+      answer.text = initial.replace(
+        "완료된 답변 내용입니다.",
+        "새로 도착한 답변 내용입니다.",
+      );
+      f.gateway.answersChanged(f.id);
+      f.gateway.answersChanged(f.id);
+      await page.waitForTimeout(150);
+      assert.equal(
+        reads,
+        1,
+        "notifications during a slow read share one pending refresh",
+      );
+      unblock();
+      await inline
+        .getByText(/새로 도착한 답변 내용입니다/)
+        .first()
+        .waitFor({ timeout: 2000 });
+      assert.equal(await restoredNode!.evaluate((el) => el.isConnected), true);
+      f.operations.answers = normalRead;
+      answer.text =
+        "Fixture wrapped answer\n\n| Case | Time |\n| --- | --- |\n| A | 5 |";
+      f.gateway.answersChanged(f.id);
+      await inline
+        .getByText("Fixture wrapped answer", { exact: true })
+        .waitFor({ timeout: 2000 });
+      const raw =
+        "\x1b[2J\x1b[H● Fixture wrapped\r\n  answer\r\n\r\n  | Case | Time |\r\n  | --- | --- |\r\n  | A | 5 |\r\n› fixture draft";
+      f.screen.append(raw);
+      f.gateway.output(f.id, raw);
+      await page
+        .getByText("› fixture draft", { exact: true })
+        .waitFor({ timeout: 2000 });
+      assert.equal(await inline.locator("table").count(), 1);
+      assert.equal(
+        await restoredNode!.evaluate((el) => el.isConnected),
+        true,
+        "switching from reservation rows to a matching raw answer preserves its DOM",
+      );
+      f.screen.append(reservedScreen);
+      f.gateway.output(f.id, reservedScreen);
+      answer.text = initial;
+      f.gateway.answersChanged(f.id);
+      await inline
+        .getByText(/완료된 답변 내용입니다/)
+        .first()
+        .waitFor({ timeout: 2000 });
       assert.match(await inline.innerText(), /완료된 답변 내용/);
       assert.equal(
         await page
