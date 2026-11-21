@@ -399,6 +399,27 @@ createRoot(document.getElementById('root')).render(<div style={{height:'100vh',d
         "ordinary keys still use the original input path after IME cancellation",
       );
       await ime.detach();
+      // Copying from the conversation leaves a DOM selection. A bracketed paste
+      // must release the frozen display exactly as typing a printable key does.
+      const beforePaste = received.length;
+      await page.evaluate(() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector('[data-rich-block="conversation-user-q0"]')!);
+        getSelection()!.removeAllRanges();
+        getSelection()!.addRange(range);
+      });
+      await page.waitForTimeout(60);
+      await page.evaluate(() => {
+        const data = new DataTransfer();
+        data.setData("text/plain", "첫 줄\n둘째 줄\n마지막 줄");
+        (window as any).term.textarea.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      });
+      await page.waitForFunction(() => getSelection()!.isCollapsed, undefined, { timeout: 2000 });
+      assert.deepEqual(received.slice(beforePaste), ["\x1b[200~첫 줄\r둘째 줄\r마지막 줄\x1b[201~"]);
+      const nativeDraft = "\x1b[2J\x1b[HWorked for 19m\r\n\r\n› [Pasted Content 3 lines]\r\n  GPT-6 · fixture\r\n  ← for agents · ? for shortcuts    Goal achieved (6h 40m) · ⚠ 1 warning · f2 to view\x1b[3;27H";
+      for (const socket of sockets.clients) socket.send(JSON.stringify({ type: "terminal-data", id, data: nativeDraft }));
+      await page.waitForFunction(() => document.querySelector(".terminal-flow-composer")?.textContent?.includes("[Pasted Content 3 lines]"));
+      assert.equal(await page.locator('[data-rich-block="conversation-assistant-a79"]').count(), 1);
       assert.deepEqual(errors, []);
       await writeFile(
         join(root, `input-scheduling-${scheduling}.json`),

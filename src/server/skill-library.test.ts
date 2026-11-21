@@ -75,9 +75,9 @@ async function fixture() {
 
 test("all curated skill trees are pinned, bounded and portable; guides are not installable", () => {
   assert.equal(source.commit, SKILL_SOURCE.commit);
-  assert.equal(SKILL_CATALOG.length, 50);
-  assert.equal(INSTALLABLE_SKILLS.length, 49);
-  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 50);
+  assert.equal(SKILL_CATALOG.length, 51);
+  assert.equal(INSTALLABLE_SKILLS.length, 50);
+  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 51);
   for (const skill of INSTALLABLE_SKILLS) {
     const origin = skillSource(skill.source);
     const manifest = skill.source
@@ -142,6 +142,7 @@ test("community sources use separate provenance, preserve licenses and cannot ma
     ],
   });
   const ids = [
+    "interview-me",
     "literature-review",
     "optimizing-attention-flash",
     "systematic-debugging",

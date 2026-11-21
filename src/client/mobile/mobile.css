@@ -631,10 +631,20 @@ nav button[aria-current] {
   color: #7a8ca5;
 }
 .composer {
+  --input-border: #8290a3;
   border-top: 1px solid #e3e9f2;
   padding: 8px 10px 3px;
   background: #fff;
   flex-shrink: 0;
+}
+.composer[data-activity="ready"] {
+  --input-border: #228354;
+}
+.composer[data-activity="working"] {
+  --input-border: #3968c7;
+}
+.composer[data-activity="waiting"] {
+  --input-border: #a56410;
 }
 .compose-row {
   display: flex;
@@ -648,16 +658,16 @@ nav button[aria-current] {
   max-height: 132px;
   padding: 10px 12px;
   line-height: 22px;
-  border-color: #d9e1ed;
+  border: 2px solid var(--input-border);
   border-radius: 16px;
   resize: none;
   background: #f7f9fc;
 }
 .composer textarea:focus {
   outline: none;
-  border-color: #86a5ea;
+  border-color: var(--input-border);
   background: #fff;
-  box-shadow: 0 0 0 2px #e8efff;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--input-border) 22%, transparent);
 }
 .send-button {
   display: grid;

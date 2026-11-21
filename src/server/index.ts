@@ -155,7 +155,7 @@ const codexPeers = new CodexPeerRuntime({
     bridge.setPeerRuntime(id, {
       kind: "codex",
       sessionId,
-      state: runtime?.state === "working" ? "working" : "idle",
+      state: runtime?.sessionId === sessionId ? runtime.state : "idle",
       delivery: "automatic",
     });
   },
@@ -259,7 +259,7 @@ const bridge = new AgentBridge(mailbox, {
           bridge.setPeerRuntime(id, {
             kind: "codex",
             sessionId: previous?.sessionId,
-            state: "idle",
+            state: previous?.state ?? "idle",
             delivery: "poll",
             detail:
               "자동 수신 연결을 사용할 수 없습니다. 받은 메시지 확인을 요청하세요.",
@@ -635,7 +635,7 @@ const mobile: MobileGateway = new MobileGateway(
       runtimeId: mobileRuntimeId,
       hosts: store.data.hosts.map(({ id, name, kind }) => ({ id, name, kind })),
       terminals: terminals
-        .list()
+        .mobileList()
         .map((t) => ({ ...t, autoApproval: autoApproval.state(t.id) })),
       requests: requests.list(),
       labs: [],
@@ -677,6 +677,7 @@ app.use(
 terminals.on("data", (id, data) => mobile.output(id, data));
 terminals.on("resize", (id, cols, rows) => mobile.resize(id, cols, rows));
 terminals.on("change", () => mobile.changed());
+terminals.on("mobileActivity", () => mobile.changed());
 requests.on("change", () => mobile.changed());
 research.on("change", () => mobile.changed());
 app.get("/api/mobile", (_req, res) => res.json(mobile.view()));
@@ -1113,7 +1114,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.48" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.49" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

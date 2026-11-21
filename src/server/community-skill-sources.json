@@ -1,5 +1,25 @@
 [
   {
+    "id": "addyosmani",
+    "repository": "addyosmani/agent-skills",
+    "commit": "8c99fa36d90068c82d547f7c12a9d67a3e95f4ee",
+    "licenses": ["LICENSE"],
+    "files": [
+      {
+        "path": "LICENSE",
+        "mode": "100644",
+        "sha": "d67778ada6b9cda6227e9130da182c13e73c8b2e",
+        "size": 1068
+      },
+      {
+        "path": "skills/interview-me/SKILL.md",
+        "mode": "100644",
+        "sha": "200f9186ffa234708aa5deec1946c6dfcb7a7335",
+        "size": 15080
+      }
+    ]
+  },
+  {
     "id": "scientific",
     "repository": "K-Dense-AI/scientific-agent-skills",
     "commit": "2d2065fb4520fa3f3f2bcf61cff26ec8b7eba4b5",

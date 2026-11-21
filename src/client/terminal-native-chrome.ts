@@ -205,7 +205,7 @@ const codexPromptRow = /^ {0,2}[›»](?: |$)/;
 // Codex may append its warning counter after the shortcuts, separated by
 // spaces or a middle dot. Accept that known UI suffix, not arbitrary output.
 const codexFooterRow =
-  /^ {2,}(?:.*(?:\? for shortcuts|← for agents|tab to queue(?: message)?|\d+% context left)(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?|gpt-[\w.-]+\b.*)$/i;
+  /^ {2,}(?:.*(?:\? for shortcuts|← for agents|tab to queue(?: message)?|\d+% context left)(?:\s+(?:[·•]\s*)?Goal achieved\s*\([^()]*\))?(?:\s+(?:[·•]\s*)?⚠\s+\d+\s+warnings?(?:\s*[·•]\s*f\d+\s+to view)?)?|gpt-[\w.-]+\b.*)$/i;
 
 function dialogControlRow(line: string) {
   // Real footer hints are standalone controls, not phrases quoted in a prompt

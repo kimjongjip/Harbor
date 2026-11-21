@@ -21,6 +21,8 @@ import { terminalPathForPaste } from "../terminalClipboard";
 import { MobileTerminalRich } from "./MobileTerminalRich";
 import { MobileConversation } from "./MobileConversation";
 import { MobileScreenCache } from "./screen-cache";
+import { activityLabel, mobileActivity } from "./session-activity";
+import { codexWorkingFooter } from "../../shared/codex-working-footer";
 import { MobileNotifications } from "./MobileNotifications";
 import { useSharedInputControl } from "./useSharedInputControl";
 import {
@@ -99,13 +101,6 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
     </div>
   );
 });
-function sessionStatus(t: MobileState["terminals"][number]) {
-  if (t.exited) return "종료됨";
-  if (t.connectionState !== "connected") return "연결 확인 필요";
-  if (t.agentState === "working") return "작업 중";
-  if (t.agentState === "waiting") return "확인 필요";
-  return "입력 가능";
-}
 function initialTerminal() {
   const query = new URLSearchParams(location.search).get("terminal");
   if (query !== null) return query;
@@ -291,6 +286,28 @@ function App() {
     terminal?.agentSessionId || terminal?.resumeThreadId,
   );
   terminalFollowRef.current = following;
+  const [workingScreen, setWorkingScreen] = useState("");
+  useEffect(() => {
+    setWorkingScreen("");
+    if (!nativeTerminal || !ready || terminal?.agentKind !== "codex") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      timer = undefined;
+      setWorkingScreen(
+        codexWorkingFooter(nativeTerminal.buffer.active, nativeTerminal.rows)
+          ? cacheKey
+          : "",
+      );
+    };
+    check();
+    const listener = nativeTerminal.onWriteParsed(() => {
+      if (!timer) timer = setTimeout(check, 100);
+    });
+    return () => {
+      listener.dispose();
+      clearTimeout(timer);
+    };
+  }, [nativeTerminal, ready, terminal?.agentKind, cacheKey]);
   const setTerminalFlow = useCallback(
     (node: HTMLElement | null) => viewportRef.current?.setFlow(node),
     [],
@@ -1053,6 +1070,18 @@ function App() {
   const sessionRequests = pending.filter(
     (r) => r.terminal.terminalId === selected,
   );
+  const activity = (t: MobileState["terminals"][number]) =>
+    mobileActivity(
+      t,
+      pending.some((r) => r.terminal.terminalId === t.id),
+      ready && t.id === selected && workingScreen === cacheKey,
+    );
+  const sessionStatus = (t: MobileState["terminals"][number]) =>
+    activityLabel[activity(t)];
+  const composerState =
+    !terminal || !ready || control.otherOwner || !inputEnabled
+      ? "unavailable"
+      : activity(terminal);
   const matchingTerminals =
     openTerminals.filter((t) =>
       `${t.title} ${state?.hosts.find((h) => h.id === t.hostId)?.name || ""} ${t.agentKind || ""}`
@@ -1441,7 +1470,7 @@ function App() {
                 </div>
               )}
             </div>
-            <div className="composer">
+            <div className="composer" data-activity={composerState}>
               <div className="keys" hidden={!keysOpen}>
                 {[
                   "Escape",
@@ -1537,7 +1566,11 @@ function App() {
                       ? "처리 중…"
                       : !ready
                         ? "연결 확인 중"
-                        : "Enter는 줄바꿈 · ↑로 전송"}
+                        : control.otherOwner
+                          ? "보기 전용"
+                          : terminal
+                            ? sessionStatus(terminal)
+                            : "세션 선택"}
                   </span>
                 )}
                 {keyboardOpen && (

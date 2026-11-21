@@ -202,6 +202,8 @@ export function TerminalNativeFlow({
       lastInput = 0,
       lastCapture = 0;
     let incompleteSince: number | undefined;
+    let pasteStarted = -Infinity,
+      lastPasteOutput = -Infinity;
     let incompleteScreen: string | undefined;
     let disposed = false;
     const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
@@ -224,7 +226,7 @@ export function TerminalNativeFlow({
       );
     };
     let hadSelection = selected();
-    const capture = () => {
+    const capture = (atFrameEnd = false) => {
       scheduled = false;
       clearTimeout(timer);
       timer = undefined;
@@ -233,7 +235,16 @@ export function TerminalNativeFlow({
       // delivered. Remember it so clearing that range releases deferred output.
       if (hasSelection) hadSelection = true;
       if (disposed || !latest.current.active) return;
-      if (term.modes.synchronizedOutputMode) {
+      // Codex can replace the placeholder, paste badge and cursor in separate
+      // writes. Commit the settled rows together, even if the last write is quiet.
+      const now = performance.now();
+      const remaining =
+        Math.min(pasteStarted + incompleteFrameGraceMs, lastPasteOutput + outputCoalesceMs) - now;
+      if (!atFrameEnd && remaining > 0) {
+        timer = setTimeout(capture, remaining);
+        return;
+      }
+      if (!atFrameEnd && term.modes.synchronizedOutputMode) {
         timer = setTimeout(() => {
           timer = undefined;
           schedule();
@@ -385,10 +396,27 @@ export function TerminalNativeFlow({
     });
     if (screen) geometry.observe(screen);
     const listeners = [
-      term.onWriteParsed(schedule),
+      term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+        // A single PTY packet can close a completed paint and start the next
+        // one. By onWriteParsed the buffer can already contain half the next
+        // prompt. Read at DECRST 2026 while the completed rows still exist.
+        if (latest.current.active && latest.current.codexComposer &&
+            params.includes(2026) && term.modes.synchronizedOutputMode &&
+            performance.now() - lastCapture >= 16) capture(true);
+        return false;
+      }),
+      term.onWriteParsed(() => {
+        if (performance.now() - pasteStarted < incompleteFrameGraceMs)
+          lastPasteOutput = performance.now();
+        schedule();
+      }),
       term.onResize(schedule),
-      term.onData(() => {
+      term.onData((data) => {
         lastInput = performance.now();
+        if (latest.current.codexComposer && data.startsWith("\x1b[200~") && /[\r\n]/.test(data)) {
+          pasteStarted = lastPasteOutput = lastInput;
+          schedule();
+        }
         latest.current.onInput?.();
       }),
     ];

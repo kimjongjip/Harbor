@@ -64,7 +64,7 @@
 
 ## 1.18.17 커뮤니티 스킬과 동료 동작
 
-`shared/skill-sources.ts`는 출처별 고정 커밋·2026-11-11 저장소 별 수를, `community-skills.ts`는 한국어 안내·실제 frontmatter 호출 이름·원본 하위 경로를 관리한다. 별 수는 저장소 전체의 관심도이며 개별 스킬 사용량이나 품질 순위로 설명하지 않는다. 연구 26개를 기본 정렬에서 우선하며 전체 50개 중 49개만 설치 가능하다.
+`shared/skill-sources.ts`는 출처별 고정 커밋·2026-11-11 저장소 별 수를, `community-skills.ts`는 한국어 안내·실제 frontmatter 호출 이름·원본 하위 경로를 관리한다. 별 수는 저장소 전체의 관심도이며 개별 스킬 사용량이나 품질 순위로 설명하지 않는다. 연구 26개를 기본 정렬에서 우선하며 전체 51개 중 50개만 설치 가능하다.
 
 `server/community-skill-sources.json`은 선택한 K-Dense·Orchestra·Superpowers·OpenRig 폴더의 전체 Git blob 메타데이터와 루트 라이선스를 담는다. 기존 Anthropic manifest와 함께 출처별 커밋·해시를 검증하며 루트 라이선스는 `.harbor-origin`에 보존한다. 설치 마커도 출처별로 구분하며 이전 Anthropic 설치와 호환된다. 폴더 경로가 호출 이름과 다른 Orchestra 항목을 주의한다. 외부 스크립트·패키지는 실행하지 않는다.
 

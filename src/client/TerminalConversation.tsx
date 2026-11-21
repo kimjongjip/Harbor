@@ -432,7 +432,8 @@ export function TerminalConversation({
       // must not do this; otherwise text is silently held until a later click.
       if (
         data &&
-        (!data.startsWith("\x1b") || data === "\x1b") &&
+        (!data.startsWith("\x1b") || data === "\x1b" ||
+          (data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~"))) &&
         hasSelection()
       ) {
         body.current?.ownerDocument.getSelection()?.removeAllRanges();

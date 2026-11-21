@@ -455,6 +455,9 @@ test("cursor-positioned multiline drafts require input mode and a real footer", 
     "a prompt in scrollback cannot own the live cursor",
   );
   const blank = [...lines];
+  const withGoal = [...lines.slice(0, -1),
+    "  ← for agents · ? for shortcuts     Goal achieved (6h 40m) · ⚠ 1 warning · f2 to view"];
+  assert.equal(nativeChrome(withGoal, withGoal.length, frame)?.start, 2);
   blank[frame.cursorRow] = "";
   assert.deepEqual(
     nativeChrome(blank, blank.length, frame),

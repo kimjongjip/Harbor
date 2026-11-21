@@ -63,6 +63,16 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.locator('[data-native-row="2"]').waitFor();
+      const settledPrompt = "› [Pasted Content 7 lines]";
+      await page.waitForTimeout(25);
+      await page.evaluate((prompt) => (window as any).push(
+        "\x1b[?2026h\x1b[3;1H\x1b[2K" + prompt +
+        "\x1b[?2026l\x1b[?2026h\x1b[3;1H\x1b[2K› Ask Codex to do anythi"
+      ), settledPrompt);
+      assert.equal(await page.locator('[data-native-row="2"]').textContent(), settledPrompt + " ",
+        "back-to-back synchronized paints expose the complete paste badge, not the partial placeholder in the next paint");
+      await page.evaluate(() => (window as any).push("\x1b[3;1H\x1b[2K› 미전송🙂\x1b[?2026l"));
+      await page.waitForFunction(() => document.querySelector('[data-native-row="2"]')?.textContent?.includes("미전송🙂"));
       assert.ok(
         (await page.locator(".terminal-native-flow").innerText()).includes(
           "› 미전송🙂",
@@ -110,7 +120,7 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
           writes: (window as any).writes,
           resizes: (window as any).resizes,
         })),
-        { writes: 1, resizes: 0 },
+        { writes: 3, resizes: 0 },
       );
       await page.locator('[data-native-row="2"]').click();
       assert.equal(
@@ -124,7 +134,7 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
         await page.evaluate(() => (window as any).sent.join("")),
         " typed",
       );
-      assert.equal(await page.evaluate(() => (window as any).writes), 1);
+      assert.equal(await page.evaluate(() => (window as any).writes), 3);
       // History settling changes only the projection boundary, not the native screen.
       await page.evaluate(() => (window as any).setStart(2));
       await page.waitForFunction(
@@ -135,7 +145,7 @@ createRoot(document.querySelector('#root')).render(<App/>);window.push('\\x1b[?2
         undefined,
         { timeout: 2000 },
       );
-      assert.equal(await page.evaluate(() => (window as any).writes), 1);
+      assert.equal(await page.evaluate(() => (window as any).writes), 3);
       await page.evaluate(() => (window as any).setStart(0));
       await page.waitForFunction(
         () =>

@@ -1358,7 +1358,7 @@ export default function TerminalPane({
     const input = term.onData((data) => {
       // A user's edit/submit supersedes the pending attachment batch. Programmatic
       // attachment paste and terminal protocol replies do not count as edits.
-      if (!attachmentSending && data && !data.startsWith("\x1b"))
+      if (!attachmentSending && data && (!data.startsWith("\x1b") || data.startsWith("\x1b[200~")))
         composerInputGeneration++;
       // Replaying an old capability/cursor query must not inject its answer
       // into the shell's current input line when a view reconnects.

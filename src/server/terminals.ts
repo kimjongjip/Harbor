@@ -67,6 +67,8 @@ interface Entry {
     monitorPid?: number;
   };
   buffer: TerminalScreen;
+  checkingMobileActivity?: boolean;
+  workingConversation?: string;
   colors: TerminalColorResponder;
   cwdObserver: TerminalCwdObserver;
   connection?: Client;
@@ -371,6 +373,16 @@ export class Terminals extends EventEmitter {
   list() {
     return [...this.entries.values()].map((t) => t.info);
   }
+  mobileList() {
+    return [...this.entries.values()].map(({ info, workingConversation }) =>
+      info.agentKind === "codex" &&
+      info.agentState !== "waiting" &&
+      workingConversation !== undefined &&
+      workingConversation === (info.agentSessionId || info.resumeThreadId || "")
+        ? { ...info, agentState: "working" as const }
+        : info,
+    );
+  }
   private receive(entry: Entry, data: string) {
     const reported = entry.cwdObserver.consume(data).at(-1);
     if (reported && reported !== entry.info.cwd) {
@@ -389,6 +401,31 @@ export class Terminals extends EventEmitter {
       }
     if (output) {
       entry.buffer.append(output);
+      if (entry.info.agentKind === "codex" && !entry.checkingMobileActivity) {
+        entry.checkingMobileActivity = true;
+        const session =
+          entry.info.agentSessionId || entry.info.resumeThreadId || "";
+        setTimeout(async () => {
+          try {
+            if (entry.info.exited || this.entries.get(entry.info.id) !== entry)
+              return;
+            const working = await entry.buffer.codexWorking();
+            if (
+              entry.info.agentKind !== "codex" ||
+              session !==
+                (entry.info.agentSessionId || entry.info.resumeThreadId || "")
+            )
+              return;
+            const current = working ? session : undefined;
+            if (entry.workingConversation !== current) {
+              entry.workingConversation = current;
+              this.emit("mobileActivity");
+            }
+          } finally {
+            entry.checkingMobileActivity = false;
+          }
+        }, 200).unref();
+      }
       this.emit("data", entry.info.id, output);
     }
   }

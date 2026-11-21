@@ -424,7 +424,7 @@ export function SkillLibraryDialog({
                     {origin.name} ↗
                   </a>
                   <span
-                    title={`저장소 전체 별 수 · 개별 스킬 평가가 아닙니다. ${origin.repo} · ${SKILL_CHECKED_AT} 확인`}
+                    title={`저장소 전체 별 수 · 개별 스킬 평가가 아닙니다. ${origin.repo} · ${"checkedAt" in origin ? origin.checkedAt : SKILL_CHECKED_AT} 확인`}
                   >
                     ★{" "}
                     {new Intl.NumberFormat("en", {

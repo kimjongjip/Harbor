@@ -36,7 +36,7 @@ export interface CodexPeerCallbacks {
   onSession?(terminalId: string, sessionId: string): void;
   onState?(
     terminalId: string,
-    state: "idle" | "working" | "offline",
+    state: "idle" | "working" | "waiting" | "offline",
     detail?: string,
   ): void;
   /** Called only after the native thread begins processing the queued input. */
@@ -79,6 +79,9 @@ interface RuntimeEntry {
   ready: boolean;
   sessionId?: string;
   subscribedSessionId?: string;
+  activeTurnId?: string;
+  activityRevision: number;
+  activity?: "idle" | "working" | "waiting";
   cwd?: string;
   sequence: number;
   closed: boolean;
@@ -148,6 +151,7 @@ export class CodexPeerRuntime {
       endpoint: { ...endpoint },
       ready: false,
       sequence: 0,
+      activityRevision: 0,
       closed: false,
       pending: new Map(),
       queued: new Map(),
@@ -215,18 +219,23 @@ export class CodexPeerRuntime {
         throw new Error("Codex peer launch was superseded");
       socket.send(JSON.stringify({ method: "initialized" }));
       entry.ready = true;
-      this.callbacks.onState?.(terminalId, "idle");
       // A TUI can initialize before the controller finishes connecting.
       const loaded = await this.rpc(entry, "thread/loaded/list", {});
       for (const id of Array.isArray(loaded?.data) ? loaded.data : []) {
         if (typeof id !== "string") continue;
         try {
+          const revision = entry.activityRevision;
           const result = await this.rpc(entry, "thread/read", {
             threadId: id,
             includeTurns: false,
           });
-          if (this.isPrimaryThread(result?.thread)) {
+          if (
+            this.isPrimaryThread(result?.thread) &&
+            (!entry.sessionId || entry.sessionId === id)
+          ) {
             this.observeSession(terminalId, entry, id, result.thread.cwd);
+            if (revision === entry.activityRevision && !entry.activeTurnId)
+              this.observeState(terminalId, result.thread.status);
             break;
           }
         } catch {
@@ -368,6 +377,7 @@ export class CodexPeerRuntime {
     try {
       if (entry.subscribedSessionId !== sessionId) {
         try {
+          const revision = entry.activityRevision;
           const resumed = await this.rpc(entry, "thread/resume", {
             threadId: sessionId,
             excludeTurns: true,
@@ -375,7 +385,8 @@ export class CodexPeerRuntime {
           if (entry.sessionId !== sessionId || !resumed?.thread)
             return "rejected";
           entry.subscribedSessionId = sessionId;
-          this.observeState(terminalId, resumed.thread.status);
+          if (revision === entry.activityRevision && !entry.activeTurnId)
+            this.observeState(terminalId, resumed.thread.status);
         } catch (error) {
           // A newly started TUI thread is already loaded, but its rollout is
           // created lazily by the first turn. Only that specific rejection may
@@ -441,7 +452,7 @@ export class CodexPeerRuntime {
       if (userInput) return !rejected && nativeEntry ? "uncertain" : "rejected";
       this.callbacks.onState?.(
         terminalId,
-        entry.closed ? "offline" : "idle",
+        entry.closed ? "offline" : (entry.activity ?? "idle"),
         rejected
           ? "Peer input could not be queued in the current Codex conversation."
           : "The native queue result is uncertain; use the peer inbox to recover without sending a duplicate.",
@@ -465,13 +476,15 @@ export class CodexPeerRuntime {
       )
         return;
       try {
+        const revision = entry.activityRevision;
         const resumed = await this.rpc(entry, "thread/resume", {
           threadId: sessionId,
           excludeTurns: true,
         });
         if (entry.sessionId !== sessionId || !resumed?.thread) return;
         entry.subscribedSessionId = sessionId;
-        this.observeState(terminalId, resumed.thread.status);
+        if (revision === entry.activityRevision && !entry.activeTurnId)
+          this.observeState(terminalId, resumed.thread.status);
         return;
       } catch (error) {
         if (
@@ -518,14 +531,20 @@ export class CodexPeerRuntime {
     if (
       message.method === "thread/started" &&
       this.isPrimaryThread(params.thread)
-    )
+    ) {
       this.observeSession(
         terminalId,
         entry,
         params.thread.id,
         params.thread.cwd,
       );
-    if (params.threadId !== entry.sessionId) {
+      if (!entry.activeTurnId && params.thread.status) {
+        entry.activityRevision++;
+        this.observeState(terminalId, params.thread.status);
+      }
+      return;
+    }
+    if (!entry.sessionId || params.threadId !== entry.sessionId) {
       if (
         entry.sessionId &&
         typeof params.threadId === "string" &&
@@ -596,8 +615,19 @@ export class CodexPeerRuntime {
         }
       }
     }
-    if (message.method === "thread/status/changed")
-      this.observeState(terminalId, params.status);
+    if (
+      message.method === "turn/started" &&
+      typeof params.turn?.id === "string"
+    ) {
+      entry.activityRevision++;
+      entry.activeTurnId = params.turn.id;
+      this.observeState(terminalId, { type: "active" });
+    }
+    if (message.method === "thread/status/changed") {
+      entry.activityRevision++;
+      if (!entry.activeTurnId || params.status?.type !== "idle")
+        this.observeState(terminalId, params.status);
+    }
     if (
       (message.method === "item/started" ||
         message.method === "item/completed") &&
@@ -616,6 +646,14 @@ export class CodexPeerRuntime {
       }
     }
     if (message.method === "turn/completed") {
+      if (
+        typeof params.turn?.id === "string" &&
+        (!entry.activeTurnId || entry.activeTurnId === params.turn.id)
+      ) {
+        entry.activityRevision++;
+        entry.activeTurnId = undefined;
+        this.observeState(terminalId, { type: "idle" });
+      }
       if (
         params.turn?.status === "completed" &&
         entry.sessionId &&
@@ -678,7 +716,9 @@ export class CodexPeerRuntime {
     if (entry.sessionId === id) return;
     entry.cwd = nextCwd;
     entry.sessionId = id;
+    entry.activeTurnId = undefined;
     entry.subscribedSessionId = undefined;
+    entry.activity = undefined;
     entry.answeredItems.clear();
     entry.crew = new TerminalAgentRoster();
     this.callbacks.onSession?.(terminalId, id);
@@ -686,10 +726,21 @@ export class CodexPeerRuntime {
   }
 
   private observeState(terminalId: string, status: any) {
-    if (status?.type === "active")
-      this.callbacks.onState?.(terminalId, "working");
-    else if (status?.type === "idle")
-      this.callbacks.onState?.(terminalId, "idle");
+    const entry = this.entries.get(terminalId);
+    if (!entry || (status?.type !== "active" && status?.type !== "idle"))
+      return;
+    const state =
+      status.type === "idle"
+        ? "idle"
+        : status.activeFlags?.some(
+              (f: string) =>
+                f === "waitingOnApproval" || f === "waitingOnUserInput",
+            )
+          ? "waiting"
+          : "working";
+    if (entry.activity === state) return;
+    entry.activity = state;
+    this.callbacks.onState?.(terminalId, state);
   }
 
   private rpc(entry: RuntimeEntry, method: string, params: unknown) {

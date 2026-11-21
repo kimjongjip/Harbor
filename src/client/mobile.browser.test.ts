@@ -498,6 +498,32 @@ test(
       await page.getByRole("button", { name: "첫 항목", exact: true }).click();
       await page.locator(".session-requests").waitFor({ state: "detached" });
       assert.equal(f.state.requests[0].answer?.optionId, "first");
+      const activityComposer = page.locator(".composer");
+      await page.locator('.composer[data-activity="ready"]').waitFor();
+      const border = () =>
+        activityComposer
+          .locator("textarea")
+          .evaluate((el) => getComputedStyle(el).borderColor);
+      const readyBorder = await border();
+      // Some native terminals have a live working footer before the host reports the turn.
+      const spinner = "\x1b7\x1b[22;1H• Working (3s · esc to interrupt)\r\n› ";
+      f.screen.append(spinner);
+      f.gateway.output(f.id, spinner);
+      await page.locator('.composer[data-activity="working"]').waitFor();
+      assert.notEqual(await border(), readyBorder);
+      f.state.terminals[0].agentState = "working";
+      f.gateway.changed();
+      const removeSpinner = "\x1b[22;1H\x1b[J\x1b8";
+      f.screen.append(removeSpinner);
+      f.gateway.output(f.id, removeSpinner);
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".session-picker small")
+          ?.textContent?.includes("작업 중"),
+      );
+      f.state.terminals[0].agentState = "idle";
+      f.gateway.changed();
+      await page.locator('.composer[data-activity="ready"]').waitFor();
       await page
         .getByRole("navigation")
         .getByRole("button", { name: "터미널", exact: true })

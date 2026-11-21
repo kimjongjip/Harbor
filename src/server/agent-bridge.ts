@@ -631,7 +631,12 @@ export class AgentBridge {
         this.setPeerRuntime(credential.terminalId, {
           kind: "codex",
           sessionId: event.data.session_id,
-          state: "idle",
+          state:
+            runtime?.kind === "codex" &&
+            runtime.sessionId === event.data.session_id &&
+            runtime.state !== "offline"
+              ? runtime.state
+              : "idle",
           delivery: runtime?.kind === "codex" ? runtime.delivery : "poll",
           detail: runtime?.detail,
         });

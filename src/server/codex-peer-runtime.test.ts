@@ -164,6 +164,48 @@ async function fixture(
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
 
+test("reconnecting mid-turn and delayed events keep the primary Codex activity accurate", async () => {
+  const app = await fixture({ active: true });
+  try {
+    assert.equal(app.states.at(-1), "working");
+    app.notify("turn/started", {
+      threadId: sessionId,
+      turn: { id: "current" },
+    });
+    app.notify("turn/completed", {
+      threadId: sessionId,
+      turn: { id: "previous", status: "completed" },
+    });
+    app.notify("thread/status/changed", {
+      threadId: sessionId,
+      status: { type: "idle" },
+    });
+    app.notify("turn/completed", {
+      threadId: "child",
+      turn: { id: "child-turn", status: "completed" },
+    });
+    await settle();
+    assert.deepEqual(app.states, ["working"]);
+    app.notify("thread/status/changed", {
+      threadId: sessionId,
+      status: { type: "active", activeFlags: ["waitingOnApproval"] },
+    });
+    await settle();
+    assert.equal(app.states.at(-1), "waiting");
+    app.notify("turn/completed", {
+      threadId: sessionId,
+      turn: { id: "current", status: "interrupted" },
+    });
+    await settle();
+    assert.equal(app.states.at(-1), "idle");
+    app.notify("turn/started", { threadId: sessionId, turn: { id: "next" } });
+    await settle();
+    assert.equal(app.states.at(-1), "working");
+  } finally {
+    await app.close();
+  }
+});
+
 test("native crew observes only the bound parent, sends no child requests, and resets on session change", async () => {
   const app = await fixture();
   try {

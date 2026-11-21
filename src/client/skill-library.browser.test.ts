@@ -141,7 +141,7 @@ test(
             ) as HTMLInputElement
           )?.disabled,
       );
-      assert.equal(await dialog.locator(".skill-card").count(), 50);
+      assert.equal(await dialog.locator(".skill-card").count(), 51);
       assert.equal(
         await dialog
           .locator(".skill-card")
@@ -306,7 +306,7 @@ test(
           .isDisabled(),
         true,
       );
-      assert.equal(await dialog.locator(".skill-card").count(), 50);
+      assert.equal(await dialog.locator(".skill-card").count(), 51);
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

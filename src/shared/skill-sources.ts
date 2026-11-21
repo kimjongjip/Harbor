@@ -2,6 +2,15 @@ export const SKILL_CHECKED_AT = "2026-11-11";
 /** Repository-wide GitHub stars, observed on the date above; not individual skill installs or ratings. */
 export const SKILL_SOURCES = [
   {
+    id: "addyosmani",
+    name: "Addy Osmani · Agent Skills",
+    repo: "addyosmani/agent-skills",
+    commit: "8c99fa36d90068c82d547f7c12a9d67a3e95f4ee",
+    stars: 119426,
+    checkedAt: "2026-11-21",
+    license: "MIT",
+  },
+  {
     id: "anthropic",
     name: "Anthropic",
     repo: "anthropics/skills",

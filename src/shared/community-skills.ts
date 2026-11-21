@@ -1,6 +1,16 @@
 import type { CatalogSkill } from "./skill-catalog";
 export const COMMUNITY_SKILLS: CatalogSkill[] = [
   {
+    id: "interview-me",
+    title: "요구사항 인터뷰 (Interview Me)",
+    category: "개발",
+    description:
+      "구현 전에 한 번에 한 가지씩 질문해 누구를 위한 기능인지, 무엇이 성공인지, 어떤 제약이 있는지 정리합니다.",
+    example: "기능을 설계하기 전에 나를 인터뷰해서 요구사항을 정리해줘.",
+    requirements: "질문에 답할 수 있는 대화 세션에서 사용합니다.",
+    source: "addyosmani",
+  },
+  {
     id: "literature-review",
     title: "체계적 문헌 조사",
     category: "연구",

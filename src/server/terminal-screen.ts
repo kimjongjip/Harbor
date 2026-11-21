@@ -1,6 +1,7 @@
 import headless from "@xterm/headless";
 import serialize from "@xterm/addon-serialize";
 import { TerminalReplay } from "./terminal-replay.js";
+import { codexWorkingFooter } from "../shared/codex-working-footer.js";
 import type { TerminalReplayMetadata } from "../shared/types.js";
 import {
   serializeTerminalLinks,
@@ -148,6 +149,13 @@ export class TerminalScreen {
         },
       };
     });
+  }
+  codexWorking() {
+    return this.schedule(
+      () =>
+        !this.disposed &&
+        codexWorkingFooter(this.terminal.buffer.active, this.terminal.rows),
+    );
   }
   dispose() {
     if (this.disposed) return;

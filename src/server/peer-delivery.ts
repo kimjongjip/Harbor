@@ -7,7 +7,7 @@ export const peerRuntimeSchema = z
   .object({
     kind: z.enum(["codex", "claude"]),
     sessionId: z.string().trim().min(1).max(256).optional(),
-    state: z.enum(["idle", "working", "offline"]),
+    state: z.enum(["idle", "working", "waiting", "offline"]),
     delivery: z.enum(["automatic", "hook", "poll", "unavailable"]),
     /** Explicit adapter support; legacy automatic channels do not imply it. */
     userInputVersion: z.literal(1).optional(),
