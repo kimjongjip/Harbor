@@ -444,6 +444,7 @@ function createWindow(
       y: Math.max(area.y, Math.min(saved.y, area.y + area.height - height)),
     };
   }
+  const isPreview = new URL(url).searchParams.get("preview") === "1";
   const win = new BrowserWindow({
     ...initialBounds,
     resizable: true,
@@ -462,10 +463,30 @@ function createWindow(
       nodeIntegration: false,
       webSecurity: true,
       spellcheck: false,
-      plugins: new URL(url).searchParams.get("preview") === "1",
+      plugins: isPreview,
       backgroundThrottling: false,
     },
   });
+  if (isPreview) {
+    const contents = win.webContents;
+    contents.on("context-menu", (_event, params) => {
+      if (
+        params.frame !== contents.mainFrame ||
+        params.mediaType !== "image" ||
+        !params.hasImageContents
+      )
+        return;
+      const { x, y } = params;
+      Menu.buildFromTemplate([
+        {
+          label: "이미지 복사",
+          click: () => {
+            if (!contents.isDestroyed()) contents.copyImageAt(x, y);
+          },
+        },
+      ]).popup({ window: win });
+    });
+  }
   // Apply the requested outer bounds after the native menu/frame is attached.
   // This only runs at creation, never when an existing window is focused.
   win.setBounds(initialBounds);
