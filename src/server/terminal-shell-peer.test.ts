@@ -32,6 +32,65 @@ const fixtureBridge = {
 };
 
 test(
+  "managed Bash requests the chosen Claude channel for an idle-capable resume only",
+  { skip: !existsSync(bash) },
+  () => {
+    const parent = resolve(".cache/terminal-shell-peer-tests");
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, "channel-"));
+    try {
+      writeFileSync(
+        join(dir, "claude"),
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.325 (Claude Code)"; exit; fi\nprintf "%s %s\\n" "$HARBOR_CLAUDE_CHANNEL_ENABLED" "$*" >> "$PEER_FIXTURE_CALLS"\n',
+        { mode: 0o755 },
+      );
+      for (const name of ["python3", "curl"])
+        writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const init = bashInitialization(
+        { codexPath: "codex" } as HostConfig,
+        "~",
+        "shell",
+        fixtureBridge,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      const at = init.lastIndexOf("stty echo icanon;");
+      assert.ok(at > 0);
+      const result = spawnSync(bash, ["--noprofile", "--norc"], {
+        input:
+          init.slice(0, at) + "\nclaude --resume example\nclaude -p example\n",
+        cwd: dir,
+        env: {
+          ...process.env,
+          HOME: unix(dir),
+          PATH: unix(dir) + ":/usr/bin:/bin",
+          PEER_FIXTURE_CALLS: unix(join(dir, "calls")),
+          HARBOR_CODEX_MANAGED_PARENT: "",
+        },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15000,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const [resume, print] = readFileSync(join(dir, "calls"), "utf8")
+        .trim()
+        .split(/\r?\n/);
+      assert.match(
+        resume,
+        /^1 .*--dangerously-load-development-channels server:harbor .*--resume example$/,
+      );
+      assert.match(print, /^0 .* -p example$/);
+      assert.doesNotMatch(print, /--dangerously-load-development-channels/);
+    } finally {
+      if (resolve(dir).startsWith(parent + sep))
+        rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "the complete managed SSH Bash bootstrap with both native peer adapters is valid Bash",
   { skip: !existsSync(bash) },
   () => {

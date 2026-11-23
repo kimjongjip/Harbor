@@ -6,8 +6,9 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { connect as tcpConnect, type Socket } from "node:net";
-import type { Duplex } from "node:stream";
-import type { PeerRuntime } from "./peer-delivery.js";
+import { Duplex } from "node:stream";
+import { spawn } from "node:child_process";
+import { isLegacySharedCodex, type PeerRuntime } from "./peer-delivery.js";
 import type * as pty from "node-pty";
 import { spawnLocalPty } from "./local-pty.js";
 import type { Client, ClientChannel } from "ssh2";
@@ -16,7 +17,7 @@ import type {
   TerminalColors,
   TerminalInfo,
 } from "../shared/types.js";
-import { sshArgs } from "./ssh.js";
+import { remoteCodexCommand, sshArgs } from "./ssh.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { shellQuote } from "./ssh.js";
 import {
@@ -180,7 +181,9 @@ export class Terminals extends EventEmitter {
       runtime.state !== "offline"
     ) {
       const prior = entry.durable.peerRuntime;
-      if (runtime.endpoint || prior?.endpoint) {
+      if (runtime.delivery === "shared") {
+        entry.durable.peerRuntime = { ...runtime };
+      } else if (runtime.endpoint || prior?.endpoint) {
         entry.durable.peerRuntime = {
           ...prior,
           ...runtime,
@@ -211,6 +214,47 @@ export class Terminals extends EventEmitter {
     this.persist(entry);
     this.emit("change");
   }
+  async connectSharedCodex(id: string, sessionId: string): Promise<Duplex> {
+    const entry = this.entries.get(id);
+    const host = this.recovery
+      ?.hosts()
+      .find((h) => h.id === entry?.info.hostId);
+    if (
+      !entry ||
+      !host ||
+      entry.info.exited ||
+      !entry.info.agentConnected ||
+      entry.info.connectionState !== "connected" ||
+      entry.info.agentKind !== "codex" ||
+      entry.info.agentSessionId !== sessionId ||
+      entry.info.peerDelivery !== "shared"
+    )
+      throw new Error("공유 Codex 대화 연결을 확인하세요.");
+    const args = ["app-server", "proxy"];
+    if (host.kind === "ssh") {
+      const connection = entry.connection;
+      if (!connection) throw new Error("SSH 연결 대기 중");
+      return new Promise((resolve, reject) =>
+        connection.exec(remoteCodexCommand(host, args), (error, channel) => {
+          if (error) return reject(error);
+          channel.stderr.resume();
+          resolve(channel);
+        }),
+      );
+    }
+    const child = spawn(host.codexPath || "codex", args, {
+      stdio: ["pipe", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    const stream = Duplex.from({
+      writable: child.stdin,
+      readable: child.stdout,
+    });
+    stream.once("close", () => child.kill());
+    child.once("error", (error) => stream.destroy(error));
+    return stream;
+  }
+
   /** Only connect to this terminal's loopback, through its existing SSH connection. */
   async connectPeerRuntime(id: string, port: number): Promise<Duplex> {
     const entry = this.entries.get(id);
@@ -486,6 +530,7 @@ export class Terminals extends EventEmitter {
       cwd,
       program,
       title: options.title?.trim() || `${host.name} ${sequence}`,
+      ...(options.claudePeerChannel ? { claudePeerChannel: true } : {}),
       exited: false,
       integration: "unavailable",
       ...(options.researchLaunch
@@ -578,6 +623,7 @@ export class Terminals extends EventEmitter {
             !!issued?.hookToken,
             options.resumeCwd,
             options.researchLaunch,
+            options.claudePeerChannel,
           );
           const startup = powershellStartup(script);
           args = startup.args;
@@ -820,6 +866,7 @@ export class Terminals extends EventEmitter {
             info.resumeThreadId,
             resumeCwd,
             researchLaunch,
+            info.claudePeerChannel,
           )
         : `${remoteTerminalCommand(host, info.cwd, info.program || "shell", info.resumeThreadId)}\n`;
       const entry = this.durableEntry(
@@ -908,7 +955,19 @@ export class Terminals extends EventEmitter {
                 delivery: info.peerDelivery || "hook",
               },
             }
-          : {}),
+          : info.agentKind === "codex" &&
+              info.agentSessionId &&
+              (info.peerDelivery === "shared" ||
+                isLegacySharedCodex(info.peerDetail))
+            ? {
+                peerRuntime: {
+                  kind: "codex" as const,
+                  sessionId: info.agentSessionId,
+                  state: info.agentState || "idle",
+                  delivery: "shared" as const,
+                },
+              }
+            : {}),
       },
       process: {
         write: (data) => {
@@ -1116,7 +1175,11 @@ export class Terminals extends EventEmitter {
               connection,
               durable.record,
             );
-            if (durable.secrets.peerRuntime && entry.info.agentKind === "codex")
+            if (
+              durable.secrets.peerRuntime &&
+              entry.info.agentKind === "codex" &&
+              durable.peerRuntime?.delivery !== "shared"
+            )
               durable.peerRuntime = durable.secrets.peerRuntime;
             if (!this.bridge?.restore)
               throw new DurableSshError(
@@ -1370,6 +1433,7 @@ export class Terminals extends EventEmitter {
             info.resumeThreadId,
             resumeCwd,
             researchLaunch,
+            info.claudePeerChannel,
           ),
         );
         this.emit("change");

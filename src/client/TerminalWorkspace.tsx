@@ -78,6 +78,7 @@ export function NewTerminalDialog({
   const [password, setPassword] = useState("");
   const [savePassword, setSavePassword] = useState(credentialStorageAvailable);
   const [autoApprove, setAutoApprove] = useState(false);
+  const [claudePeerChannel, setClaudePeerChannel] = useState(true);
   const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
     "tmux",
   );
@@ -102,6 +103,10 @@ export function NewTerminalDialog({
               title: title || undefined,
               program: launch,
               autoApprove,
+              claudePeerChannel:
+                claudeIntegration &&
+                (launch === "shell" || launch.startsWith("claude")) &&
+                claudePeerChannel,
               sshSessionMode: host?.kind === "ssh" ? sshSessionMode : undefined,
               password: password || undefined,
               savePassword: savePassword && credentialStorageAvailable,
@@ -253,6 +258,20 @@ export function NewTerminalDialog({
               </small>
             )}
           </label>
+          {claudeIntegration &&
+            (launch === "shell" || launch.startsWith("claude")) && (
+              <label className="field">
+                <span className="host-check">
+                  <input
+                    type="checkbox"
+                    checked={claudePeerChannel}
+                    onChange={(e) => setClaudePeerChannel(e.target.checked)}
+                  />
+                  Claude 대기 중에도 세션 메시지 받기
+                </span>
+                <small>Claude를 열 때 Harbor 채널 사용을 요청합니다.</small>
+              </label>
+            )}
           <div className="terminal-start-guide">
             <Terminal size={17} />
             <div>

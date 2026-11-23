@@ -65,6 +65,7 @@ const messageSchema = z.object({
       revision: z.number().int().nonnegative(),
     })
     .optional(),
+  queueAttemptedAt: z.number().finite().nonnegative().optional(),
   offeredAt: z.number().finite().nonnegative().optional(),
   offeredSessionId: idSchema.optional(),
 });
@@ -462,6 +463,43 @@ export class Mailbox extends EventEmitter {
   find(id: string): MailboxMessage | undefined {
     const message = this.messages.find((item) => item.id === id);
     return message ? structuredClone(message) : undefined;
+  }
+
+  /** Reserve durably before writing to a queue that can outlive Harbor. */
+  reserveQueue(terminalId: string, messageId: string, sessionId: string) {
+    const item = this.messages.find((m) => m.id === messageId);
+    if (
+      !item ||
+      item.recipient.terminalId !== terminalId ||
+      item.recipient.sessionId !== sessionId ||
+      item.queueAttemptedAt ||
+      item.offeredAt ||
+      item.consumedAt
+    )
+      return false;
+    this.commit(
+      this.messages.map((m) =>
+        m.id === messageId ? { ...m, queueAttemptedAt: Date.now() } : m,
+      ),
+    );
+    return true;
+  }
+
+  releaseQueue(terminalId: string, messageId: string, sessionId: string) {
+    const item = this.messages.find((m) => m.id === messageId);
+    if (
+      !item?.queueAttemptedAt ||
+      item.recipient.terminalId !== terminalId ||
+      item.recipient.sessionId !== sessionId ||
+      item.offeredAt ||
+      item.consumedAt
+    )
+      return;
+    this.commit(
+      this.messages.map((m) =>
+        m.id === messageId ? { ...m, queueAttemptedAt: undefined } : m,
+      ),
+    );
   }
 
   /** A controller/channel delivery acknowledgement is not an agent read. */

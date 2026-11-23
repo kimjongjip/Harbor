@@ -44,6 +44,8 @@ export interface MailboxMessage {
   labRevision?: number;
   /** A native transport accepted the event; this does not establish model receipt. */
   offeredAt?: number;
+  /** Persisted before shared FIFO submission so a lost acknowledgement cannot resend it. */
+  queueAttemptedAt?: number;
   offeredSessionId?: string;
 }
 

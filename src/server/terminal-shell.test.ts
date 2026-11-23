@@ -86,7 +86,7 @@ test(
     const executable = join(directory, "codex.exe");
     const output = join(directory, "args.json");
     // A tiny native fixture verifies PowerShell's argv quoting at the process boundary.
-    const source = `using System; using System.IO; using System.Collections; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { int mcp=Array.IndexOf(args,"--mcp-config"); int settings=Array.IndexOf(args,"--settings"); int initParts=0; foreach(DictionaryEntry e in Environment.GetEnvironmentVariables()) { if(((string)e.Key).StartsWith("HARBOR_POWERSHELL_INIT")) initParts++; } File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(settings>=0 ? File.ReadAllText(args[settings+1]) : null), mcp=(mcp>=0 ? File.ReadAllText(args[mcp+1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN"), init=Environment.GetEnvironmentVariable("HARBOR_POWERSHELL_INIT"), initParts=initParts })); } }`;
+    const source = `using System; using System.IO; using System.Collections; using System.Web.Script.Serialization; public class Capture { public static void Main(string[] args) { if(args.Length==1 && args[0]=="--version" && Path.GetFileNameWithoutExtension(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName).ToLower()=="claude"){Console.WriteLine("2.1.325 (Claude Code)");return;} int mcp=Array.IndexOf(args,"--mcp-config"); int settings=Array.IndexOf(args,"--settings"); int initParts=0; foreach(DictionaryEntry e in Environment.GetEnvironmentVariables()) { if(((string)e.Key).StartsWith("HARBOR_POWERSHELL_INIT")) initParts++; } File.WriteAllText(Environment.GetEnvironmentVariable("HARBOR_TEST_CAPTURE"), new JavaScriptSerializer().Serialize(new { settings=(settings>=0 ? File.ReadAllText(args[settings+1]) : null), mcp=(mcp>=0 ? File.ReadAllText(args[mcp+1]) : null), args=args, token=Environment.GetEnvironmentVariable("HARBOR_SESSION_TOKEN"), init=Environment.GetEnvironmentVariable("HARBOR_POWERSHELL_INIT"), initParts=initParts })); } }`;
     const compile = `Add-Type -TypeDefinition '${source.replaceAll("'", "''")}' -ReferencedAssemblies System.Web.Extensions -OutputAssembly '${executable.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
     const run = (script: string, extraEnv: NodeJS.ProcessEnv = {}) =>
       new Promise<string>((done, reject) => {
@@ -195,6 +195,27 @@ test(
       "--resume",
       "fixture-session",
     ]);
+    const enabledInit = powershellInitialization(
+      {} as HostConfig,
+      "shell",
+      "http://127.0.0.1:1/bridge/mcp",
+      undefined,
+      true,
+      undefined,
+      undefined,
+      true,
+    );
+    await run(`${enabledInit}; claude --resume fixture-session`, {
+      HARBOR_TEST_CAPTURE: output,
+      PATH: `${directory};${process.env.PATH}`,
+    });
+    const enabled = JSON.parse(await readFile(output, "utf8"));
+    assert.ok(enabled.args.includes("server:harbor"));
+    assert.equal(
+      JSON.parse(enabled.mcp).mcpServers.harbor.env
+        .HARBOR_CLAUDE_CHANNEL_ENABLED,
+      "1",
+    );
     await run(`${claudeInit}; claude --harbor-peers --resume fixture-session`, {
       HARBOR_TEST_CAPTURE: output,
       HARBOR_SESSION_TOKEN: "fixture-scoped-peer-token",

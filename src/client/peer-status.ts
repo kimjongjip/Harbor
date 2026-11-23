@@ -26,8 +26,9 @@ export function messageDelivery(
   )
     return "원래 대화 연결 대기";
   if (message.offeredAt) return "CLI 알림 전달 · AI 확인 대기";
+  if (message.queueAttemptedAt) return "대기열 전달 미확인 · 받은함에서 확인 가능";
   if (!recipient.agentConnected) return "CLI 연결 대기";
-  return recipient.peerDelivery === "automatic"
+  return recipient.peerDelivery === "automatic" || recipient.peerDelivery === "shared"
     ? "자동 수신 대기"
     : "받은함 대기";
 }
@@ -38,5 +39,6 @@ export function peerConnection(terminal: TerminalInfo) {
   if (terminal.peerDelivery === "automatic")
     return terminal.agentKind === "claude" ? "채널 수신 요청" : "자동 수신";
   if (terminal.peerDelivery === "unavailable") return "자동 수신 불가 · 받은함";
+  if (terminal.peerDelivery === "shared") return "공유 대기열 수신";
   return "받은함 확인 필요";
 }

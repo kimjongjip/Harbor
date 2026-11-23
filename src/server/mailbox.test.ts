@@ -52,6 +52,22 @@ async function setup(t: any) {
   return { dir, terminals, resolver, mailbox };
 }
 
+test("a shared queue attempt survives restart and only a definite rejection releases the reservation", async (t) => {
+  const { mailbox, terminals, dir, resolver } = await setup(t);
+  terminals[1].agentSessionId = "thread-b";
+  const m = mailbox.sendAgent("a", "b", "fixture");
+  assert.equal(mailbox.reserveQueue("b", m.id, "other"), false);
+  assert.equal(mailbox.reserveQueue("b", m.id, "thread-b"), true);
+  const restored = new Mailbox(dir, resolver);
+  assert.equal(restored.reserveQueue("b", m.id, "thread-b"), false);
+  assert.equal(restored.find(m.id)?.offeredAt, undefined);
+  restored.releaseQueue("b", m.id, "thread-b");
+  assert.equal(restored.reserveQueue("b", m.id, "thread-b"), true);
+  restored.offer("b", m.id, "thread-b");
+  assert.equal(restored.reserveQueue("b", m.id, "thread-b"), false);
+  assert.equal(restored.find(m.id)?.consumedAt, undefined);
+});
+
 test("Codex and Claude exchange messages with native conversation identities", async (t) => {
   const { mailbox, terminals } = await setup(t);
   terminals[1].agentKind = "claude";

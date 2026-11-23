@@ -185,7 +185,8 @@ export interface TerminalInfo {
   agentCompletion?: { sessionId: string; textHash: string };
   integration?: "ready" | "unavailable";
   agentConnected?: boolean;
-  peerDelivery?: "automatic" | "hook" | "poll" | "unavailable";
+  peerDelivery?: "automatic" | "shared" | "hook" | "poll" | "unavailable";
+  claudePeerChannel?: boolean;
   peerDetail?: string;
   resumeThreadId?: string;
   researchSettings?: import("./research.js").ResearchAgentSettings;

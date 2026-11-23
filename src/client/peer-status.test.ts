@@ -60,6 +60,10 @@ test("changing native conversations reports waiting for original context", () =>
   );
 });
 test("manual and automatic connections have distinct labels", () => {
+  assert.equal(
+    peerConnection({ ...terminal, agentKind: "codex", peerDelivery: "shared" }),
+    "공유 대기열 수신",
+  );
   assert.equal(peerConnection(terminal), "채널 수신 요청");
   assert.equal(
     peerConnection({ ...terminal, agentKind: "codex" }),

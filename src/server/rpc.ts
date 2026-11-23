@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Client, ClientChannel } from "ssh2";
 import type { Writable } from "node:stream";
+import type { Duplex } from "node:stream";
+import WebSocket from "ws";
 
 export interface RpcMessage {
   id?: string | number;
@@ -18,6 +20,7 @@ export class RpcResponseSizeError extends Error {
     this.name = "RpcResponseSizeError";
   }
 }
+export class RpcRequestRejected extends Error {}
 const maxFrameLength = 32 * 1024 * 1024;
 
 export class RpcClient extends EventEmitter {
@@ -34,8 +37,29 @@ export class RpcClient extends EventEmitter {
   >();
   private stderr = "";
   private input?: Writable;
+  private socket?: WebSocket;
   private closeTransport?: () => void;
   alive = false;
+  /** codex app-server proxy carries raw WebSocket bytes on its stdio stream. */
+  async startProxy(stream: Duplex) {
+    const socket = new WebSocket("ws://localhost/", {
+      createConnection: () => stream,
+      handshakeTimeout: 8000,
+      maxPayload: maxFrameLength,
+    });
+    this.socket = socket;
+    this.closeTransport = () => socket.terminate();
+    socket.on("error", (error) => this.closed(error));
+    socket.on("close", () => this.closed(new Error("Codex 공유 연결 종료")));
+    socket.on("message", (data) => this.consume(data.toString() + "\n"));
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+      socket.once("close", () => reject(new Error("Codex 공유 연결 종료")));
+    });
+    this.alive = true;
+    return this.initialize();
+  }
   async start(command: string, args: string[], cwd?: string) {
     this.child = spawn(command, args, {
       cwd,
@@ -141,13 +165,14 @@ export class RpcClient extends EventEmitter {
         if (!pending) continue;
         clearTimeout(pending.timer);
         this.pending.delete(message.id);
-        if (message.error) pending.reject(new Error(message.error.message));
+        if (message.error)
+          pending.reject(new RpcRequestRejected(message.error.message));
         else pending.resolve(message.result);
       }
     }
   }
   call(method: string, params: unknown = {}, timeout = 45000): Promise<any> {
-    if (!this.alive || !this.input)
+    if (!this.alive || (!this.input && !this.socket))
       return Promise.reject(new Error("서버에 먼저 연결하세요."));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
@@ -173,7 +198,9 @@ export class RpcClient extends EventEmitter {
     this.write({ id, error: { code: -32601, message } });
   }
   private write(value: unknown) {
-    if (this.alive && this.input?.writable)
+    if (this.alive && this.socket?.readyState === WebSocket.OPEN)
+      this.socket.send(JSON.stringify(value));
+    else if (this.alive && this.input?.writable)
       this.input.write(JSON.stringify(value) + "\n");
   }
   private closed(error: Error) {

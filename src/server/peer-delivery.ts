@@ -8,7 +8,7 @@ export const peerRuntimeSchema = z
     kind: z.enum(["codex", "claude"]),
     sessionId: z.string().trim().min(1).max(256).optional(),
     state: z.enum(["idle", "working", "waiting", "offline"]),
-    delivery: z.enum(["automatic", "hook", "poll", "unavailable"]),
+    delivery: z.enum(["automatic", "shared", "hook", "poll", "unavailable"]),
     /** Explicit adapter support; legacy automatic channels do not imply it. */
     userInputVersion: z.literal(1).optional(),
     detail: z.string().max(500).optional(),
@@ -22,6 +22,12 @@ export const peerRuntimeSchema = z
   })
   .strict();
 export type PeerRuntime = z.infer<typeof peerRuntimeSchema>;
+export function isLegacySharedCodex(detail?: string) {
+  return (
+    detail === "Codex shared session" ||
+    detail === "Codex 공유 세션 · 받은함 확인 방식"
+  );
+}
 export type PeerRuntimeStatus = Omit<PeerRuntime, "endpoint">;
 export interface PeerAnswer {
   requestId: string;
@@ -102,7 +108,7 @@ export class PeerDelivery extends EventEmitter {
   events(
     terminalId: string,
     sessionId?: string,
-    transport: "automatic" | "hook" = "automatic",
+    transport: "automatic" | "shared" | "hook" = "automatic",
     accept?: (message: MailboxMessage) => boolean,
   ): {
     sessionId?: string;
@@ -115,6 +121,7 @@ export class PeerDelivery extends EventEmitter {
       !runtime?.sessionId ||
       runtime.state === "offline" ||
       runtime.delivery !== transport ||
+      (transport === "shared" && runtime.kind !== "codex") ||
       (transport === "hook" && runtime.kind !== "claude")
     )
       return {
@@ -140,6 +147,7 @@ export class PeerDelivery extends EventEmitter {
           item.recipient.sessionId === runtime.sessionId &&
           !item.consumedAt &&
           !item.offeredAt &&
+          !item.queueAttemptedAt &&
           (!accept || accept(item)) &&
           !(
             runtime.kind === "claude" &&

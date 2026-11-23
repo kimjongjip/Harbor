@@ -54,6 +54,7 @@ import {
   mergeClaudeUsage,
 } from "../shared/terminal-usage.js";
 import { CodexPeerRuntime } from "./codex-peer-runtime.js";
+import { queueSharedCodexMessages } from "./shared-codex-queue.js";
 import { TerminalUsageStore } from "./terminal-usage.js";
 import { CodexUsageHistory } from "./codex-usage-history.js";
 import { CodexAgentTelemetry } from "./codex-agent-telemetry.js";
@@ -132,6 +133,8 @@ const mailbox = new Mailbox(store.directory, {
   host: (id) => store.data.hosts.find((item) => item.id === id),
 });
 const peerFlushes = new Set<string>();
+const peerFlushAgain = new Set<string>();
+const sharedRetry = new Set<string>();
 let researchManager: import("./research-manager.js").ResearchLabManager;
 let research: ResearchLabs;
 const peerGenerations = new Map<string, number>();
@@ -206,10 +209,51 @@ const codexPeers = new CodexPeerRuntime({
   },
 });
 async function flushPeerMessages(id: string) {
-  if (peerFlushes.has(id) || !codexPeers.available(id)) return;
+  if (peerFlushes.has(id)) {
+    peerFlushAgain.add(id);
+    return;
+  }
+  const runtime = bridge.peers.runtime(id);
+  const shared = runtime?.kind === "codex" && runtime.delivery === "shared";
+  if (shared ? sharedRetry.has(id) : !codexPeers.available(id)) return;
+  const sessionId = runtime?.sessionId;
+  if (!sessionId) return;
+  const events = bridge.peers.events(
+    id,
+    sessionId,
+    shared ? "shared" : "automatic",
+  );
+  if (!events.messages.length) return;
   peerFlushes.add(id);
   try {
-    const events = bridge.peerEvents(id);
+    if (shared) {
+      await queueSharedCodexMessages({
+        sessionId,
+        messages: events.messages,
+        connect: () => terminals.connectSharedCodex(id, sessionId),
+        reserve: (messageId) => {
+          const current = bridge.peers.runtime(id);
+          const t = terminals.list().find((t) => t.id === id);
+          return (
+            current?.kind === "codex" &&
+            current.delivery === "shared" &&
+            current.state !== "offline" &&
+            current.sessionId === sessionId &&
+            t?.agentSessionId === sessionId &&
+            !t.exited &&
+            t.connectionState === "connected" &&
+            mailbox.reserveQueue(id, messageId, sessionId)
+          );
+        },
+        accepted: (messageId) => {
+          mailbox.offer(id, messageId, sessionId);
+        },
+        rejected: (messageId) => {
+          mailbox.releaseQueue(id, messageId, sessionId);
+        },
+      });
+      return;
+    }
     for (const message of events.messages) {
       if (
         !(await codexPeers.deliver(id, {
@@ -219,8 +263,27 @@ async function flushPeerMessages(id: string) {
       )
         break;
     }
+  } catch {
+    if (shared && !sharedRetry.has(id)) {
+      sharedRetry.add(id);
+      setTimeout(() => {
+        sharedRetry.delete(id);
+        void flushPeerMessages(id);
+      }, 30000).unref();
+    }
   } finally {
     peerFlushes.delete(id);
+    if (
+      peerFlushAgain.delete(id) &&
+      (shared ||
+        bridge
+          .peerEvents(id)
+          .messages.some(
+            (next) =>
+              !events.messages.some((previous) => previous.id === next.id),
+          ))
+    )
+      queueMicrotask(() => void flushPeerMessages(id));
   }
 }
 const bridge = new AgentBridge(mailbox, {
@@ -245,7 +308,10 @@ const bridge = new AgentBridge(mailbox, {
       peerGenerations.set(id, (peerGenerations.get(id) || 0) + 1);
       codexPeers.dispose(id);
     } else if (runtime.kind === "codex") {
-      if (runtime.endpoint) {
+      if (runtime.delivery === "shared") {
+        peerGenerations.set(id, (peerGenerations.get(id) || 0) + 1);
+        codexPeers.dispose(id);
+      } else if (runtime.endpoint) {
         const generation = (peerGenerations.get(id) || 0) + 1;
         peerGenerations.set(id, generation);
         void codexPeers.attach(id, runtime.endpoint).catch(() => {
@@ -1114,7 +1180,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.51" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.52" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -1860,6 +1926,7 @@ app.post("/api/terminals", async (req, res) => {
       title: name.optional(),
       startupPlaceholder: z.boolean().optional(),
       autoApprove: z.boolean().default(false),
+      claudePeerChannel: z.boolean().optional(),
       sshSessionMode: z.enum(["direct", "tmux"]).optional(),
       password: z.string().max(2000).optional(),
       savePassword: z.boolean().optional(),
@@ -1877,6 +1944,7 @@ app.post("/api/terminals", async (req, res) => {
       title: body.title,
       colors: body.colors,
       startupPlaceholder: body.startupPlaceholder,
+      claudePeerChannel: body.claudePeerChannel,
       sshSessionMode:
         body.sshSessionMode ?? (host.kind === "ssh" ? "tmux" : "direct"),
     },

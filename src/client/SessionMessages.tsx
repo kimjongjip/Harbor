@@ -107,9 +107,9 @@ export default function SessionMessages({
             요청하세요.
           </p>
           <p>
-            Claude 자동 수신은 터미널에서 <code>claude --harbor-peers</code>로
-            실행합니다. Claude의 채널 허용 여부는 계정·조직 정책과 CLI 버전에
-            따라 달라집니다.
+            새 터미널에서 ‘Claude 대기 중에도 세션 메시지 받기’를 선택하세요.
+            기존 셸에서는 <code>claude --harbor-peers --resume</code>으로 같은 대화를 다시 열 수 있습니다.
+            채널 수신에는 Claude 계정·조직의 허용이 필요합니다.
           </p>
         </details>
         <div className="mailbox-peers" aria-label="대화 가능한 세션">

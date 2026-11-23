@@ -595,3 +595,8 @@ git log -1 --oneline
 - annotation의 앞 번호는 매 프롬프트 1부터 시작합니다. 뒤의 '[ref:…]'는 과거 인용과 혼동하지 않기 위한 고유 식별자입니다. 전체 표기를 유지해서 전송하세요. 입력 중 표기 앞에서 Delete, 뒤에서 Backspace를 누르면 한 덩어리로 지워집니다. 오래된 CLI hook도 인용 표기를 인식하며, 일반 프롬프트 전송까지 포함한 번호 초기화는 새 CLI 실행 후 완전히 적용됩니다.
 
 설정 근거: [Codex 설정 레퍼런스](https://learn.chatgpt.com/docs/config-file/config-reference), [Codex 계정 한도 조회](https://learn.chatgpt.com/docs/app-server), [Claude statusline](https://code.claude.com/docs/en/statusline). Claude의 계정 OAuth 사용량 조회는 CLI 실시간 데이터가 없을 때의 보조 경로이며 공급자 변경에 따라 사용할 수 없을 수 있습니다.
+## 대기 중인 세션에 메시지 보내기 (1.18.52)
+
+받는 Codex의 상태가 **공유 대기열 수신**이면 Harbor가 같은 서버에서 열려 있는 대화 ID를 확인한 뒤 메시지를 보냅니다. 작업 중이면 Codex가 대기열 순서에 따라 처리합니다. **CLI 알림 전달**은 CLI의 수락이고, **AI 확인**과 **답장 도착**은 별도로 표시됩니다.
+
+Claude는 새 터미널의 **Claude 대기 중에도 세션 메시지 받기**를 켜고 시작하세요. 이미 훅 방식으로 열린 대화는 작업을 마친 뒤 Claude에서 `/exit`하고 같은 Harbor 셸에서 `claude --harbor-peers --resume`으로 선택합니다. Claude가 요청하는 채널 허용과 계정·조직 설정이 적용됩니다.

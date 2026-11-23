@@ -870,7 +870,8 @@ function global:__HarborRunCodexPeers {
     if($harborResume -and $harborHelp -match '--no-daemon') {
       # A native shared daemon can already own this thread's writer lock.
       # Preserve native resume routing instead of forcing a second server.
-      $harborSharedReport=@{kind='codex';state='idle';delivery='poll';detail='Codex shared session'}
+      $harborSharedReport=@{kind='codex';state='idle';delivery='shared'}
+      if($UserArgs -ccontains '--no-daemon') { $harborSharedReport.delivery='poll' }
       if($harborResumeId -and $UserArgs -notcontains '--last') { $harborSharedReport.sessionId=$harborResumeId }
       __HarborPeerReport $harborSharedReport | Out-Null
       & $Executable @ConfigArgs @UserArgs
@@ -1001,8 +1002,8 @@ def report(payload):
         request=urllib.request.Request(runtime_url,json.dumps(payload).encode('utf-8'),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
         with urllib.request.urlopen(request,timeout=15) as result: return result.status==200
     except Exception: return False
-def fallback(detail='Automatic peer input requires Codex CLI 0.160.1 or newer and its experimental app-server transport.'):
-    report({'kind':'codex','state':'idle','delivery':'poll','detail':detail,**({'sessionId':resume_id} if resume_id else {})})
+def fallback(detail='Automatic peer input requires Codex CLI 0.160.1 or newer and its experimental app-server transport.',delivery='poll'):
+    report({'kind':'codex','state':'idle','delivery':delivery,'detail':detail,**({'sessionId':resume_id} if resume_id else {})})
     os.execvpe(executable,[executable]+configs+args,base_env)
 commands={'exec','e','review','login','logout','mcp','plugin','app-server','remote-control','app','completion','update','doctor','sandbox','debug','apply','queue','agents','archive','delete','migrate-rollouts','unarchive','cloud','exec-server','features','help'}
 value_flags={'-c','--config','-C','--cd','-m','--model','-p','--profile','-s','--sandbox','-a','--ask-for-approval','-i','--image','--add-dir','--local-provider','--enable','--disable','--remote-auth-token-env'}
@@ -1040,7 +1041,8 @@ try:
     match=re.search(r'codex-cli (\d+)\.(\d+)\.(\d+)',version.stdout)
     help_text=subprocess.run([executable,'--help'],capture_output=True,text=True,timeout=10).stdout
     if resume and '--no-daemon' in help_text:
-        fallback('Codex 공유 세션 · 받은함 확인 방식')
+        if '--no-daemon' in args: fallback('Codex 독립 세션 · 받은함 확인 방식')
+        fallback('Codex 공유 대기열',delivery='shared')
     server_help=subprocess.run([executable,'app-server','--help'],capture_output=True,text=True,timeout=10).stdout
     if not match or tuple(map(int,match.groups()))<(0,160,1) or '--remote-auth-token-env' not in help_text or '--ws-token-sha256' not in server_help:
         fallback()

@@ -91,11 +91,13 @@ Claude 상태 연동은 Windows PowerShell과 관리형 SSH Bash에서 지원합
 
 ## 세션끼리 질문하기
 
+새 터미널의 **Claude 대기 중에도 세션 메시지 받기**를 켜 두면 관리형 셸에서 `claude`, `claude --continue`, `claude --resume`으로 여는 Claude 2.1.287 이상의 대화가 Harbor 채널을 요청합니다. 이미 훅 방식으로 열린 Claude는 작업을 마친 뒤 같은 터미널에서 `claude --harbor-peers --resume`으로 해당 대화를 선택하세요. Codex 공유 대화는 Harbor가 서버에서 실행 중인 대화 ID를 확인하고 공식 대기열에 메시지를 넣습니다.
+
 터미널의 이름 변경 버튼으로 `구현`, `리뷰`처럼 구별되는 이름을 정하고, CLI에서 “리뷰 세션에 왜 이렇게 구현했는지 물어보고 답을 반영해줘”라고 요청합니다. 모델이 Harbor 도구를 호출하면 요청이 실제로 기록되고, 상대의 원래 대화에서 보낸 답장이 돌아옵니다. 도구 호출 없이 모델이 말로만 요청했다고 하는 것은 전달 기록으로 처리하지 않습니다.
 
 Codex CLI 0.160.1 이상에서는 해당 터미널용 app-server에 네이티브 TUI와 Harbor가 함께 연결됩니다. 요청은 네이티브 대기열에 들어가며 작성 중인 입력을 전송하거나 수정하지 않습니다. 이 WebSocket·대기열 연결은 실험적 CLI 기능입니다. 지원하지 않는 버전이나 연결 실패에서는 받은함 방식으로 표시하며, 상대에게 “받은 메시지 확인해줘”라고 요청합니다. 관리형 SSH에서 자동 연결을 사용하려면 원격의 `python3`와 SSH TCP forwarding이 필요합니다.
 
-Claude는 일반 `claude` 실행으로 질문·답장 도구를 사용할 수 있습니다. 대기 중인 Claude에 자동 알림도 보내려면 Harbor 터미널에서 `claude --harbor-peers`로 실행합니다. 이 옵션은 해당 실행에만 Claude 개발 채널을 요청하며, Claude 자체의 채널 승인·계정·조직 정책을 따릅니다. 왼쪽의 **채널 수신 요청**은 활성화가 보장됐다는 뜻이 아닙니다. 지원하지 않으면 받은함을 직접 확인합니다. [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude 채널](https://code.claude.com/docs/en/channels-reference).
+Claude는 일반 `claude` 실행으로 질문·답장 도구를 사용할 수 있습니다. 새 터미널에서 채널 수신 옵션을 끈 경우에도 한 대화에 자동 알림을 요청하려면 Harbor 셸에서 `claude --harbor-peers`로 실행합니다. 이 옵션은 해당 실행에만 Claude 개발 채널을 요청하며, Claude 자체의 채널 승인·계정·조직 정책을 따릅니다. 왼쪽의 **채널 수신 요청**은 활성화가 보장됐다는 뜻이 아닙니다. 지원하지 않으면 받은함을 직접 확인합니다. [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude 채널](https://code.claude.com/docs/en/channels-reference).
 
 ## 데이터와 연결
 

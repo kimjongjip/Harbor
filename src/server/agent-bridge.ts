@@ -29,6 +29,7 @@ import { Requests, permissionEventSchema, questionSchema } from "./requests.js";
 import { TerminalAnnotations } from "./terminal-annotations.js";
 import {
   PeerDelivery,
+  isLegacySharedCodex,
   peerRuntimeSchema,
   type PeerRuntime,
 } from "./peer-delivery.js";
@@ -753,6 +754,14 @@ export class AgentBridge {
 
   setPeerRuntime(terminalId: string, input: PeerRuntime): void {
     const parsed = peerRuntimeSchema.parse(input);
+    if (
+      parsed.kind === "codex" &&
+      parsed.delivery === "poll" &&
+      isLegacySharedCodex(parsed.detail)
+    )
+      parsed.delivery = "shared";
+    if (parsed.delivery === "shared")
+      parsed.detail = "열린 Codex 공유 대화의 대기열로 전달합니다.";
     const previous = this.peers.runtime(terminalId);
     // Claude's channel process does not know its session id before SessionStart.
     // A later capability report may enrich that authoritative hook binding.

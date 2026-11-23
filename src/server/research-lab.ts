@@ -401,7 +401,7 @@ export class ResearchLabs extends EventEmitter {
                   ? ("changed" as const)
                   : !runtime?.sessionId
                     ? ("connecting" as const)
-                    : runtime.delivery === "automatic"
+                    : runtime.delivery === "automatic" || runtime.delivery === "shared"
                       ? ("automatic" as const)
                       : runtime.kind === "claude" && runtime.delivery === "hook"
                         ? ("boundary" as const)
@@ -750,7 +750,7 @@ export class ResearchLabs extends EventEmitter {
             : message.offeredAt
               ? "offered"
               : "queued",
-      automatic: this.options.runtime(p.terminalId)?.delivery === "automatic",
+      automatic: ["automatic","shared"].includes(this.options.runtime(p.terminalId)?.delivery ?? ""),
     };
   }
 

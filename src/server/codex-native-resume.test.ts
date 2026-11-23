@@ -89,7 +89,7 @@ test(
         ),
         false,
       );
-      assert.equal(reports.at(-1).delivery, "poll");
+      assert.equal(reports.at(-1).delivery, "shared");
       assert.equal(
         reports.at(-1).sessionId,
         undefined,
@@ -100,6 +100,7 @@ test(
         [["-c", "notice=true", "resume", "--model", "fixture-model", id], id],
         [["resume", "--last", id], undefined],
         [["resume", "named-thread", id], undefined],
+        [["resume", "--no-daemon", id], id],
       ] as const) {
         const result = await run(
           `${codexPeerPowerShellLauncher()}\n__HarborRunCodexPeers -Executable ${quote(executable)} -BridgeUrl 'http://127.0.0.1:${(server.address() as any).port}/bridge/mcp' -ConfigArgs @() -UserArgs @(${args.map(quote).join(",")})`,
@@ -110,6 +111,12 @@ test(
         );
         assert.equal(result.code, 0, result.error);
         assert.equal(reports.at(-1).sessionId, expected);
+        assert.equal(
+          reports.at(-1).delivery,
+          (args as readonly string[]).includes("--no-daemon")
+            ? "poll"
+            : "shared",
+        );
         const recorded = readFileSync(capture, "utf8")
           .trim()
           .split("\n")
