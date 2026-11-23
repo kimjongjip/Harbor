@@ -45,6 +45,7 @@ const configSchema = z.object({
         name: z.string().max(80),
         kind: z.enum(["mobile", "desktop"]).default("mobile"),
         hash: z.string(),
+        managedChat: z.boolean().optional(),
         createdAt: z.number(),
         expiresAt: z.number(),
         push: subscription.optional(),
@@ -149,7 +150,8 @@ export class MobileAccess {
       mode: this.config.mode,
       devices: this.config.devices
         .filter((d) => d.expiresAt > Date.now())
-        .map(({ id, name, kind, createdAt, expiresAt, push }) => ({
+        .map(({ id, name, kind, createdAt, expiresAt, push, managedChat }) => ({
+          ...(managedChat ? { managedChat } : {}),
           id,
           name,
           kind,
@@ -158,6 +160,20 @@ export class MobileAccess {
           notifications: !!push,
         })),
     };
+  }
+  setManagedChat(id: string, enabled: boolean) {
+    if (
+      !this.config.devices.some(
+        (d) => d.id === id && d.kind === "mobile" && d.expiresAt > Date.now(),
+      )
+    )
+      throw new Error("등록된 휴대폰을 선택하세요.");
+    this.commit({
+      ...this.config,
+      devices: this.config.devices.map((d) =>
+        d.id === id ? { ...d, managedChat: enabled } : d,
+      ),
+    });
   }
   pairing(kind: "mobile" | "desktop" = "mobile") {
     if (!this.config.enabled) throw new Error("먼저 모바일 연결을 켜세요.");

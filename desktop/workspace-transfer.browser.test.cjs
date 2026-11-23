@@ -49,7 +49,8 @@ test(
       app = await electron.launch({ args: [process.cwd()], env });
       let main = await app.firstWindow();
       main.setDefaultTimeout(8000);
-      await main.locator(".terminal-tabs").waitFor();
+      await main.getByRole("button", {name:"터미널",exact:true}).click();
+      await main.locator(".terminal-tabs").waitFor({state:"attached"});
       const boot = async () => (await fetch(base + "/api/bootstrap")).json();
       const initial = await boot();
       const create = async (title) => {

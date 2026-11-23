@@ -81,10 +81,22 @@ export class PeerDelivery extends EventEmitter {
     purpose?: "question",
     labId?: string,
     labRevision?: number,
+    context: { requestKey?: string; followUpTo?: string } = {},
   ): MailboxMessage {
     const senderSessionId = this.runtime(from)?.sessionId;
     if (
       purpose &&
+      !(
+        context.requestKey &&
+        this.mailbox
+          .list(from)
+          .some(
+            (item) =>
+              item.sender.terminalId === from &&
+              item.sender.sessionId === senderSessionId &&
+              item.peerRequestKey === context.requestKey,
+          )
+      ) &&
       this.mailbox
         .list(from)
         .filter(
@@ -102,6 +114,7 @@ export class PeerDelivery extends EventEmitter {
       purpose,
       labId,
       labRevision,
+      ...context,
     });
   }
 
@@ -148,6 +161,7 @@ export class PeerDelivery extends EventEmitter {
           !item.consumedAt &&
           !item.offeredAt &&
           !item.queueAttemptedAt &&
+          this.mailbox.permits(item) &&
           (!accept || accept(item)) &&
           !(
             runtime.kind === "claude" &&
@@ -205,6 +219,16 @@ export class PeerDelivery extends EventEmitter {
         reply: delivered,
       };
     }
+    if (!this.mailbox.permits(message))
+      return {
+        requestId,
+        threadId: message.threadId,
+        message,
+        status: "unavailable",
+        reason: message.peerClosed
+          ? "This collaboration thread was closed."
+          : "Peer collaboration is paused.",
+      };
     const recipient = message.recipient.terminalId
       ? this.runtime(message.recipient.terminalId)
       : undefined;
@@ -234,7 +258,8 @@ export class PeerDelivery extends EventEmitter {
                 reason:
                   "No actual peer reply has arrived. Delivery is queued for Claude's next input, tool completion or response completion; an idle conversation needs a user-submitted inbox check.",
               }
-            : recipient?.delivery !== "automatic"
+            : recipient?.delivery !== "automatic" &&
+                recipient?.delivery !== "shared"
               ? {
                   reason:
                     "No actual peer reply has arrived. Automatic delivery is unavailable; the recipient must call harbor_inbox in its own native conversation.",

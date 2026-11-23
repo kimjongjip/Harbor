@@ -200,7 +200,7 @@ test(
       ),
       ["installed", "installed"],
     );
-    for (const root of Object.values(initial.roots))
+    for (const root of [initial.roots.claude, initial.roots.codex])
       assert.deepEqual(
         await fs.readFile(filename(`${root}/pdf/assets/font.bin`)),
         binary,
@@ -208,6 +208,7 @@ test(
     assert.deepEqual((await library.status(host)).skills.pdf, {
       claude: "installed",
       codex: "installed",
+      antigravity: "available",
     });
     assert.deepEqual(
       (await library.install(host, ["pdf"], ["claude", "codex"])).map(

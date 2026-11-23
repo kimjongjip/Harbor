@@ -6,6 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import source from "./skill-source.json";
 import communitySources from "./community-skill-sources.json";
+import { harborSessionSkill } from "./harbor-session-skill.js";
 import { skillSource } from "../shared/skill-sources.js";
 import {
   INSTALLABLE_SKILLS,
@@ -244,6 +245,14 @@ export async function downloadSkill(
 ): Promise<SkillPayload> {
   const skill = definition(id),
     origin = skillSource(skill.source);
+  if (origin.id === "harbor" && id === "harbor")
+    return [
+      {
+        path: "SKILL.md",
+        bytes: Buffer.from(harborSessionSkill),
+        executable: false,
+      },
+    ];
   const manifest =
     origin.id === "anthropic"
       ? { ...source, licenses: ["THIRD_PARTY_NOTICES.md"] }

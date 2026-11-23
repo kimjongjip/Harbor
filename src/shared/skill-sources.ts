@@ -2,6 +2,14 @@ export const SKILL_CHECKED_AT = "2026-11-11";
 /** Repository-wide GitHub stars, observed on the date above; not individual skill installs or ratings. */
 export const SKILL_SOURCES = [
   {
+    id: "harbor",
+    name: "Harbor 내장",
+    repo: "kimjongjip/Harbor",
+    commit: "builtin-1",
+    stars: 0,
+    license: "Harbor",
+  },
+  {
     id: "addyosmani",
     name: "Addy Osmani · Agent Skills",
     repo: "addyosmani/agent-skills",

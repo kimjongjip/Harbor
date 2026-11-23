@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ export function codexQuota(raw: any, now = Date.now()): AccountQuota {
       const label = `${text(limit.limitName) || ""} ${duration} 한도`.trim();
       if (
         !windows.some(
-          (x) => x.label === label && x.remaining === left(w.usedPercent),
+          (x) => x.label === label && x.remaining === left(w.usedPercent) && x.resetsAt === (numeric(w.resetsAt) ? w.resetsAt*1000 : undefined),
         )
       )
         windows.push({
@@ -105,6 +106,22 @@ export function claudeQuota(raw: any, now = Date.now()): AccountQuota {
         }
       : {}),
   };
+}
+
+/** Only account-attributed provider measurements are eligible for scheduled input. */
+export function reservationLimit(provider:"codex"|"claude", raw:any, model:string, now=Date.now()){
+  if(raw.error)return null;
+  const quota=provider==="codex" ? codexQuota({account:raw.account,rateLimits:raw.rateLimitsByLimitId?.codex ??
+    (!raw.rateLimits?.limitId || raw.rateLimits.limitId==="codex" ? raw.rateLimits : undefined)},now) : claudeQuota(raw,now);
+  if(!quota.account || quota.error)return null;
+  const relevant=quota.windows.filter(w=>!w.label.includes("Fable") || /fable/i.test(model));
+  if(provider==="claude" && numeric(raw.usage?.five_hour?.utilization)){
+    relevant.push({label:"five_hour",remaining:left(raw.usage.five_hour.utilization),resetsAt:Date.parse(raw.usage.five_hour.resets_at)});
+  }
+  if(!relevant.length)return null;
+  const exhausted=relevant.filter(w=>w.remaining===0);
+  if(exhausted.some(w=>!Number.isSafeInteger(w.resetsAt) || w.resetsAt!<=now))return null;
+  return {accountKey:createHash("sha256").update(provider+"\n"+quota.account.toLowerCase()).digest("hex"),notBefore:exhausted.length?Math.max(...exhausted.map(w=>w.resetsAt!)):undefined};
 }
 
 export function claudeQuotaError(status: number) {
@@ -344,6 +361,18 @@ export class HostInsights {
     })().finally(() => this.pending.delete(key));
     this.pending.set(key, task);
     return task;
+  }
+  private reservationMeasurements=new Map<string,{until:number;result:Promise<ReturnType<typeof reservationLimit>>}>();
+  reservationQuota(host:HostConfig, provider:"codex"|"claude",model:string, fresh=false){
+    const key=JSON.stringify([host,provider,model]), prev=this.reservationMeasurements.get(key);
+    if(!fresh && prev && prev.until>Date.now())return prev.result;
+    const result=(async()=>{try{
+      const raw=provider==="codex" ? await this.history.accountUsage(host,await this.password(host.id)) : await this.metadata(host,"claude");
+      return reservationLimit(provider,raw,model);
+    }catch{return null;}})();
+    this.reservationMeasurements.set(key,{until:Date.now()+120000,result});
+    if(this.reservationMeasurements.size>64)this.reservationMeasurements.delete(this.reservationMeasurements.keys().next().value!);
+    return result;
   }
   async context(host: HostConfig): Promise<CodexContextSettings> {
     const config = await this.history.contextConfig(

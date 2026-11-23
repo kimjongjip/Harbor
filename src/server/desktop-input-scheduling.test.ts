@@ -98,7 +98,16 @@ test("desktop entry configures terminal scheduling before Electron readiness or 
             return { configureInputScheduling };
           if (name === "./backend-supervisor.cjs")
             return { BackendSupervisor: class {} };
-          if (name === "./backend-version.cjs") return {};
+          if (
+            name === "./backend-version.cjs" ||
+            name === "./workspace-tabs.cjs"
+          )
+            return {};
+          if (name === "./updater.cjs")
+            return {
+              DesktopUpdater: class {},
+              installationRoot: () => "/synthetic-harbor",
+            };
           if (name === "node:fs")
             return {
               readFileSync: () => '{"name":"codex-harbor","version":"fixture"}',

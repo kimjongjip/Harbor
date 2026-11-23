@@ -79,6 +79,7 @@ export const researchWorkSchema = z
     labId: id,
     assignmentId: id,
     workId: id.optional(),
+    workflowStep: z.number().int().min(0).max(11).optional(),
     title: z.string().trim().min(1).max(300),
     kind: z.enum(["experiment", "code", "investigation"]),
     status: z.enum(["running", "completed", "failed"]),
@@ -194,6 +195,7 @@ const labSchema = z
     cwd: z.string().max(4096),
     hostId: id,
     effort: z.enum(["default", "low"]),
+    workflow: z.object({hostBindings:z.array(z.string().length(64)).length(2).optional(),id:z.string().uuid(),title:z.string().max(160),steps:z.array(z.string().min(1).max(800)).min(1).max(12),requestId:z.string().uuid(),fingerprint:z.string().length(64)}).optional(),
     status: z.enum([
       "preparing",
       "connecting",
@@ -451,6 +453,7 @@ export class ResearchLabs extends EventEmitter {
     participants: ResearchLab["participants"],
     workspace?: ResearchLab["workspace"],
     managed?: { manager: NonNullable<ResearchLab["manager"]>; context: string },
+    workflow?: ResearchLab["workflow"],
   ): ResearchLab {
     const parsed = researchCreateSchema.parse(input);
     if (this.labs.length >= 100)
@@ -500,6 +503,7 @@ export class ResearchLabs extends EventEmitter {
       createdAt: now,
       updatedAt: now,
       ...(workspace ? { workspace } : {}),
+      ...(workflow ? { workflow:{...structuredClone(workflow),hostBindings:participants.map(p=>this.workflowHostKey(p.hostId||hostId))} } : {}),
       ...(managed
         ? {
             manager: structuredClone(managed.manager),
@@ -522,6 +526,15 @@ export class ResearchLabs extends EventEmitter {
     return this.get(lab.id);
   }
 
+  private workflowHostKey(id:string):string {
+    const host=this.options.host(id) as Partial<HostConfig>|undefined;
+    return createHash("sha256").update(JSON.stringify([id,host?.kind,host?.address,host?.port,host?.username,host?.identityFile,host?.codexPath])).digest("hex");
+  }
+  private validWorkflowHosts(lab:ResearchLab) {
+    return !lab.workflow?.hostBindings || lab.participants.every((p,i)=>
+      this.workflowHostKey(p.hostId || lab.hostId)===lab.workflow!.hostBindings![i] &&
+      this.options.terminal(p.terminalId)?.hostId===(p.hostId || lab.hostId));
+  }
   private validateParticipants(
     participants: ResearchLab["participants"],
   ): string {
@@ -914,6 +927,11 @@ export class ResearchLabs extends EventEmitter {
           continue;
         }
         if (!["connecting", "running"].includes(lab.status)) continue;
+        if(!this.validWorkflowHosts(lab)){
+          lab.status="paused";
+          lab.attention="워크플로 서버 연결이 변경되었습니다. 원래 서버를 확인하세요.";
+          this.suppressUnsent(lab); this.persist(); this.emit("change"); continue;
+        }
         let unavailable = false;
         for (const participant of lab.participants) {
           const terminal = this.options.terminal(participant.terminalId);
@@ -1313,6 +1331,7 @@ export class ResearchLabs extends EventEmitter {
     return {
       labId: lab.id,
       title: lab.title,
+      ...(lab.workflow ? {workflow:{title:lab.workflow.title,steps:lab.workflow.steps.map((description,index)=>({index,description,attempts:lab.works.filter(w=>w.workflowStep===index).map(w=>({id:w.id,status:w.status,result:w.result,artifacts:w.artifacts}))})), instructions:"Execute these steps in order in the work phase. The lead reserves each step with harbor_lab_work(status=running,workflowStep=index) before starting any command. The partner reviews results. Consult the recorded work ID and evidence when resuming. Never restart a running or completed step. Record metrics, results or artifact paths when marking a step completed."}} : {}),
       referenceProject: { hostId: lab.hostId, cwd: lab.cwd },
       goal: lab.goal,
       kind: lab.kind,
@@ -1619,6 +1638,7 @@ export class ResearchLabs extends EventEmitter {
   private ready(lab: ResearchLab, report: ResearchReport): boolean {
     return (
       report.ready &&
+      (!lab.workflow || lab.workflow.steps.every((_,i)=>lab.works.some(w=>w.workflowStep===i && w.status==="completed"))) &&
       !report.userQuestion &&
       !report.peerQuestions?.length &&
       !report.userDecision &&
@@ -1631,7 +1651,7 @@ export class ResearchLabs extends EventEmitter {
     );
   }
   private advance(lab: ResearchLab) {
-    if (lab.status !== "running" || lab.pendingDecision) return;
+    if (lab.status !== "running" || lab.pendingDecision || !this.validWorkflowHosts(lab)) return;
     const jobs = this.current(lab);
     if (
       !jobs.length ||
@@ -1733,6 +1753,21 @@ export class ResearchLabs extends EventEmitter {
         job.report)
     )
       throw new Error("현재 수행 단계에서만 새 작업을 시작할 수 있습니다.");
+    const step = parsed.workflowStep ?? old?.workflowStep;
+    if(lab.workflow && !old && job.phase === "work" && parsed.kind === "experiment" && step === undefined)
+      throw Error("워크플로 단계를 먼저 예약하세요.");
+    if(step !== undefined) {
+      if(!lab.workflow || step >= lab.workflow.steps.length || index !== 0 || job.phase !== "work")
+        throw Error("주 담당자가 실행 단계에서 워크플로 단계를 등록하세요.");
+      if(old && old.workflowStep !== step) throw Error("기존 작업의 단계는 바꿀 수 없습니다.");
+      if(!old && parsed.status !== "running") throw Error("실행 전에 단계를 예약하세요.");
+      const other = lab.works.find(w=>w.workflowStep===step && w.id!==old?.id && w.status!=="failed");
+      if(other) throw Error("이미 예약되거나 완료된 단계입니다. 기존 작업 ID를 확인하세요.");
+      if(lab.workflow.steps.slice(0,step).some((_,i)=>!lab.works.some(w=>w.workflowStep===i && w.status==="completed")))
+        throw Error("앞 단계 결과를 먼저 기록하세요.");
+      if(parsed.status==="completed" && ((!parsed.result?.trim() && !parsed.metrics?.trim() && !parsed.artifacts.length) || (parsed.exitCode!==undefined && parsed.exitCode!==0)))
+        throw Error("완료 단계에는 성공한 측정 결과 또는 산출물이 필요합니다.");
+    }
     if (parsed.status === "running" && parsed.resource) {
       const ownerHostId = lab.participants[index].hostId || lab.hostId;
       const busy = this.labs
@@ -1803,6 +1838,7 @@ export class ResearchLabs extends EventEmitter {
       throw new Error(
         "준비 중에는 터미널에서 대화하세요. 공동 작업 시작 버튼으로 과제를 배정할 수 있습니다.",
       );
+    if(action!=="pause" && !this.validWorkflowHosts(lab)) throw Error("워크플로 서버 연결이 변경되었습니다.");
     if (action === "pause") {
       if (lab.status === "completed") return this.get(labId);
       lab.status = "paused";
@@ -1912,6 +1948,7 @@ export class ResearchLabs extends EventEmitter {
       terminalId: terminalIds[i],
     }));
     this.validateParticipants(participants);
+    if(!this.validWorkflowHosts({...lab,participants}))throw Error("워크플로 서버 연결이 변경되었습니다.");
     participants.forEach((p) => this.available(p.terminalId, lab.id));
     if (
       new Set(terminalIds).size !== terminalIds.length ||
@@ -1966,6 +2003,7 @@ export class ResearchLabs extends EventEmitter {
       : candidates.find((l) => l.status !== "completed") || candidates.at(-1);
     if (!lab)
       throw new Error("이 네이티브 대화가 참여하는 연구 과제가 없습니다.");
+    if(!this.validWorkflowHosts(lab))throw Error("워크플로 서버 연결이 변경되었습니다.");
     if (
       !this.options.terminal(terminalId) ||
       this.options.terminal(terminalId)?.exited ||

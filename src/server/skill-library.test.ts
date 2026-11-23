@@ -75,10 +75,10 @@ async function fixture() {
 
 test("all curated skill trees are pinned, bounded and portable; guides are not installable", () => {
   assert.equal(source.commit, SKILL_SOURCE.commit);
-  assert.equal(SKILL_CATALOG.length, 51);
-  assert.equal(INSTALLABLE_SKILLS.length, 50);
-  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 51);
-  for (const skill of INSTALLABLE_SKILLS) {
+  assert.equal(SKILL_CATALOG.length, 52);
+  assert.equal(INSTALLABLE_SKILLS.length, 51);
+  assert.equal(new Set(SKILL_CATALOG.map((s) => s.id)).size, 52);
+  for (const skill of INSTALLABLE_SKILLS.filter((s) => s.source !== "harbor")) {
     const origin = skillSource(skill.source);
     const manifest = skill.source
       ? communitySources.find((s) => s.id === skill.source)!
@@ -119,6 +119,15 @@ test("all curated skill trees are pinned, bounded and portable; guides are not i
     validateSkillFiles("pdf", [file, { ...file, path: "skills/pdf/skill.md" }]),
   );
   assert.throws(() => validateSkillFiles("../pdf", [file]));
+});
+
+test("bundled peer skill installs without downloading a repository", async () => {
+  const files = await downloadSkill("harbor", async () => {
+    throw Error("unexpected network");
+  });
+  assert.equal(files.length, 1);
+  assert.equal(files[0].path, "SKILL.md");
+  assert.match(files[0].bytes.toString(), /name: harbor\n/);
 });
 
 test("community sources use separate provenance, preserve licenses and cannot masquerade as another source", async () => {

@@ -15,6 +15,7 @@ export function messageDelivery(
   message: MailboxMessage,
   terminals: TerminalInfo[],
 ) {
+  if (message.peerClosed) return "협업 종료";
   if (message.repliedAt) return "답장 도착";
   if (message.status === "consumed") return "AI 확인";
   if (message.recipient.kind === "user") return "받음";
@@ -27,6 +28,7 @@ export function messageDelivery(
     recipient.agentSessionId !== message.recipient.sessionId
   )
     return "원래 대화 연결 대기";
+  if (message.author === "agent" && !message.labId && recipient.collaborationPaused) return "협업 일시정지";
   if (message.offeredAt) return "CLI 알림 전달 · AI 확인 대기";
   if (message.queueAttemptedAt) return "대기열 전달 미확인 · 받은함에서 확인 가능";
   if (!recipient.agentConnected) return "CLI 연결 대기";

@@ -20,6 +20,10 @@ import { useHostReorderDrag, type MoveHost } from "./server-order";
 import "./server-order.css";
 import { CliApprovalSettings } from "./CliApprovalSettings";
 import { SkillLibraryButton } from "./SkillLibrary";
+import { RuntimeDiagnostics } from "./RuntimeDiagnostics";
+import { ServerWorkspace } from "./ServerWorkspace";
+import { RemotePort } from "./RemotePort";
+import { remoteDesktop } from "./desktop-session";
 
 interface Props {
   hosts: HostView[];
@@ -62,6 +66,7 @@ export default function HostManager(props: Props) {
             <Plus size={16} />
             서버 추가
           </button>
+          <RuntimeDiagnostics />
         </header>
         <div className="host-search">
           <Search size={17} />
@@ -469,6 +474,16 @@ function HostEditor({
               </label>
             </details>
           </section>
+          {host?.kind === "ssh" && (
+            <ServerWorkspace
+              key={host.id}
+              hostId={host.id}
+              password={password}
+              enabled={host.serverWorkspace}
+              disabled={changed || !!busy}
+            />
+          )}
+            {host?.kind==="ssh"&&!remoteDesktop&&!location.hostname.startsWith("harbor-")&&<RemotePort key={host.id} id={host.id} password={password} disabled={changed||!!busy}/>}
           {error && (
             <div className="form-error" role="alert">
               {error}

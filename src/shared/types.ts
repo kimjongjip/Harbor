@@ -26,6 +26,7 @@ export interface ModelOption {
   isDefault: boolean;
 }
 export interface HostView extends HostConfig {
+  serverWorkspace?: boolean;
   status: HostStatus;
   error?: string;
   transport?: "shared" | "isolated";
@@ -34,6 +35,8 @@ export interface HostView extends HostConfig {
   terminalConnected?: boolean;
 }
 export interface SessionMeta {
+  /** Harbor registered its peer dynamic tools when this native thread was created. */
+  peerTools?: boolean;
   id: string;
   hostId: string;
   threadId: string;
@@ -194,6 +197,7 @@ export interface TerminalInfo {
   agentConnected?: boolean;
   peerDelivery?: "automatic" | "shared" | "hook" | "poll" | "unavailable";
   claudePeerChannel?: boolean;
+  collaborationPaused?: boolean;
   peerDetail?: string;
   resumeThreadId?: string;
   researchSettings?: import("./research.js").ResearchAgentSettings;

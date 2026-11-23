@@ -152,6 +152,28 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         /synthetic tool output/,
       );
 
+      const beforeBranch = (await posts()).length;
+      await page.getByRole("button", { name: "옆 대화", exact: true }).click();
+      assert.match(await input.inputValue(), /참고 기록/);
+      await page
+        .getByRole("button", { name: "원래 대화", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "작업 인계", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Claude로 인계", exact: true })
+        .click();
+      assert.equal(await provider.inputValue(), "claude");
+      assert.match(await input.inputValue(), /이어갈 작업/);
+      assert.equal(
+        (await posts()).length,
+        beforeBranch,
+        "drafting a handoff or side question never starts an engine",
+      );
+      await page
+        .getByRole("button", { name: "원래 대화", exact: true })
+        .click();
       await provider.selectOption("claude");
       assert.equal(await input.inputValue(), "Claude draft A");
       await page
@@ -318,6 +340,19 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       );
       assert.equal(await input.inputValue(), "");
       await input.fill("이 부분을 설명해 줘");
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfgAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      await page
+        .getByLabel("첨부 이미지 파일")
+        .setInputFiles({
+          name: "figure.png",
+          mimeType: "image/png",
+          buffer: png,
+        });
+      await page.getByRole("img", { name: "첨부: figure.png" }).waitFor();
+      assert.equal(await input.inputValue(), "이 부분을 설명해 줘");
       await send.click();
       await page.locator(".ide-chat-quoted summary").waitFor();
       assert.equal(
@@ -329,6 +364,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         "이 부분을 설명해 줘",
       );
       const selectedMessage = (await messages()).at(-1);
+      assert.deepEqual(selectedMessage.body.images, [
+        "data:image/png;base64," + png.toString("base64"),
+      ]);
       assert.match(selectedMessage.body.text, /const original = 42;/);
       assert.match(
         selectedMessage.body.text,

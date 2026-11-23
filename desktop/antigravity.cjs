@@ -247,11 +247,15 @@ async function run(
     if (folder && !usageTimer)
       usageTimer = setTimeout(() => void saveUsage().catch(() => {}), 700);
   }
+  let requestedVariant;
   function configuration(options) {
     configs = options || [];
     model =
       configs.find((o) => o.category === "model" || o.id === "model")
         ?.currentValue || model;
+    const thought = config("effort")?.currentValue;
+    if (thought && requestedVariant === model + "-" + thought)
+      model = requestedVariant;
   }
   function config(key) {
     return configs.find(
@@ -596,6 +600,7 @@ async function run(
     configuration(opened.configOptions);
     model = model || opened.models?.currentModelId;
     const settings = JSON.parse(process.env.HARBOR_AGY_CONFIG || "{}");
+    requestedVariant = settings.model;
     for (const key of ["model", "effort"])
       if (settings[key] && settings[key] !== "default") {
         const option = config(key);
@@ -609,6 +614,8 @@ async function run(
           value: settings[key],
         });
         configuration(r.configOptions);
+        if ((key === "model" ? model : config(key)?.currentValue) !== settings[key])
+          throw Error("Antigravity가 요청한 " + key + " 설정을 적용하지 않았습니다.");
       }
     await meta();
     if (resumeId)

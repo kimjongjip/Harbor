@@ -18,7 +18,7 @@ test(
     const root = resolve(".cache/terminal-conversation-pane-browser-tests");
     await mkdir(root, { recursive: true });
     const directory = await mkdtemp(join(root, "run-"));
-    const id = "synthetic-reader-terminal",
+    const id = "01aaaa11-2222-4444-8888-ccccc99999cc",
       nativeSession = "synthetic-native-session";
     const control = new TerminalControl(() => nativeSession);
     const screen = new TerminalScreen();
@@ -39,6 +39,7 @@ import React,{useState}from'react';import{createRoot}from'react-dom/client';impo
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/terminal-layout.css';import'./src/client/workspace.css';
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
 window.copies=[];window.opens=0;window.harborDesktop={writeClipboardText:async text=>{window.copies.push(text);return true;}};
+window.harborDesktop.captureCurrentWindow=async()=> 'iVBORw0KGgo=';
 const open=Terminal.prototype.open;Terminal.prototype.open=function(...args){window.term=this;window.opens++;return open.apply(this,args);};
 window.bufferText=()=>Array.from({length:window.term.buffer.active.length},(_,row)=>window.term.buffer.active.getLine(row).translateToString(true)).join('\\n').trimEnd();
 function Fixture(){const[state,setState]=useState('working');window.setAgentState=setState;return <div style={{height:'100vh',display:'flex',flexDirection:'column'}}><TerminalPane info={{id:'${id}',hostId:'fixture',title:'Synthetic reader terminal',cwd:'/fixture',connectionState:'connected',exited:false,agentKind:'codex',agentSessionId:'${nativeSession}',agentState:state}} active={true}/></div>;}
@@ -66,6 +67,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
     );
     app.get(`/api/terminals/${id}/control`, (_req, res) =>
       res.json({ control: control.view(id) }),
+    );
+    const captures: Buffer[] = [];
+    app.post(`/api/terminals/${id}/attachments/prepare`, (_req, res) =>
+      res.json({ hostId: "fixture", path: "/fixture/attachments" }),
+    );
+    app.put(
+      `/api/terminals/${id}/attachments`,
+      express.raw({ type: "application/octet-stream" }),
+      (req, res) => {
+        captures.push(req.body as Buffer);
+        res.json({ path: "/fixture/attachments/harbor-window-capture.png" });
+      },
     );
     app.post(`/api/terminals/${id}/control`, (_req, res) => {
       claims++;
@@ -593,6 +606,35 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         "reading/copying must not spawn, resume, claim or post input",
       );
       assert.deepEqual(errors, []);
+      control.revoke("fixture-phone");
+      await page
+        .getByRole("button", { name: "여기서 제어", exact: true })
+        .waitFor({ state: "hidden" });
+      await page.evaluate(() => (window as any).setAgentState("idle"));
+      const captureStart = received.length;
+      await page
+        .getByRole("button", { name: "현재 Harbor 창 캡처 첨부" })
+        .click();
+      for (
+        let i = 0;
+        i < 80 &&
+        !received
+          .slice(captureStart)
+          .some((data) => data.includes("harbor-window-capture.png"));
+        i++
+      )
+        await page.waitForTimeout(50);
+      assert.ok(
+        received
+          .slice(captureStart)
+          .some((data) => data.includes("harbor-window-capture.png")),
+        "captured file path reaches this terminal",
+      );
+      assert.deepEqual(captures, [Buffer.from("89504e470d0a1a0a", "hex")]);
+      assert.ok(
+        !received.slice(captureStart).includes("\r"),
+        "capture never submits the draft",
+      );
     } finally {
       await desktop?.close();
       for (const socket of sockets.clients) socket.terminate();

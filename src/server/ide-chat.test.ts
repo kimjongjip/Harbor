@@ -1,4 +1,10 @@
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Mailbox } from "./mailbox.js";
+import { ManagedPeers } from "./managed-peers.js";
+import { PeerDelivery } from "./peer-delivery.js";
 import assert from "node:assert/strict";
 import express from "express";
 import type { AddressInfo } from "node:net";
@@ -18,6 +24,226 @@ import {
 } from "./ide-chat-claude.js";
 
 const guard = () => {};
+const imageFixture =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfgAAAABJRU5ErkJggg==";
+
+test("managed Codex submits image-only input once, rejects changed payload or an image reservation", async (t) => {
+  const { chats, calls } = harness();
+  t.after(() => chats.close());
+  const v = await create(chats);
+  const body = {
+    runtimeId: v.runtimeId,
+    requestId: randomUUID(),
+    text: "",
+    images: [imageFixture],
+  };
+  await assert.rejects(
+    chats.send(v.id, { ...body, delivery: "next" }, "desktop", guard),
+    /예약/,
+  );
+  await assert.rejects(
+    chats.send(
+      v.id,
+      { ...body, images: ["data:image/png;base64,aGVsbG8="] },
+      "desktop",
+      guard,
+    ),
+    /이미지/,
+  );
+  await chats.send(v.id, body, "desktop", guard);
+  assert.ok((await chats.send(v.id, body, "desktop", guard)).duplicate);
+  await assert.rejects(
+    chats.send(
+      v.id,
+      { ...body, images: [imageFixture, imageFixture] },
+      "desktop",
+      guard,
+    ),
+    /다른 메시지/,
+  );
+  assert.deepEqual(
+    calls.filter((c) => c.method === "turn/start").map((c) => c.params.input),
+    [[{ type: "image", url: imageFixture }]],
+  );
+});
+
+test("worktree mutations require write capability, a current runtime and a writable conversation", async (t) => {
+  let count = 0;
+  const { chats } = harness({
+    gitAction: async (_host, _cwd, _input, validate) => {
+      await validate();
+      count++;
+      return { ok: true };
+    },
+  });
+  t.after(() => chats.close());
+  const normal = await create(chats),
+    review = await create(chats, "codex", { reviewOnly: true });
+  const payload = { operation: "push" as const, runtimeId: normal.runtimeId };
+  await assert.rejects(
+    () => chats.changeWorktree(review.id, payload, guard),
+    /읽기 전용/,
+  );
+  await assert.rejects(
+    () =>
+      chats.changeWorktree(
+        normal.id,
+        { ...payload, runtimeId: "previous" },
+        guard,
+      ),
+    /연결이 바뀌/,
+  );
+  let permitted = false;
+  const app = express();
+  app.use(
+    express.json(),
+    createIdeChatRouter(chats, {
+      authorize: () => {},
+      actor: () => "phone",
+      gitWrites: () => permitted,
+    }),
+  );
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const send = () =>
+    fetch(
+      "http://127.0.0.1:" +
+        (server.address() as AddressInfo).port +
+        "/conversations/" +
+        normal.id +
+        "/worktree",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+  assert.equal((await send()).status, 403);
+  assert.equal(count, 0);
+  permitted = true;
+  assert.equal((await send()).status, 200);
+  assert.equal(count, 1);
+});
+
+test("opted-in managed Codex peers use native tool calls, wake idle sessions once and reject a stale or disabled identity", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "harbor-managed-peer-test-"));
+
+  let managed: ManagedPeers;
+  const mailbox = new Mailbox(dir, {
+    terminal: (id) => managed.list().find((p) => p.id === id),
+    host: (id) => ({ id, name: "Fixture" }),
+  });
+  const peers = new PeerDelivery(mailbox);
+  managed = new ManagedPeers({
+    mailbox,
+    peers,
+    terminals: () => [],
+    hostName: () => "Fixture",
+  });
+  const { chats, hub, calls, replies, client } = harness({
+    managedPeers: managed,
+  });
+  t.after(async () => {
+    chats.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  hub.managedPeerCall = (hostId, nativeId, name, args) =>
+    managed.call({ hostId, nativeId, provider: "codex" }, name, args);
+  const a = await create(chats),
+    b = await create(chats);
+  assert.equal(a.peerEnabled, false);
+  assert.ok(
+    calls
+      .find((c) => c.method === "thread/start")
+      ?.params.dynamicTools.some((tool: any) => tool.name === "harbor_ask"),
+  );
+  for (const v of [a, b])
+    await chats.setCollaboration(
+      v.id,
+      { runtimeId: v.runtimeId, enabled: true },
+      guard,
+    );
+  const [aid, bid] = managed.list().map((p) => p.id);
+  const askArgs = {
+    to: bid,
+    question: "What changed?",
+    requestKey: "initial",
+    waitMs: 0,
+  };
+  (hub as any).request(host.id, client, {
+    id: 21,
+    method: "item/tool/call",
+    params: { threadId: a.nativeId, tool: "harbor_ask", arguments: askArgs },
+  });
+  for (let i = 0; i < 40 && !calls.some((c) => c.method === "turn/start"); i++)
+    await new Promise((r) => setTimeout(r, 5));
+  const request = JSON.parse(
+    replies.find((r) => r.id === 21)?.result.contentItems[0].text,
+  ).request;
+  assert.equal(request.status, "pending");
+  assert.equal(request.message.sender.terminalId, aid);
+  assert.equal(calls.filter((c) => c.method === "turn/start").length, 1);
+  assert.equal(
+    calls.find((c) => c.method === "turn/start")?.params.threadId,
+    b.nativeId,
+  );
+  const sender = [...hub.sessions.values()].find(
+    (s) => s.threadId === a.nativeId,
+  )!;
+  sender.status = "running";
+  await managed.call(b, "harbor_reply", {
+    messageId: request.requestId,
+    text: "An actual result",
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.filter((c) => c.method === "turn/start").length, 1);
+  sender.status = "idle";
+  hub.emit("session", sender);
+  for (
+    let i = 0;
+    i < 40 && calls.filter((c) => c.method === "turn/start").length < 2;
+    i++
+  )
+    await new Promise((r) => setTimeout(r, 5));
+  assert.equal(
+    calls.filter((c) => c.method === "turn/start").at(-1)?.params.threadId,
+    a.nativeId,
+  );
+  assert.equal(calls.filter((c) => c.method === "turn/start").length, 2);
+  const result = await managed.call(a, "harbor_ask_result", {
+    requestId: request.requestId,
+  });
+  assert.equal(result.request?.reply?.text, "An actual result");
+  await chats.setCollaboration(
+    a.id,
+    { runtimeId: a.runtimeId, enabled: false },
+    guard,
+  );
+  await assert.rejects(
+    managed.call(a, "harbor_send", { to: bid, text: "No longer authorized" }),
+    /협업/,
+  );
+  await assert.rejects(
+    managed.call({ ...b, nativeId: "wrong" }, "harbor_sessions", {}),
+    /협업/,
+  );
+  const review = await create(chats, "codex", { reviewOnly: true });
+  assert.equal(review.peerEnabled, undefined);
+  assert.equal(
+    calls.filter((c) => c.method === "thread/start").at(-1)?.params
+      .dynamicTools,
+    undefined,
+  );
+  await assert.rejects(
+    chats.setCollaboration(
+      review.id,
+      { runtimeId: review.runtimeId, enabled: true },
+      guard,
+    ),
+    /협업/,
+  );
+});
 const host: HostConfig = {
   id: "test-host",
   name: "Test",
@@ -134,6 +360,221 @@ async function until(predicate: () => boolean) {
   assert.ok(predicate());
 }
 
+test("managed reservations survive client disconnect, allow editing and dispatch once when the active turn finishes", async () => {
+  const { chats, hub, calls } = harness();
+  const view = await create(chats, "codex", {
+    reviewOnly: true,
+    effort: "high",
+  });
+  await send(chats, view.id, "inspect");
+  assert.equal(
+    calls.find((c) => c.method === "turn/start")!.params.approvalPolicy,
+    "never",
+  );
+  const session = [...hub.sessions.values()].find(
+    (s) => s.threadId === view.nativeId,
+  )!;
+  const reserve = (text: string, requestId: string) =>
+    chats.send(
+      view.id,
+      { text, requestId, runtimeId: view.runtimeId, delivery: "next" },
+      "desktop",
+      guard,
+    );
+  const requestId = randomUUID();
+  await reserve("original", requestId);
+  await reserve("original", requestId);
+  await reserve("remove", randomUUID());
+  let queue = chats.snapshot(view.id).queue!;
+  assert.equal(queue.length, 2);
+  await chats.modifyQueue(
+    view.id,
+    queue[0].id,
+    {
+      runtimeId: view.runtimeId,
+      expectedText: "original",
+      action: "edit",
+      text: "revised",
+    },
+    guard,
+  );
+  await chats.modifyQueue(
+    view.id,
+    queue[1].id,
+    { runtimeId: view.runtimeId, expectedText: "remove", action: "remove" },
+    guard,
+  );
+  session.status = "idle";
+  session.activeTurnId = undefined;
+  hub.emit("session", session);
+  hub.emit("session", session);
+  await until(() => chats.snapshot(view.id).queue?.length === 0);
+  assert.deepEqual(
+    calls
+      .filter((c) => c.method === "turn/start")
+      .map((c) => c.params.input[0].text),
+    ["inspect", "revised"],
+  );
+  chats.close();
+});
+test("restart restores exact queued drafts without replaying past authorization, preserving edits, receipts and review mode", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "harbor-queue-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const h = harness({ reservationDirectory: dir });
+  const v = await create(h.chats, "codex", {
+    reviewOnly: true,
+    effort: "high",
+  });
+  await send(h.chats, v.id, "busy");
+  let stale = false;
+  const id = randomUUID(),
+    input = {
+      runtimeId: v.runtimeId,
+      requestId: id,
+      text: "pending",
+      delivery: "next" as const,
+    };
+  await h.chats.send(v.id, input, "phone", () => {
+    if (stale) throw Error("expired device");
+  });
+  const entry = h.chats.snapshot(v.id).queue![0].id;
+  await h.chats.modifyQueue(
+    v.id,
+    entry,
+    {
+      runtimeId: v.runtimeId,
+      expectedText: "pending",
+      action: "edit",
+      text: "edited",
+    },
+    guard,
+  );
+  h.chats.close();
+  stale = true;
+  const changed = harness({
+    reservationDirectory: dir,
+    host: (id) => ({ ...host, id, address: "replacement.invalid" }),
+  });
+  const unrelated = await create(changed.chats, "codex", {
+    resumeId: v.nativeId,
+  });
+  assert.ok(!unrelated.queue?.length);
+  changed.chats.close();
+  const h2 = harness({
+    reservationDirectory: dir,
+    runtimeId: "second-runtime",
+  });
+  const v2 = await create(h2.chats, "codex", { resumeId: v.nativeId });
+  assert.equal(v2.queue?.[0].text, "edited");
+  assert.equal(v2.queue?.[0].needsAuthorization, true);
+  assert.equal(v2.reviewOnly, true);
+  assert.equal(v2.effort, "high");
+  assert.equal(
+    (
+      await h2.chats.send(
+        v2.id,
+        { ...input, runtimeId: v2.runtimeId },
+        "phone",
+        guard,
+      )
+    ).duplicate,
+    true,
+  );
+  assert.equal(h2.calls.filter((c) => c.method === "turn/start").length, 0);
+  const auth = {
+    runtimeId: v2.runtimeId,
+    expectedText: "edited",
+    action: "authorize" as const,
+  };
+  await assert.rejects(
+    h2.chats.modifyQueue(v2.id, entry, auth, () => {
+      throw Error("revoked");
+    }),
+    /revoked/,
+  );
+  await h2.chats.modifyQueue(v2.id, entry, auth, guard, "desktop");
+  await until(() => h2.chats.snapshot(v2.id).queue?.length === 0);
+  assert.deepEqual(
+    h2.calls
+      .filter((c) => c.method === "turn/start")
+      .map((c) => c.params.input[0].text),
+    ["edited"],
+  );
+  h2.chats.close();
+});
+
+test("crash between native dispatch and acknowledgement restores an uncertain reservation without a resend action", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "harbor-queue-crash-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const h = harness({ reservationDirectory: dir }),
+    v = await create(h.chats);
+  const call = h.client.call.bind(h.client);
+  let acknowledge!: () => void,
+    started = false;
+  h.client.call = async (method, params) => {
+    if (method === "turn/start") {
+      started = true;
+      await new Promise<void>((done) => {
+        acknowledge = done;
+      });
+    }
+    return call(method, params);
+  };
+  await h.chats.send(
+    v.id,
+    {
+      text: "run once",
+      delivery: "next",
+      runtimeId: v.runtimeId,
+      requestId: randomUUID(),
+    },
+    "test",
+    guard,
+  );
+  await until(() => started);
+  h.chats.close();
+  acknowledge();
+  const h2 = harness({ reservationDirectory: dir }),
+    v2 = await create(h2.chats, "codex", { resumeId: v.nativeId });
+  const item = v2.queue![0];
+  assert.match(item.error!, /미확인/);
+  assert.ok(!item.needsAuthorization);
+  await assert.rejects(
+    h2.chats.modifyQueue(
+      v2.id,
+      item.id,
+      { expectedText: item.text, runtimeId: v2.runtimeId, action: "authorize" },
+      guard,
+    ),
+    /전송 여부/,
+  );
+  await h2.chats.modifyQueue(
+    v2.id,
+    item.id,
+    { expectedText: item.text, runtimeId: v2.runtimeId, action: "remove" },
+    guard,
+  );
+  assert.equal(h2.calls.filter((c) => c.method === "turn/start").length, 0);
+  h2.chats.close();
+});
+
+test("quota-reset reservation waits for the explicit deadline and checks the same recovered account once",async t=>{
+ const startAt=1700000000000;t.mock.timers.enable({apis:["Date","setTimeout"],now:startAt});
+ const accountKey="a".repeat(64),expiry=startAt+10000;
+ const h=harness({reservationQuota:async(_h,_p,_m,fresh)=>({accountKey,notBefore:fresh?undefined:expiry})});
+ const view=await create(h.chats);
+ const input={delivery:"reset" as const,requestId:randomUUID(),runtimeId:view.runtimeId,text:"run after reset"};
+ await assert.rejects(h.chats.send(view.id,input,"test",guard),/초기화/);
+ assert.equal((await h.chats.resetWindow(view.id,guard)).notBefore,expiry);
+ await h.chats.send(view.id,input,"test",guard);
+ assert.equal(h.chats.snapshot(view.id).queue?.[0].notBefore,expiry);
+ t.mock.timers.tick(9999); await new Promise<void>(r=>setImmediate(r));
+ assert.equal(h.calls.filter(c=>c.method==="turn/start").length,0);
+ t.mock.timers.tick(1); await new Promise<void>(r=>setImmediate(r));
+ assert.equal(h.calls.filter(c=>c.method==="turn/start").length,1);
+ assert.equal(h.chats.snapshot(view.id).queue?.length,0);
+ h.chats.close();
+});
 test("fresh Codex chat starts at actual home and sends one structured turn without a terminal", async () => {
   const { chats, calls } = harness();
   const requestId = randomUUID();
@@ -364,6 +805,18 @@ test("Claude SDK streams a native answer, asks permission in IDE, and resumes it
         const session_id =
           invocation.options.sessionId || invocation.options.resume;
         assert.equal(prompt.message.role, "user");
+        if (invocations.length === 1)
+          assert.deepEqual(prompt.message.content, [
+            { type: "text", text: "Look" },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: imageFixture.split(",")[1],
+              },
+            },
+          ]);
         yield {
           type: "system",
           subtype: "init",
@@ -424,7 +877,17 @@ test("Claude SDK streams a native answer, asks permission in IDE, and resumes it
   });
   const view = await create(chats, "claude");
   assert.equal(invocations.length, 0, "creating a draft doesn't start a model");
-  await send(chats, view.id);
+  await chats.send(
+    view.id,
+    {
+      text: "Look",
+      images: [imageFixture],
+      runtimeId: view.runtimeId,
+      requestId: randomUUID(),
+    },
+    "desktop",
+    guard,
+  );
   await until(() => chats.snapshot(view.id).status === "waiting");
   const approval = chats.snapshot(view.id).approvals[0];
   await chats.answer(

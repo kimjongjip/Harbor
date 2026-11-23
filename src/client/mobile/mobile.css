@@ -292,6 +292,34 @@ summary {
   border: 2px solid var(--activity-color);
   background-color: color-mix(in srgb, var(--activity-color) 5%, white);
 }
+.session-card-entry {
+  position: relative;
+}
+.session-card-entry .session {
+  padding-right: 50px;
+}
+.session-card-entry .session-pin {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  color: #66758c;
+}
+.session-card-entry .session-pin[aria-pressed="true"],
+.session-attention-filter[aria-pressed="true"] {
+  color: #16428d;
+  background: #dceafa;
+  border-radius: 8px;
+}
+.session-attention-filter {
+  margin-top: 4px;
+}
 .session.selected {
   box-shadow: inset 3px 0 var(--activity-color);
 }

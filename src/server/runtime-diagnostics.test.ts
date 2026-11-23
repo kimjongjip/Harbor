@@ -1,9 +1,41 @@
 import test from "node:test";
+import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
+import { appendFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+
+test("on-demand memory report exports only numeric fields from current process samples", async () => {
+  const root = resolve(".cache/runtime-tests");
+  await mkdir(root, { recursive: true });
+  const dir = await mkdtemp(join(root, "report-"));
+  const runtime = startRuntimeDiagnostics(dir);
+  try {
+    await appendFile(
+      join(dir, "runtime-events.jsonl"),
+      JSON.stringify({
+        event: "sample",
+        at: Date.now(),
+        pid: process.pid,
+        rss: 12345,
+        heapUsed: 123,
+        private: "PRIVATE_SESSION_DATA",
+      }) + "\n",
+    );
+    const snapshot = runtime.snapshot();
+    assert.ok(snapshot.samples.some((s) => s.rss === 12345));
+    assert.ok(snapshot.rss > 0);
+    assert.equal(
+      JSON.stringify(snapshot).includes("PRIVATE_SESSION_DATA"),
+      false,
+    );
+  } finally {
+    runtime.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("fatal diagnostics retain numeric memory and exit evidence without swallowing failure or logging private error text", async () => {
   const root = resolve(".cache/runtime-tests");

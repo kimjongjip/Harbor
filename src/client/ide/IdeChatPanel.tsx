@@ -3,6 +3,7 @@ import {
   memo,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -20,6 +21,7 @@ import {
   X,
   FileCode2,
   FolderOpen,
+  ImagePlus,
   TerminalSquare,
 } from "lucide-react";
 import type { Approval, MessageItem, TerminalInfo } from "../../shared/types";
@@ -34,11 +36,23 @@ import type {
   IdeChatSend,
 } from "../../shared/ide-chat";
 import type { IdeSelection } from "./types";
-import { apiHeaders } from "../api";
+import { api, apiHeaders } from "../api";
+import { LabQuestions } from "../LabQuestions";
+import { Modal } from "../Dialogs";
+import { workspaceRequest } from "./workspace-request";
+import { remoteDesktop } from "../desktop-session";
+import { WorkspaceControl } from "./WorkspaceControl";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
-import { userMessageView, userOriginLabel } from "../user-origin";
+import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
+import { WorktreeReview } from "./WorktreeReview";
+import { readDraft, saveDraft } from "../mobile/draft-storage";
 import "./chat.css";
+import {
+  ImageAttachments,
+  readImages,
+  type AttachedImage,
+} from "../ImageAttachments";
 
 export type IdeChatRequest = (
   path: string,
@@ -62,6 +76,8 @@ type RenderChatMarkdown = (
   location: { hostId: string; cwd: string },
 ) => ReactNode;
 interface ChatDraft {
+  images?: AttachedImage[];
+  readingImages?: boolean;
   key: string;
   hostId: string;
   provider: IdeChatProvider;
@@ -74,6 +90,11 @@ interface ChatDraft {
   createAttempt?: IdeChatCreate;
   attempt?: IdeChatSend;
   sending: boolean;
+  parentKey?: string;
+  displacedKey?: string;
+  reviewOnly?: boolean;
+  effort?: IdeChatCreate["effort"];
+  historyIndex?: number;
   loadingOlder?: boolean;
   stopping?: boolean;
   error?: string;
@@ -292,18 +313,24 @@ function ApprovalCard({
 }
 
 export default function IdeChatPanel({
+  serverWorkspace = false,
+  mobileWorkspace = false,
   antigravityIntegration,
   hostId: suppliedHostId,
   hostName,
   terminal,
   active,
-  request = localRequest,
+  request: suppliedRequest = localRequest,
+  rememberScope,
   renderMarkdown,
   attachment,
   onAttachmentConsumed,
   onFocusTerminal,
   onShowTerminal,
+  labRequest = api,
 }: {
+  serverWorkspace?: boolean;
+  mobileWorkspace?: boolean;
   antigravityIntegration?: boolean;
   hostId?: string;
   hostName?: string;
@@ -311,37 +338,71 @@ export default function IdeChatPanel({
   active: boolean;
   onFocusTerminal?: (id: string) => void;
   onShowTerminal?: () => void;
+  labRequest?: <T>(path: string, body?: unknown, method?: string) => Promise<T>;
   request?: IdeChatRequest;
+  rememberScope?: string;
   renderMarkdown?: RenderChatMarkdown;
   attachment?: IdeChatAttachment;
   onAttachmentConsumed?: (id: string) => void;
 }) {
   const hostId = suppliedHostId || terminal?.hostId || "";
-  const [provider, setProvider] = useState<IdeChatProvider>("codex"),
+  const useWorkspace = serverWorkspace && !terminal;
+  const hasGemini =
+    useWorkspace || (antigravityIntegration && hostId === "local");
+  const request = useMemo(
+    () =>
+      useWorkspace
+        ? workspaceRequest(hostId, mobileWorkspace)
+        : suppliedRequest,
+    [useWorkspace, hostId, mobileWorkspace, suppliedRequest],
+  );
+  const remembered = () => (useWorkspace ? localStorage : sessionStorage);
+  const [provider, setProvider] = useState<IdeChatProvider>(() => {
+      if (rememberScope)
+        try {
+          const saved = remembered().getItem(
+            "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
+          );
+          if (saved === "claude" || (saved === "antigravity" && hasGemini))
+            return saved;
+        } catch {}
+      return "codex";
+    }),
     [, update] = useState(0);
   const [historyRetry, retryHistory] = useState(0);
   const entries = useRef(new Map<string, ChatDraft>()),
     selectedByScope = useRef(new Map<string, string>()),
     mounted = useRef(true);
-  const scope = `${hostId}:${provider}`;
-  function fresh(): ChatDraft {
+  const scopeHost = `${useWorkspace ? "durable" : "direct"}:${hostId}`;
+  const scope = `${scopeHost}:${provider}`;
+  useEffect(() => {
+    if (provider === "antigravity" && !hasGemini) setProvider("codex");
+  }, [provider, hasGemini]);
+  function draftKey(p: IdeChatProvider, nativeId?: string) {
+    return JSON.stringify(["chat", scopeHost, p, nativeId || "new"]);
+  }
+  function fresh(destination = provider, restoreDraft = false): ChatDraft {
     const key = crypto.randomUUID();
     const value: ChatDraft = {
       key,
       hostId,
-      provider,
-      draft: "",
+      provider: destination,
+      draft:
+        rememberScope && restoreDraft
+          ? readDraft(rememberScope, draftKey(destination))
+          : "",
       cwd: "",
       model: "",
       createRequestId: crypto.randomUUID(),
       sending: false,
     };
     entries.current.set(key, value);
-    selectedByScope.current.set(scope, key);
+    selectedByScope.current.set(`${scopeHost}:${destination}`, key);
     return value;
   }
   const view =
-    entries.current.get(selectedByScope.current.get(scope) || "") || fresh();
+    entries.current.get(selectedByScope.current.get(scope) || "") ||
+    fresh(provider, true);
   const selected = useRef(view.key);
   selected.current = view.key;
   const repaint = () => {
@@ -389,6 +450,79 @@ export default function IdeChatPanel({
   const scroll = useRef<HTMLDivElement>(null),
     following = useRef(true),
     prepend = useRef<{ height: number; top: number } | undefined>(undefined);
+  const restored = useRef(new Set<string>());
+  useEffect(() => {
+    if (!rememberScope || !hostId || !active) return;
+    const target = view;
+    const key = [
+      "harbor.chat",
+      useWorkspace ? "server" : rememberScope,
+      hostId,
+      provider,
+    ].join(".");
+    try {
+      remembered().setItem(
+        "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
+        provider,
+      );
+      if (target.conversation) {
+        remembered().setItem(key, target.conversation.id);
+        remembered().setItem(key + ".native", target.conversation.nativeId);
+        return;
+      }
+      if (restored.current.has(key)) return;
+      const saved = remembered().getItem(key);
+      if (!saved) {
+        restored.current.add(key);
+        return;
+      }
+      const controller = new AbortController();
+      void call<IdeChatConversation>(
+        "/conversations/" + encodeURIComponent(saved),
+        undefined,
+        controller.signal,
+      )
+        .then((c) => {
+          if (
+            !controller.signal.aborted &&
+            !target.draft &&
+            !target.images?.length &&
+            !target.readingImages &&
+            !target.conversation &&
+            !target.sending
+          )
+            accept(target, c);
+        })
+        .catch(() => {
+          if (
+            !controller.signal.aborted &&
+            !target.conversation &&
+            !target.sending
+          ) {
+            target.historyRetryId =
+              remembered().getItem(key + ".native") || undefined;
+            if (target.historyRetryId) {
+              target.historyPaused = true;
+              target.notice =
+                "서버 연결이 바뀌었습니다. 기록 다시 불러오기로 같은 대화를 확인하세요.";
+              repaint();
+            }
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) restored.current.add(key);
+        });
+      return () => controller.abort();
+    } catch {}
+  }, [
+    rememberScope,
+    hostId,
+    provider,
+    useWorkspace,
+    active,
+    view.key,
+    view.conversation?.id,
+  ]);
   const consumed = useRef(new Set<string>());
   useEffect(() => {
     mounted.current = true;
@@ -428,6 +562,7 @@ export default function IdeChatPanel({
     body?: unknown,
     signal?: AbortSignal,
     terminalId?: string,
+    cacheVersion?: string,
   ): Promise<T> {
     const response = await request(path, {
       ...(body === undefined
@@ -440,6 +575,9 @@ export default function IdeChatPanel({
             },
             body: JSON.stringify(body),
           }),
+      ...(cacheVersion
+        ? { headers: { "X-Harbor-Chat-Revision": cacheVersion } }
+        : {}),
       signal: signal || AbortSignal.timeout(45000),
     });
     const value = await response.json();
@@ -474,6 +612,11 @@ export default function IdeChatPanel({
           : target.conversation?.items || [],
       };
     }
+    if (rememberScope && !target.conversation && !target.draft)
+      target.draft = readDraft(
+        rememberScope,
+        draftKey(conversation.provider, conversation.nativeId),
+      );
     target.conversation = conversation;
     target.connectionError = undefined;
     repaint();
@@ -487,12 +630,17 @@ export default function IdeChatPanel({
     const controller = new AbortController();
     async function poll() {
       try {
-        const value = await call<IdeChatConversation>(
+        const cached = target.conversation;
+        const value = await call<IdeChatConversation | { unchanged: true }>(
           `/conversations/${encodeURIComponent(id)}`,
           undefined,
           AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
+          undefined,
+          cached && cached.contentRevision !== undefined
+            ? cached.runtimeId + ":" + cached.contentRevision
+            : undefined,
         );
-        if (live) accept(target, value);
+        if (live && !("unchanged" in value)) accept(target, value);
       } catch (error) {
         if (live) {
           if (isLegacyClaudeHistoryLimit(error)) {
@@ -636,7 +784,11 @@ export default function IdeChatPanel({
         (!expectedTerminalKey ||
           terminalBinding.current === expectedTerminalKey) &&
         (!automatic ||
-          (!view.draft && !view.attachment && selected.current === view.key))
+          (!view.draft &&
+            !view.images?.length &&
+            !view.readingImages &&
+            !view.attachment &&
+            selected.current === view.key))
       ) {
         selectedByScope.current.set(capturedScope, target.key);
         setHistoryOpen(false);
@@ -698,7 +850,7 @@ export default function IdeChatPanel({
     )
       return;
     automaticAttachments.current.add(currentTerminalKey);
-    const targetScope = `${hostId}:${currentTerminal.agentKind}`;
+    const targetScope = `${scopeHost}:${currentTerminal.agentKind}`;
     const retained = entries.current.get(
       selectedByScope.current.get(targetScope) || "",
     );
@@ -707,11 +859,15 @@ export default function IdeChatPanel({
       freshScopes.current.has(scope) ||
       view.conversation ||
       view.draft ||
+      view.images?.length ||
+      view.readingImages ||
       view.attachment ||
       view.sending ||
       (retained &&
         (retained.conversation ||
           retained.draft ||
+          retained.images?.length ||
+          retained.readingImages ||
           retained.attachment ||
           retained.sending))
     )
@@ -763,20 +919,58 @@ export default function IdeChatPanel({
       repaint();
     }
   }
-  async function send() {
+  const imageFile = useRef<HTMLInputElement>(null);
+  const directImages = provider !== "antigravity" && !view.conversation?.live;
+  const hasContent = Boolean(view.draft.trim() || view.images?.length);
+  async function attachImages(files: File[]) {
+    const target = view;
+    if (
+      !directImages ||
+      !files.length ||
+      target.readingImages ||
+      target.sending
+    )
+      return;
+    target.readingImages = true;
+    target.error = undefined;
+    repaint();
+    try {
+      target.images = [
+        ...(target.images || []),
+        ...(await readImages(files, target.images || [])),
+      ];
+    } catch (e) {
+      target.error = (e as Error).message;
+    } finally {
+      target.readingImages = false;
+      repaint();
+    }
+  }
+  async function send(delivery?: IdeChatSend["delivery"]) {
     const target = view;
     if (
       !hostId ||
-      !target.draft.trim() ||
+      !hasContent ||
+      target.readingImages ||
       target.sending ||
       target.conversation?.live?.canSend === false ||
-      (!target.conversation?.live &&
+      (!delivery &&
+        !target.conversation?.live &&
         ["running", "waiting"].includes(target.conversation?.status || ""))
     )
       return;
     const draft = target.draft,
       selection = target.attachment,
-      text = selectionPrompt(draft, selection);
+      text = selectionPrompt(draft, selection),
+      attached = target.images,
+      images = attached?.map((image) => image.url);
+    if (images?.length && (!directImages || delivery === "next" || delivery==="reset")) {
+      target.error = directImages
+        ? "이미지는 답변 완료 후 보내거나 현재 Codex 턴에 반영해 주세요."
+        : "연결된 터미널에서 파일 첨부를 사용하세요.";
+      repaint();
+      return;
+    }
     if (text.length > 32000) {
       target.error =
         "선택한 코드와 질문이 너무 깁니다. 선택 범위를 줄여주세요.";
@@ -794,7 +988,8 @@ export default function IdeChatPanel({
         if (
           target.createAttempt &&
           (target.createAttempt.cwd !== cwd ||
-            target.createAttempt.model !== model)
+            target.createAttempt.model !== model ||
+            target.createAttempt.effort !== target.effort)
         )
           target.createRequestId = crypto.randomUUID();
         target.createAttempt = {
@@ -803,6 +998,8 @@ export default function IdeChatPanel({
           requestId: target.createRequestId,
           ...(cwd ? { cwd } : {}),
           ...(model ? { model } : {}),
+          ...(target.effort ? { effort: target.effort } : {}),
+          ...(target.reviewOnly ? { reviewOnly: true } : {}),
         };
         accept(
           target,
@@ -815,12 +1012,18 @@ export default function IdeChatPanel({
       const conversation = target.conversation!;
       const input: IdeChatSend =
         target.attempt?.text === text &&
+        target.attempt.delivery === delivery &&
+        (target.attempt.images?.length || 0) === (images?.length || 0) &&
+        (!images ||
+          images.every((url, i) => url === target.attempt?.images?.[i])) &&
         target.attempt.runtimeId === conversation.runtimeId
           ? target.attempt
           : {
               runtimeId: conversation.runtimeId,
               requestId: crypto.randomUUID(),
               text,
+              ...(images?.length ? { images } : {}),
+              ...(delivery ? { delivery } : {}),
             };
       target.attempt = input;
       const receipt = await call<IdeChatReceipt>(
@@ -833,12 +1036,34 @@ export default function IdeChatPanel({
         target.notice =
           "전송 확인이 지연되고 있습니다. 대화 갱신을 기다려주세요. 같은 내용의 재시도는 중복 전송되지 않습니다.";
       else {
-        if (target.draft === draft) target.draft = "";
+        if (target.draft === draft) {
+          if (rememberScope) {
+            saveDraft(
+              rememberScope,
+              draftKey(target.provider, conversation.nativeId),
+              undefined,
+              "",
+            );
+            if (target.createAttempt)
+              saveDraft(
+                rememberScope,
+                draftKey(target.provider),
+                undefined,
+                "",
+              );
+          }
+          target.draft = "";
+          target.historyIndex = undefined;
+        }
         if (target.attachment === selection) target.attachment = undefined;
+        if (target.images === attached) target.images = undefined;
         target.attempt = undefined;
         if (selected.current === target.key) following.current = true;
         if (receipt.status === "queued")
-          target.notice = "열린 대화에 전달했습니다. AI가 순서대로 처리합니다.";
+          target.notice =
+            delivery === "reset" ? "한도 초기화 후 전송으로 예약했습니다." : delivery === "next"
+              ? "다음 턴으로 예약했습니다."
+              : "열린 대화에 전달했습니다. AI가 순서대로 처리합니다.";
       }
       accept(
         target,
@@ -907,6 +1132,122 @@ export default function IdeChatPanel({
     label = agentLabel(provider),
     running = conversation?.status === "running",
     live = conversation?.live;
+  const [resetOffer,setResetOffer]=useState<{id:string;time:number}>();
+  const resetChat=active && conversation && !conversation.live && conversation.provider!=="antigravity" &&
+    (view.draft.trim() || conversation.status==="error") ? conversation.id : undefined;
+  useEffect(()=>{
+    if(!resetChat)return;
+    let cancelled=false;
+    const controller=new AbortController();
+    const refresh=async()=>{
+      try{
+        const response=await request("/conversations/"+encodeURIComponent(resetChat)+"/rate-reset",{signal:controller.signal});
+        if(!response.ok)throw Error("unavailable");
+        const value=await response.json();
+        if(!cancelled)setResetOffer(Number.isSafeInteger(value.notBefore)&&value.notBefore>Date.now()?{id:resetChat,time:value.notBefore}:undefined);
+      }catch{if(!cancelled)setResetOffer(undefined);}
+    };
+    void refresh();
+    const timer=setInterval(()=>{if(document.visibilityState!=="hidden")void refresh();},120000);
+    return ()=>{cancelled=true;controller.abort();clearInterval(timer);};
+  },[resetChat,request]);
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [labQuote, setLabQuote] = useState<{
+    text: string;
+    sessionId: string;
+  } | null>(null);
+  function selectedPassage() {
+    const selection = scroll.current?.ownerDocument.getSelection();
+    return selection?.anchorNode &&
+      selection.focusNode &&
+      scroll.current?.contains(selection.anchorNode) &&
+      scroll.current.contains(selection.focusNode)
+      ? selection.toString().trim()
+      : "";
+  }
+  function startRelated(destination: IdeChatProvider, review: boolean) {
+    if (!conversation) return;
+    const quote = selectedPassage();
+    const messages = conversation.items.filter(
+      (item) =>
+        typedPrompt(item) ||
+        (item.kind === "assistant" && item.status !== "inProgress"),
+    );
+    const context =
+      quote ||
+      [messages[0], ...messages.slice(-6)]
+        .filter((item, i, all) => item && all.indexOf(item) === i)
+        .map(
+          (item) =>
+            (item.kind === "user" ? "사용자" : label) +
+            ": " +
+            displayMessage(item).text.slice(0, 2400),
+        )
+        .join("\n\n");
+    const displaced = selectedByScope.current.get(
+      scopeHost + ":" + destination,
+    );
+    const child = fresh(destination);
+    child.displacedKey = displaced;
+    child.cwd = conversation.cwd;
+    child.reviewOnly = review;
+    child.parentKey = view.key;
+    child.draft =
+      (review ? "선택한 내용에 대한 질문: " : "이어갈 작업: ") +
+      "\n\n[참고 기록 · " +
+      conversation.title +
+      " · " +
+      conversation.nativeId +
+      "]\n" +
+      context.slice(0, 20000);
+    freshScopes.current.add(scopeHost + ":" + destination);
+    setProvider(destination);
+    setHandoffOpen(false);
+    setHistoryOpen(false);
+    repaint();
+  }
+  function backToParent(copyAnswer: boolean) {
+    const parent = view.parentKey && entries.current.get(view.parentKey);
+    if (!parent || parent.hostId !== hostId) return;
+    const result =
+      copyAnswer &&
+      conversation?.items.filter((i) => i.kind === "assistant").at(-1)?.text;
+    if (result)
+      parent.draft = [parent.draft, result].filter(Boolean).join("\n\n");
+    if (view.displacedKey && view.provider !== parent.provider)
+      selectedByScope.current.set(
+        scopeHost + ":" + view.provider,
+        view.displacedKey,
+      );
+    selectedByScope.current.set(scopeHost + ":" + parent.provider, parent.key);
+    setProvider(parent.provider);
+    setHandoffOpen(false);
+    repaint();
+  }
+  async function changeReservation(
+    entry: NonNullable<IdeChatConversation["queue"]>[number],
+    action: "edit" | "up" | "remove" | "authorize",
+    text?: string,
+  ) {
+    if (!conversation) return;
+    try {
+      accept(
+        view,
+        await call<IdeChatConversation>(
+          `/conversations/${encodeURIComponent(conversation.id)}/queue/${entry.id}`,
+          {
+            runtimeId: conversation.runtimeId,
+            expectedText: entry.text,
+            action,
+            text,
+          },
+        ),
+      );
+    } catch (error) {
+      view.error = (error as Error).message;
+      repaint();
+    }
+  }
   function showLiveTerminal() {
     if (!live?.terminalId) return;
     onShowTerminal?.();
@@ -914,6 +1255,16 @@ export default function IdeChatPanel({
   }
   return (
     <section className="ide-chat" aria-label="IDE AI 대화">
+      {active &&
+        useWorkspace &&
+        (mobileWorkspace || remoteDesktop) &&
+        conversation?.live && (
+          <WorkspaceControl
+            key={conversation.id}
+            chat={conversation}
+            mobile={mobileWorkspace}
+          />
+        )}
       <header>
         <select
           aria-label="AI 제공자"
@@ -924,9 +1275,7 @@ export default function IdeChatPanel({
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
-          {antigravityIntegration && hostId === "local" && (
-            <option value="antigravity">Antigravity</option>
-          )}
+          {hasGemini && <option value="antigravity">Antigravity</option>}
         </select>
         <span className="ide-chat-host" title={hostName}>
           {hostName || "서버 선택"}
@@ -952,8 +1301,21 @@ export default function IdeChatPanel({
             setResuming("");
             freshScopes.current.add(scope);
             if (currentTerminal)
-              freshScopes.current.add(`${hostId}:${currentTerminal.agentKind}`);
+              freshScopes.current.add(
+                `${scopeHost}:${currentTerminal.agentKind}`,
+              );
             fresh();
+            if (rememberScope)
+              try {
+                remembered().removeItem(
+                  [
+                    "harbor.chat",
+                    useWorkspace ? "server" : rememberScope,
+                    hostId,
+                    provider,
+                  ].join("."),
+                );
+              } catch {}
             setHistoryOpen(false);
             following.current = true;
             repaint();
@@ -962,6 +1324,94 @@ export default function IdeChatPanel({
           <Plus size={17} />
         </button>
       </header>
+      {(conversation || view.parentKey) && (
+        <div className="chat-actions">
+          {view.parentKey && (
+            <button onClick={() => backToParent(false)}>원래 대화</button>
+          )}
+          {view.parentKey &&
+            conversation?.items.some((i) => i.kind === "assistant") && (
+              <button onClick={() => backToParent(true)}>
+                답을 원래 초안에 담기
+              </button>
+            )}
+          {conversation && (
+            <button
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() =>
+                startRelated(
+                  provider === "antigravity" ? "codex" : provider,
+                  true,
+                )
+              }
+            >
+              {provider === "antigravity" ? "Codex 옆 대화" : "옆 대화"}
+            </button>
+          )}
+          {conversation && (
+            <button
+              aria-expanded={handoffOpen}
+              onClick={() => setHandoffOpen(!handoffOpen)}
+            >
+              작업 인계
+            </button>
+          )}
+          {conversation && (
+            <button
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const text =
+                  selectedPassage() ||
+                  conversation.items
+                    .filter((i) => i.kind === "assistant")
+                    .at(-1)?.text ||
+                  "";
+                if (text.length > 24000) {
+                  view.error = "공유할 부분을 24,000자 이내로 선택하세요.";
+                  repaint();
+                  return;
+                }
+                setLabQuote({ text, sessionId: conversation.id });
+              }}
+            >
+              연구실에서 묻기
+            </button>
+          )}
+          {conversation && labQuote?.sessionId === conversation.id && (
+            <Modal
+              title="연구실에서 묻기"
+              backdropClassName={mobileWorkspace ? "mobile-lab-modal" : ""}
+              wide
+              onClose={() => setLabQuote(null)}
+            >
+              <LabQuestions
+                hosts={[
+                  {
+                    id: hostId,
+                    name: hostName || hostId,
+                    serverWorkspace: useWorkspace,
+                  },
+                ]}
+                hostId={hostId}
+                debate={false}
+                request={labRequest}
+                initialMaterial={labQuote.text}
+                RenderAnswer={Markdown}
+              />
+            </Modal>
+          )}
+          {handoffOpen &&
+            (["codex", "claude", "antigravity"] as const)
+              .filter(
+                (p) => p !== provider && (p !== "antigravity" || hasGemini),
+              )
+              .map((p) => (
+                <button key={p} onClick={() => startRelated(p, false)}>
+                  {agentLabel(p)}로 인계
+                </button>
+              ))}
+        </div>
+      )}
       {currentTerminal && (
         <div className="ide-chat-current-terminal">
           <button
@@ -975,7 +1425,7 @@ export default function IdeChatPanel({
             }
             onClick={() => {
               freshScopes.current.delete(
-                `${hostId}:${currentTerminal.agentKind}`,
+                `${scopeHost}:${currentTerminal.agentKind}`,
               );
               setProvider(currentTerminal.agentKind!);
               setTerminalIntent({
@@ -996,6 +1446,31 @@ export default function IdeChatPanel({
       )}
       <div className="ide-chat-conversation-title">
         <strong>{conversation?.title || "새 대화"}</strong>
+        {conversation?.peerEnabled !== undefined && (
+          <button
+            type="button"
+            aria-pressed={conversation.peerEnabled}
+            onClick={async () => {
+              const target = view;
+              try {
+                const next = await call<IdeChatConversation>(
+                  `/conversations/${encodeURIComponent(conversation.id)}/collaboration`,
+                  {
+                    runtimeId: conversation.runtimeId,
+                    enabled: !conversation.peerEnabled,
+                  },
+                );
+                accept(target, next);
+                repaint();
+              } catch (e) {
+                target.error = (e as Error).message;
+                repaint();
+              }
+            }}
+          >
+            {conversation.peerEnabled ? "세션 협업 끄기" : "세션 협업 켜기"}
+          </button>
+        )}
         <span>
           {running
             ? "작업 중"
@@ -1116,6 +1591,15 @@ export default function IdeChatPanel({
             renderMarkdown={renderMarkdown}
           />
         ))}
+        {conversation && !conversation.reviewOnly && (
+          <WorktreeReview
+            key={conversation.id}
+            id={conversation.id}
+            runtimeId={conversation.runtimeId}
+            terminalId={conversation.live?.terminalId}
+            request={request}
+          />
+        )}
         {running && (
           <div className="ide-chat-progress">
             <LoaderCircle size={14} className="ide-spinner" />
@@ -1172,13 +1656,75 @@ export default function IdeChatPanel({
           기록 다시 불러오기
         </button>
       )}
+      {!!conversation?.queue?.length && (
+        <ol className="chat-reservations" aria-label="다음 턴 예약">
+          {conversation.queue.map((entry, i) => (
+            <li key={entry.id}>
+              <form
+                key={entry.text}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void changeReservation(
+                    entry,
+                    "edit",
+                    String(
+                      new FormData(event.currentTarget).get("message") ?? "",
+                    ),
+                  );
+                }}
+              >
+                <input
+                  aria-label="예약 메시지"
+                  name="message"
+                  defaultValue={entry.text}
+                  required
+                  disabled={!!entry.error}
+                />
+                <button disabled={!!entry.error}>저장</button>
+              </form>
+              <button
+                disabled={!i}
+                onClick={() => void changeReservation(entry, "up")}
+              >
+                위로
+              </button>
+              <button onClick={() => void changeReservation(entry, "remove")}>
+                취소
+              </button>
+              {entry.notBefore && <small>{new Date(entry.notBefore).toLocaleString("ko-KR")} 이후 전송</small>}
+              {entry.needsAuthorization && (
+                <button
+                  onClick={() => void changeReservation(entry, "authorize")}
+                >
+                  예약 다시 승인
+                </button>
+              )}
+              {entry.error && <small role="alert">{entry.error}</small>}
+            </li>
+          ))}
+        </ol>
+      )}
       <form
         className="ide-chat-compose"
         onSubmit={(event) => {
           event.preventDefault();
-          void send();
+          void send(
+            (running || conversation?.status === "waiting") && !live
+              ? "next"
+              : undefined,
+          );
         }}
       >
+        {!!view.images?.length && (
+          <ImageAttachments
+            images={view.images}
+            disabled={view.sending || !!view.readingImages}
+            onRemove={(id) => {
+              view.images = view.images?.filter((image) => image.id !== id);
+              repaint();
+            }}
+          />
+        )}
         {view.attachment && (
           <div className="ide-chat-attachment">
             <FileCode2 size={14} />
@@ -1201,6 +1747,16 @@ export default function IdeChatPanel({
         )}
         <textarea
           aria-label="AI에게 보낼 메시지"
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files);
+            if (!files.length) return;
+            e.preventDefault();
+            if (directImages) void attachImages(files);
+            else {
+              view.error = "열린 터미널의 파일 첨부를 사용하세요.";
+              repaint();
+            }
+          }}
           placeholder={
             live?.canSend === false
               ? "이 대화의 입력은 열린 터미널에서 계속하세요."
@@ -1211,6 +1767,14 @@ export default function IdeChatPanel({
           disabled={!hostId || live?.canSend === false}
           onChange={(event) => {
             view.draft = event.target.value;
+            if (rememberScope)
+              saveDraft(
+                rememberScope,
+                draftKey(provider, conversation?.nativeId),
+                undefined,
+                view.draft,
+              );
+            view.historyIndex = undefined;
             if (!following.current && scroll.current) {
               following.current = true;
               setBottom(true);
@@ -1220,17 +1784,74 @@ export default function IdeChatPanel({
           }}
           onKeyDown={(event) => {
             if (
+              !event.nativeEvent.isComposing &&
+              !event.shiftKey &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+              (!view.draft || view.historyIndex !== undefined)
+            ) {
+              const prompts =
+                conversation?.items
+                  .filter(typedPrompt)
+                  .map((item) => displayMessage(item).text)
+                  .reverse() || [];
+              const index =
+                (view.historyIndex ?? -1) + (event.key === "ArrowUp" ? 1 : -1);
+              if (index >= -1 && index < prompts.length && prompts.length) {
+                event.preventDefault();
+                view.historyIndex = index < 0 ? undefined : index;
+                view.draft = prompts[index] || "";
+                repaint();
+              }
+              return;
+            }
+            if (
               event.key === "Enter" &&
               !event.shiftKey &&
               !event.nativeEvent.isComposing &&
               event.nativeEvent.keyCode !== 229
             ) {
               event.preventDefault();
-              void send();
+              void send(
+                (running || conversation?.status === "waiting") && !live
+                  ? "next"
+                  : undefined,
+              );
             }
           }}
         />
         <div>
+          <button
+            type="button"
+            aria-label="이미지 첨부"
+            title={directImages ? "이미지 첨부" : "터미널에서 파일 첨부"}
+            disabled={!hostId || view.sending || view.readingImages}
+            onClick={() => {
+              if (directImages) imageFile.current?.click();
+              else {
+                view.notice = "열린 터미널의 파일 첨부를 사용하세요.";
+                repaint();
+                showLiveTerminal();
+              }
+            }}
+          >
+            <ImagePlus size={15} />
+          </button>
+          <input
+            hidden
+            ref={imageFile}
+            type="file"
+            multiple
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            aria-label="첨부 이미지 파일"
+            onChange={(e) => {
+              const files = Array.from(e.target.files || []);
+              e.target.value = "";
+              void attachImages(files);
+            }}
+          />
           <button
             type="button"
             aria-label="대화 작업 폴더 설정"
@@ -1245,6 +1866,36 @@ export default function IdeChatPanel({
               ? "입력·승인은 열린 터미널에서"
               : "Enter 전송 · Shift+Enter 줄바꿈"}
           </small>
+          {!!resetChat && resetOffer?.id===resetChat && resetOffer.time>Date.now() && <button type="button" title={new Date(resetOffer.time).toLocaleString("ko-KR")} disabled={!view.draft.trim() || !!view.images?.length || view.sending || view.readingImages} onClick={()=>void send("reset")}>한도 초기화 후 보내기</button>}
+          {(running || conversation?.status === "waiting") && !live && (
+            <>
+              {running && provider === "codex" && (
+                <button
+                  type="button"
+                  disabled={!hasContent || view.readingImages || view.sending}
+                  onClick={() => void send("steer")}
+                >
+                  지금 반영
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={
+                  !view.draft.trim() ||
+                  !!view.images?.length ||
+                  view.readingImages ||
+                  view.sending
+                }
+                title={
+                  view.images?.length
+                    ? "이미지는 다음 턴에 예약할 수 없습니다."
+                    : undefined
+                }
+              >
+                다음 턴 예약
+              </button>
+            </>
+          )}
           {(running || conversation?.status === "waiting") &&
           live?.canInterrupt !== false ? (
             <button
@@ -1261,7 +1912,8 @@ export default function IdeChatPanel({
               aria-label="AI 메시지 전송"
               disabled={
                 !hostId ||
-                !view.draft.trim() ||
+                !hasContent ||
+                view.readingImages ||
                 view.sending ||
                 live?.canSend === false
               }
@@ -1276,6 +1928,26 @@ export default function IdeChatPanel({
         </div>
         {folderOpen && (
           <div className="ide-chat-options">
+            {provider !== "antigravity" && (
+              <label>
+                추론 강도
+                <select
+                  aria-label="추론 강도"
+                  value={conversation?.effort || view.effort || ""}
+                  disabled={!!conversation || view.sending}
+                  onChange={(e) => {
+                    view.effort =
+                      (e.target.value as IdeChatCreate["effort"]) || undefined;
+                    repaint();
+                  }}
+                >
+                  <option value="">모델 기본값</option>
+                  {["low", "medium", "high", "xhigh"].map((v) => (
+                    <option key={v}>{v}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
               작업 폴더
               <input

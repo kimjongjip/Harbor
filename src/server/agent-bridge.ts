@@ -150,6 +150,17 @@ const tools = [
           description:
             "Session id or unique session name from harbor_sessions.",
         },
+        requestKey: {
+          type: "string",
+          maxLength: 128,
+          description:
+            "Reuse this operation key when retrying the same question.",
+        },
+        followUpTo: {
+          type: "string",
+          description:
+            "ID of a message received from this exact peer to continue its thread.",
+        },
         question: {
           type: "string",
           minLength: 1,
@@ -208,6 +219,11 @@ const tools = [
           description: "Session id from harbor_sessions, or its unique name.",
         },
         text: { type: "string", minLength: 1, maxLength: MAILBOX_TEXT_LIMIT },
+        requestKey: {
+          type: "string",
+          maxLength: 128,
+          description: "Reuse on a retry of the same operation.",
+        },
       },
       required: ["to", "text"],
       additionalProperties: false,
@@ -1435,6 +1451,8 @@ export class AgentBridge {
               .object({
                 to: referenceSchema,
                 question: textSchema,
+                requestKey: z.string().trim().min(1).max(128).optional(),
+                followUpTo: referenceSchema.optional(),
                 waitMs: z.number().int().min(0).max(50000).default(50000),
               })
               .strict()
@@ -1458,6 +1476,7 @@ export class AgentBridge {
               labId
                 ? this.options.research?.()?.get(labId).revision
                 : undefined,
+              { requestKey: input.requestKey, followUpTo: input.followUpTo },
             ).id;
             waitMs = input.waitMs;
           } else {
@@ -1586,6 +1605,11 @@ export class AgentBridge {
                     : ["codex", "resume"].includes(terminal.program || "")
                       ? "codex"
                       : "shell"),
+                collaborationPaused: this.mailbox.isPaused(
+                  terminal.id,
+                  this.peers.runtime(terminal.id)?.sessionId ||
+                    terminal.agentSessionId,
+                ),
                 ...this.status(terminal.id),
               })),
           };
@@ -1593,7 +1617,11 @@ export class AgentBridge {
         }
         case "harbor_send": {
           const input = z
-            .object({ to: referenceSchema, text: textSchema })
+            .object({
+              to: referenceSchema,
+              text: textSchema,
+              requestKey: z.string().trim().min(1).max(128).optional(),
+            })
             .strict()
             .parse(args);
           this.checkSendRate(credential);
@@ -1613,6 +1641,8 @@ export class AgentBridge {
               input.text,
               undefined,
               labId,
+              undefined,
+              { requestKey: input.requestKey },
             ),
             runtime: this.peers.runtime(recipient.id),
             note: "Queued, not confirmed read. Automatic delivery requires a live bound native runtime; poll-only peers must call harbor_inbox. No user draft or terminal input was submitted.",

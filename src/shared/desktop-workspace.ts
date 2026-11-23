@@ -12,7 +12,7 @@ export const desktopPreferenceKeys = [
 export interface DesktopWorkspace {
   activeId: string;
   page: "hosts" | "terminals" | "files";
-  workspaceView: "terminal" | "ide";
+  workspaceView: "terminal" | "ide" | "chat";
   sidebar: "servers" | "files" | "activity" | "research";
   sidebarVisible: boolean;
   preferences: Partial<Record<(typeof desktopPreferenceKeys)[number], string>>;

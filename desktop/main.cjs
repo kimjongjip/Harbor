@@ -768,6 +768,15 @@ function setupTerminalWindows() {
     trustedWindow(event);
     return updater.restart();
   });
+  ipcMain.handle("harbor:process-metrics", (event) => {
+    trustedWindow(event);
+    return app.getAppMetrics().map((m) => ({
+      pid: m.pid,
+      type: m.type,
+      workingSetBytes: m.memory.workingSetSize * 1024,
+      cpuPercent: m.cpu.percentCPUUsage,
+    }));
+  });
   ipcMain.handle("harbor:backend-state", (event) => {
     trustedWindow(event);
     return backendSupervisor.status;
@@ -782,6 +791,17 @@ function setupTerminalWindows() {
       throw new Error("Invalid clipboard text");
     clipboard.writeText(text);
     return true;
+  });
+  ipcMain.handle("harbor:capture-current-window", async (event) => {
+    const win = trustedWindow(event);
+    if (!win.isVisible() || !win.isFocused())
+      throw Error("캡처할 Harbor 창을 선택하세요.");
+    const image = await win.webContents.capturePage();
+    if (image.isEmpty()) throw Error("창 이미지를 읽을 수 없습니다.");
+    const png = image.toPNG();
+    if (png.length > 12 * 1024 * 1024)
+      throw Error("창 캡처가 12MB를 초과합니다.");
+    return png.toString("base64");
   });
   ipcMain.on("harbor:workspace-tabs", (event) => {
     event.returnValue = workspaceTabs.snapshot(

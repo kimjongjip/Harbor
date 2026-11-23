@@ -1,3 +1,53 @@
+.managed-chat-workspace:not([hidden]),
+.mobile-managed-chat:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.worktree-review {
+  padding: 8px 12px;
+  border-block: 1px solid var(--border);
+}
+.worktree-review summary {
+  cursor: pointer;
+}
+.worktree-review > div {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.worktree-review pre {
+  max-height: 20rem;
+  max-width: 100%;
+  overflow: auto;
+}
+.chat-actions,
+.chat-reservations li,
+.chat-reservations form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chat-actions,
+.chat-reservations {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.chat-reservations {
+  max-height: 9rem;
+  overflow: auto;
+  margin: 0;
+}
+.chat-reservations form {
+  flex: 1;
+}
+.chat-reservations input {
+  flex: 1;
+}
 .ide-chat {
   display: flex;
   flex-direction: column;
@@ -347,6 +397,26 @@
   border-top: 1px solid var(--border, #dce1ea);
   padding: 10px;
   flex-shrink: 0;
+}
+.ide-chat-compose .image-attachments {
+  flex-wrap: wrap;
+}
+.ide-chat-compose .image-attachment {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+.ide-chat-compose .image-attachment img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+.ide-chat-compose .image-attachment span {
+  max-width: 12ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .ide-chat-compose textarea {
   width: 100%;

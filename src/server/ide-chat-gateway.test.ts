@@ -9,6 +9,7 @@ import { mobileFixture } from "../test/mobile-fixture";
 test("managed desktop chat uses paired authorization without touching terminal input", async () => {
   const f = await mobileFixture();
   const sent: string[] = [];
+  const imageCounts: number[] = [];
   let resolveCwd: () => Promise<string> = async () => "/fixture";
   const chats = new IdeChats({
     runtimeId: f.state.runtimeId,
@@ -26,6 +27,7 @@ test("managed desktop chat uses paired authorization without touching terminal i
     nativeActive: () => false,
     claude: (turn) => {
       sent.push(turn.text);
+      imageCounts.push(turn.images?.length || 0);
       turn.events.native(turn.nativeId);
       turn.events.item({
         id: randomUUID(),
@@ -78,6 +80,50 @@ test("managed desktop chat uses paired authorization without touching terminal i
       (await f.http(endpoint, { ...create(), hostId: "missing" }, { cookie }))
         .status,
       404,
+    );
+    const mobileEndpoint = "/mobile-api/ide-chat/conversations";
+    assert.equal(
+      (await f.http(mobileEndpoint, create(), { cookie: phone })).status,
+      403,
+    );
+    const pairedPhone = f.access.authenticate(phone)!;
+    f.gateway.setManagedChat(pairedPhone.id, true);
+    const phoneChat = await f.http(mobileEndpoint, create(), { cookie: phone });
+    assert.equal(phoneChat.status, 200);
+    const phoneId = (await phoneChat.json()).id;
+    const bytes = Buffer.alloc(110 * 1024);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
+    const photo = {
+      runtimeId: f.state.runtimeId,
+      requestId: randomUUID(),
+      text: "사진",
+      images: ["data:image/png;base64," + bytes.toString("base64")],
+    };
+    const imagePath = mobileEndpoint + "/" + phoneId + "/messages";
+    assert.equal(
+      (await f.http(imagePath, photo, { cookie: phone })).status,
+      200,
+    );
+    assert.deepEqual(imageCounts, [1]);
+    assert.deepEqual(sent.splice(0), ["사진"]);
+    f.gateway.setManagedChat(pairedPhone.id, false);
+    assert.equal(
+      (
+        await f.http(
+          imagePath,
+          { ...photo, requestId: randomUUID() },
+          { cookie: phone },
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await f.http(mobileEndpoint + "/" + phoneId, undefined, {
+          cookie: phone,
+        })
+      ).status,
+      403,
     );
     const response = await f.http(endpoint, create(), { cookie });
     assert.equal(response.status, 200);

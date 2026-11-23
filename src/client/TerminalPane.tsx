@@ -167,12 +167,14 @@ export default function TerminalPane({
   const [inputError, setInputError] = useState("");
   const [controlReason, setControlReason] = useState("");
   const readOnlyRef = useRef(remoteDesktop);
+  const [captureReadOnly, setCaptureReadOnly] = useState(remoteDesktop);
   const [controlRefresh, setControlRefresh] = useState(0);
   const controlClaimedRef = useRef<(() => void) | null>(null);
   const applyReadOnlyRef = useRef((_value: boolean) => {});
   applyReadOnlyRef.current = (value) => {
     const previous = readOnlyRef.current;
     readOnlyRef.current = value;
+    if(previous !== value)setCaptureReadOnly(value);
     if (termRef.current) termRef.current.options.disableStdin = value;
     if (previous && !value) {
       setControlReason("");
@@ -227,6 +229,50 @@ export default function TerminalPane({
   const container = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<((files: File[]) => Promise<void>) | null>(null);
+  const capturePending = useRef(false);
+  async function attachWindowCapture() {
+    const capture = window.harborDesktop?.captureCurrentWindow;
+    const upload = uploadRef.current;
+    if (
+      !capture ||
+      !upload ||
+      !connected ||
+      uploading ||
+      capturePending.current ||
+      readOnlyRef.current ||
+      info.exited
+    )
+      return;
+    capturePending.current = true;
+    const target = infoRef.current;
+    try {
+      const data = await capture();
+      if (
+        !data ||
+        upload !== uploadRef.current ||
+        !visibilityRef.current.active ||
+        readOnlyRef.current ||
+        target.id !== infoRef.current.id ||
+        target.hostId !== infoRef.current.hostId ||
+        target.agentSessionId !== infoRef.current.agentSessionId ||
+        target.cwd !== infoRef.current.cwd
+      )
+        return;
+      const bytes = Uint8Array.from(atob(data), (ch) => ch.charCodeAt(0));
+      await upload([
+        new File([bytes], "harbor-window-" + Date.now() + ".png", {
+          type: "image/png",
+        }),
+      ]);
+    } catch (error) {
+      if (upload === uploadRef.current)
+        setInputError(
+          (error as Error).message || "현재 창을 캡처하지 못했습니다.",
+        );
+    } finally {
+      capturePending.current = false;
+    }
+  }
   const cancelRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     const term = new Terminal({
@@ -1517,6 +1563,19 @@ export default function TerminalPane({
   return (
     <div
       ref={container}
+      onKeyDownCapture={(event) => {
+        if (
+          window.harborDesktop?.captureCurrentWindow &&
+          event.ctrlKey &&
+          event.altKey &&
+          event.shiftKey &&
+          event.code === "KeyS"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.repeat) void attachWindowCapture();
+        }
+      }}
       className={`terminal-instance terminal-with-footer ${active ? "active" : ""} ${dragging ? "file-drop-active" : ""}`}
     >
       <TerminalControlStatus
@@ -1633,7 +1692,11 @@ export default function TerminalPane({
               setRawOutput((value) => !value);
               termRef.current?.focus();
             }}
-            title={rawOutput ? "기본 보기로 전환합니다." : "터미널 원문으로 전환합니다."}
+            title={
+              rawOutput
+                ? "기본 보기로 전환합니다."
+                : "터미널 원문으로 전환합니다."
+            }
           >
             {rawOutput ? "기본 표시로" : "터미널 원문"}
           </button>
@@ -1660,6 +1723,18 @@ export default function TerminalPane({
             onClick={() => quoteSelectionRef.current?.()}
           >
             <Quote size={13} /> 인용하여 질문
+          </button>
+        )}
+        {window.harborDesktop?.captureCurrentWindow && (
+          <button
+            type="button"
+            className="terminal-footer-button"
+            aria-label="현재 Harbor 창 캡처 첨부"
+            title="현재 Harbor 창 전체를 캡처해 이 터미널의 입력에 첨부합니다 (Ctrl+Alt+Shift+S)."
+            disabled={!connected || info.exited || uploading || captureReadOnly}
+            onClick={() => void attachWindowCapture()}
+          >
+            창 캡처
           </button>
         )}
         <button

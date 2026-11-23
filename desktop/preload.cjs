@@ -110,7 +110,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     platform: process.platform,
     ...(activation ? { awaitWorkspaceActivation: () => activation } : {}),
-    version: "1.18.55",
+    version: "2.0.0",
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
     checkUpdate: () =>
       navigator.userActivation.isActive
@@ -129,6 +129,7 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.on("harbor:update-state", listener);
       return () => ipcRenderer.removeListener("harbor:update-state", listener);
     },
+    processMetrics: () => ipcRenderer.invoke("harbor:process-metrics"),
     backendState: () => ipcRenderer.invoke("harbor:backend-state"),
     onBackendState: (callback) => {
       const listener = (_event, state) => callback(state);
@@ -143,6 +144,10 @@ contextBridge.exposeInMainWorld(
       navigator.userActivation.isActive
         ? ipcRenderer.invoke("harbor:clipboard-write-text", text)
         : Promise.resolve(false),
+    captureCurrentWindow: () =>
+      navigator.userActivation.isActive
+        ? ipcRenderer.invoke("harbor:capture-current-window")
+        : Promise.resolve(null),
     detachedTerminals: () => ipcRenderer.invoke("harbor:terminal-windows"),
     workspaceTabs: () => ipcRenderer.sendSync("harbor:workspace-tabs"),
     newWorkspace: () =>

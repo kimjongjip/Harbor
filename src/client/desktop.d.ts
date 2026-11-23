@@ -22,6 +22,14 @@ interface Window {
     onUpdateState?: (
       callback: (state: import("./UpdateButton").DesktopUpdateState) => void,
     ) => () => void;
+    processMetrics?: () => Promise<
+      Array<{
+        pid: number;
+        type: string;
+        workingSetBytes: number;
+        cpuPercent: number;
+      }>
+    >;
     backendState?: () => Promise<{
       phase: "ready" | "recovering" | "failed";
       attempt: number;
@@ -36,6 +44,7 @@ interface Window {
     ) => () => void;
     retryBackend?: () => Promise<unknown>;
     writeClipboardText?: (text: string) => Promise<boolean>;
+    captureCurrentWindow?: () => Promise<string | null>;
     detachedTerminals: () => Promise<string[]>;
     workspaceTabs?: () => WorkspaceTabPlacement;
     newWorkspace?: () => Promise<boolean>;

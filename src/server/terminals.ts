@@ -658,10 +658,10 @@ export class Terminals extends EventEmitter {
           const issued = this.bridge.issue(info.id);
           env.HARBOR_SESSION_TOKEN = issued.token;
           env.HARBOR_AGY_BRIDGE = `http://127.0.0.1:${this.bridge.port}/bridge/mcp`;
-          if (options.researchLaunch)
+          if (options.researchLaunch || options.antigravityModel)
             env.HARBOR_AGY_CONFIG = JSON.stringify({
-              model: options.researchLaunch.model,
-              effort: options.researchLaunch.effort,
+              model: options.researchLaunch?.model || options.antigravityModel,
+              effort: options.researchLaunch?.effort,
             });
           command = process.execPath;
           args = [
@@ -704,6 +704,41 @@ export class Terminals extends EventEmitter {
           const startup = powershellStartup(script);
           args = startup.args;
           Object.assign(env, startup.env);
+        } else if (process.platform === "linux" && this.bridge) {
+          const issued = this.bridge.issue(info.id);
+          const base = `http://127.0.0.1:${this.bridge.port}`;
+          env.HARBOR_POSIX_INIT = bashInitialization(
+            host,
+            cwd,
+            program,
+            {
+              token: issued.token,
+              url: base + issued.path,
+              ...(issued.hookToken && issued.hookPath
+                ? {
+                    hook: {
+                      token: issued.hookToken,
+                      url: base + issued.hookPath,
+                    },
+                  }
+                : {}),
+            },
+            options.resumeThreadId,
+            options.resumeCwd,
+            options.researchLaunch,
+            options.claudePeerChannel,
+          );
+          // The per-session credentials must never appear in terminal text or argv.
+          command = "/bin/bash";
+          args = [
+            "--noprofile",
+            "--norc",
+            "+x",
+            "+v",
+            "-c",
+            'script=$HARBOR_POSIX_INIT; unset HARBOR_POSIX_INIT; source <(printf "%s\\n" "$script")',
+          ];
+          info.integration = "ready";
         } else if (program !== "shell") {
           command = program.startsWith("claude")
             ? "claude"

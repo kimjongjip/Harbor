@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, delimiter } from "node:path";
 import {
   ClaudeSshProcess,
   ClaudeChatMessages,
   createClaudeChatFactory,
+  installedClaudeExecutable,
   type ClaudeChatEvents,
   type ClaudeQuery,
 } from "./ide-chat-claude.js";
@@ -27,6 +31,30 @@ const host: HostConfig = {
   color: "blue",
   createdAt: 0,
 };
+test("Claude resolver skips a directory and non-executable POSIX entries before a valid executable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harbor-claude-bin-"));
+  const original = process.env.PATH;
+  const name = process.platform === "win32" ? "claude.exe" : "claude";
+  try {
+    const paths = [
+      join(dir, "directory"),
+      join(dir, "noexec"),
+      join(dir, "bin"),
+    ];
+    for (const item of paths) await mkdir(item);
+    await mkdir(join(paths[0], name));
+    if (process.platform !== "win32")
+      await writeFile(join(paths[1], name), "fixture", { mode: 0o600 });
+    const executable = join(paths[2], name);
+    await writeFile(executable, "fixture", { mode: 0o700 });
+    process.env.PATH = paths.join(delimiter);
+    assert.equal(await installedClaudeExecutable(), executable);
+  } finally {
+    if (original === undefined) delete process.env.PATH;
+    else process.env.PATH = original;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 function events(items: MessageItem[] = []): ClaudeChatEvents {
   return {
     item: (item) => {

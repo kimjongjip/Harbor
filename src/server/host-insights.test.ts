@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   HostInsights,
+  reservationLimit,
   claudeQuota,
   codexQuota,
   claudeQuotaError,
@@ -21,6 +22,15 @@ const host = {
   name: "Fixture",
   codexPath: "codex",
 } as HostConfig;
+test("reservation limits require a measured account, scoped exhausted windows and a future reset",()=>{
+ const now=1700000000000;const base={account:{email:"fixture@example.invalid"},rateLimitsByLimitId:{codex:{primary:{usedPercent:100,resetsAt:now/1000+180},secondary:{usedPercent:100,resetsAt:now/1000+360}}}};
+ assert.equal(reservationLimit("codex",base,"example",now)?.notBefore,now+360000);
+ assert.equal(reservationLimit("codex",{...base,account:{}},"example",now),null);
+ assert.equal(reservationLimit("codex",base,"example",now+600000),null);
+ const raw={email:"fixture@example.invalid",usage:{seven_day:{utilization:50},seven_day_fable:{utilization:100,resets_at:new Date(now+100000).toISOString()}}};
+ assert.equal(reservationLimit("claude",raw,"opus",now)?.notBefore,undefined);
+ assert.equal(reservationLimit("claude",raw,"fable",now)?.notBefore,now+100000);
+});
 test("quota normalization separates subscription windows, clamps percentages and drops raw fields", () => {
   const quota = codexQuota(
     {

@@ -25,6 +25,7 @@ export type TerminalProgram =
   | "antigravity"
   | "antigravity-cli";
 export interface TerminalOptions {
+  antigravityModel?: string;
   claudePeerChannel?: boolean;
   /** Persistence is opt-in for each new SSH terminal; defaults remain direct. */
   sshSessionMode?: "direct" | "tmux";

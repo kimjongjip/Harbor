@@ -35,6 +35,8 @@ import { BackendStatus } from "./BackendStatus";
 import { UpdateButton } from "./UpdateButton";
 import { version } from "../../package.json";
 import { api } from "./api";
+import { Pin } from "lucide-react";
+import { discoverSessions, useSessionDiscovery } from "./session-discovery";
 import { remoteDesktop } from "./desktop-session";
 import { useDesktopWorkspace } from "./desktop-workspace";
 import type { HostView, TerminalInfo } from "../shared/types";
@@ -77,6 +79,7 @@ import "./workspace-inbox.css";
 import "./workspace-layout.css";
 import "./ide/layout.css";
 
+const ManagedChat = lazy(() => import("./ide/IdeChatPanel"));
 const DesktopIdeView = lazy(() => import("./ide/DesktopIdeView"));
 const RemoteConnectButton = lazy(() =>
   import("./RemoteConnectButton").then((module) => ({
@@ -90,6 +93,8 @@ const initialFocusId = new URLSearchParams(location.search).get("focus");
 const nativeWindowKey = window.harborDesktop?.workspaceTabs
   ? new URLSearchParams(location.search).get("workspace") || "main"
   : null;
+const managedHostPreference =
+  "harbor.managedHost." + (nativeWindowKey || "main");
 type HistoryDrop = {
   provider?: import("../shared/agent-provider").AgentProvider;
   sshSessionMode?: "direct" | "tmux";
@@ -119,9 +124,17 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const { theme, setTheme } = useTheme();
   const [typographyOpen, setTypographyOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [workspaceView, setWorkspaceView] = useState<"terminal" | "ide">(
-    "terminal",
-  );
+  const [workspaceView, setWorkspaceView] = useState<
+    "terminal" | "ide" | "chat"
+  >(() => {
+    const placement = window.harborDesktop?.workspaceTabs?.();
+    if (popoutId || initialFocusId || (placement && placement.key !== placement.home)) return "terminal";
+    if (!remoteDesktop) try {
+      if (localStorage.getItem(managedHostPreference + ".view") === "terminal") return "terminal";
+    } catch {}
+    return "chat";
+  });
+  const [chatOpened, setChatOpened] = useState(false);
   const [ideLoaded, setIdeLoaded] = useState(false);
   const [ideHeight, setIdeHeight] = useState(72);
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
@@ -259,6 +272,17 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
     if (popoutId) return;
+    if (!initialFocusId && !remoteDesktop)
+      try {
+        const lastHost = localStorage.getItem(managedHostPreference);
+        if (state.hosts.some((h) => h.id === lastHost)) {
+          setHostId(lastHost!);
+          setWorkspaceView("chat");
+          return;
+        }
+      } catch {}
+    if (remoteDesktop && workspace?.workspaceView === "chat" && !initialFocusId)
+      return;
     const available = state.terminals.filter(
       (t) => !t.exited && !detached.includes(t.id),
     );
@@ -276,6 +300,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
         setPage(workspace.page);
     } else if (
       !remoteDesktop &&
+      workspaceView !== "chat" &&
       placement?.key === placement?.home &&
       !state.terminals.some((t) => !t.exited)
     ) {
@@ -319,6 +344,17 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const host =
     state.hosts.find((item) => item.id === (hostId || active?.hostId)) ||
     state.hosts[0];
+  useEffect(() => {
+    if (!ready || !host || popoutId || remoteDesktop || !startupDone.current)
+      return;
+    try {
+      if (page === "terminals") localStorage.setItem(managedHostPreference + ".view", workspaceView);
+      if (workspaceView === "chat" && page === "terminals" && chatOpened)
+        localStorage.setItem(managedHostPreference, host.id);
+      else if (workspaceView !== "chat")
+        localStorage.removeItem(managedHostPreference);
+    } catch {}
+  }, [ready, host?.id, workspaceView, page, chatOpened]);
   const messages = state.mailbox || [];
   const seenMessages = useRef(new Set<string>());
   const initializedMessages = useRef(false);
@@ -529,6 +565,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
       }
     }
     setActiveId(id);
+    setWorkspaceView((view) => (view === "chat" ? "terminal" : view));
     setIdeNewChat(false);
     setPage("terminals");
     if (terminal) {
@@ -608,6 +645,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     if (!latestTerminals.current.some((t) => t.id === terminal.id))
       pendingSelection.current = terminal.id;
     setActiveId(terminal.id);
+    if (!terminal.startupPlaceholder)
+      setWorkspaceView((view) => (view === "chat" ? "terminal" : view));
     setIdeNewChat(false);
     setHostId(terminal.hostId);
     setFilePath(terminal.cwd);
@@ -638,7 +677,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     }
     setHostId(id);
     setFilePath("");
-    if (page !== "terminals") return;
+    if (page !== "terminals" || workspaceView === "chat") return;
     if (selected) void focus(selected.id);
   }
   async function connect(target: HostView, startupPlaceholder = false) {
@@ -691,6 +730,24 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     ++focusRequest.current;
     setPage(next);
   }
+  const discovery = useSessionDiscovery(
+    remoteDesktop ? "desktop-browser" : "desktop",
+  );
+  const [sessionQuery, setSessionQuery] = useState("");
+  const attentionIds = new Set(
+    (state.requests || [])
+      .filter((r) => r.status === "pending")
+      .map((r) => r.terminal.terminalId)
+      .filter((id): id is string => !!id),
+  );
+  const discovered = discoverSessions(
+    state.terminals,
+    state.hosts,
+    attentionIds,
+    sessionQuery,
+    discovery,
+  );
+  const filteringSessions = !!sessionQuery.trim() || discovery.attention;
   const pending = (id: string) =>
     notices.filter((n) => n.targetId === id && !n.read).length;
   const ideMode = page === "terminals" && workspaceView === "ide";
@@ -801,57 +858,94 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     <Plus size={15} />
                   </button>
                 </div>
+                {(state.terminals.length > 0 || filteringSessions) && (
+                  <div className="session-discovery-bar">
+                    <input
+                      aria-label="세션 검색"
+                      placeholder="세션·서버 검색"
+                      value={sessionQuery}
+                      onChange={(e) => setSessionQuery(e.target.value)}
+                    />
+                    <button
+                      className="button secondary small"
+                      aria-pressed={discovery.attention}
+                      onClick={discovery.toggleAttention}
+                    >
+                      내 확인 필요
+                    </button>
+                  </div>
+                )}
+                {filteringSessions && !discovered.length && (
+                  <p className="muted">조건에 맞는 세션이 없습니다.</p>
+                )}
                 <div className="harbor-host-tree">
-                  {orderedHosts.map((item) => (
-                    <div key={item.id}>
-                      <ServerTreeHost
-                        host={item}
-                        selected={host?.id === item.id}
-                        opening={!!opening}
-                        onSelect={() => selectHost(item.id)}
-                        onConnect={() => void connect(item)}
-                        onMove={moveHost}
-                        onMoveBy={moveBy}
-                      />
-                      {state.terminals
-                        .filter((t) => t.hostId === item.id)
-                        .map((terminal) => (
-                          <div
-                            key={terminal.id}
-                            className={`harbor-session-item ${activeId === terminal.id && page === "terminals" ? "active" : ""}`}
-                          >
-                            <button
-                              className="harbor-session-row"
-                              onClick={() => focus(terminal.id)}
+                  {orderedHosts
+                    .filter(
+                      (item) =>
+                        !filteringSessions ||
+                        discovered.some((t) => t.hostId === item.id),
+                    )
+                    .map((item) => (
+                      <div key={item.id}>
+                        <ServerTreeHost
+                          host={item}
+                          selected={host?.id === item.id}
+                          opening={!!opening}
+                          onSelect={() => selectHost(item.id)}
+                          onConnect={() => void connect(item)}
+                          onMove={moveHost}
+                          onMoveBy={moveBy}
+                        />
+                        {discovered
+                          .filter((t) => t.hostId === item.id)
+                          .map((terminal) => (
+                            <div
+                              key={terminal.id}
+                              className={`harbor-session-item ${activeId === terminal.id && page === "terminals" ? "active" : ""}`}
                             >
-                              <Terminal size={13} />
-                              <span>{terminal.title}</span>
-                              {pending(terminal.id) > 0 ? (
-                                <b className="harbor-count">
-                                  {pending(terminal.id)}
-                                </b>
-                              ) : detached.includes(terminal.id) ? (
-                                <ExternalLink
-                                  size={12}
-                                  aria-label="별도 창에서 열림"
-                                />
-                              ) : (
-                                <small>{connectionLabel(terminal)}</small>
-                              )}
-                            </button>
-                            <button
-                              className="icon-button compact harbor-session-close"
-                              aria-label={`서버 목록에서 터미널 종료: ${terminal.title}`}
-                              title="터미널 종료"
-                              disabled={!ready}
-                              onClick={() => setEndingTerminal(terminal)}
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  ))}
+                              <button
+                                className="harbor-session-row"
+                                onClick={() => focus(terminal.id)}
+                              >
+                                <Terminal size={13} />
+                                <span>{terminal.title}</span>
+                                {pending(terminal.id) > 0 ? (
+                                  <b className="harbor-count">
+                                    {pending(terminal.id)}
+                                  </b>
+                                ) : detached.includes(terminal.id) ? (
+                                  <ExternalLink
+                                    size={12}
+                                    aria-label="별도 창에서 열림"
+                                  />
+                                ) : (
+                                  <small>{connectionLabel(terminal)}</small>
+                                )}
+                              </button>
+                              <button
+                                className="icon-button compact session-pin"
+                                aria-pressed={discovery.pins.includes(
+                                  terminal.id,
+                                )}
+                                aria-label={`${terminal.title} 고정`}
+                                title="세션 고정"
+                                onClick={() => discovery.togglePin(terminal.id)}
+                              >
+                                <Pin size={13} />
+                              </button>
+                              <button
+                                className="icon-button compact harbor-session-close"
+                                aria-label={`서버 목록에서 터미널 종료: ${terminal.title}`}
+                                title="터미널 종료"
+                                disabled={!ready}
+                                onClick={() => setEndingTerminal(terminal)}
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    ))}
                 </div>
                 <CodexHistory
                   hosts={orderedHosts}
@@ -1078,7 +1172,9 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         <b>
                           {page === "files"
                             ? "파일"
-                            : active?.title || "터미널"}
+                            : workspaceView === "chat"
+                              ? "AI 대화"
+                              : active?.title || "터미널"}
                         </b>
                       </>
                     )}
@@ -1093,6 +1189,17 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   role="group"
                   aria-label="작업 보기"
                 >
+                  {!popoutId && (
+                    <button
+                      aria-pressed={workspaceView === "chat"}
+                      onClick={() => {
+                        setChatOpened(true);
+                        setWorkspaceView("chat");
+                      }}
+                    >
+                      <MessageSquare size={14} /> AI 대화
+                    </button>
+                  )}
                   <button
                     aria-pressed={workspaceView === "terminal"}
                     onClick={() => setWorkspaceView("terminal")}
@@ -1276,10 +1383,34 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   setQuery={setQuery}
                 />
               )}
+              {ready &&
+                (chatOpened || workspaceView === "chat") &&
+                !popoutId && (
+                  <div
+                    className="managed-chat-workspace"
+                    onFocusCapture={() => setChatOpened(true)}
+                    hidden={page !== "terminals" || workspaceView !== "chat"}
+                  >
+                    <IdeBoundary>
+                      <Suspense fallback={<p>대화를 여는 중…</p>}>
+                        <ManagedChat
+                          serverWorkspace={host?.serverWorkspace}
+                          rememberScope={nativeWindowKey || "desktop"}
+                          hostId={host?.id}
+                          hostName={host?.name}
+                          antigravityIntegration={antigravityIntegration}
+                          active={
+                            page === "terminals" && workspaceView === "chat"
+                          }
+                        />
+                      </Suspense>
+                    </IdeBoundary>
+                  </div>
+                )}
               <div
                 className={`harbor-workbench ${ideMode ? "has-ide" : ""} ${ideMode && ideNativeTerminal ? "has-native-ide" : ""}`}
                 ref={workbenchRef}
-                hidden={page !== "terminals"}
+                hidden={page !== "terminals" || workspaceView === "chat"}
                 style={
                   ideMode && ideNativeTerminal && ideChatOpen
                     ? {
@@ -1307,6 +1438,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         }
                       >
                         <DesktopIdeView
+                          serverWorkspace={host?.serverWorkspace}
                           antigravityIntegration={antigravityIntegration}
                           terminalId={ideTerminal?.id || ""}
                           terminal={ideTerminal}
@@ -1489,6 +1621,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                       }
                       visible={
                         page === "terminals" &&
+                        workspaceView !== "chat" &&
                         (!ideMode ||
                           (ideNativeTerminal ? ideChatOpen : ideTerminalOpen))
                       }

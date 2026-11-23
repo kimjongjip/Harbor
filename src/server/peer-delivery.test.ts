@@ -94,6 +94,35 @@ async function fixture(t: any) {
   return { mailbox, peers, terminals, resolver, bind, directory };
 }
 
+test("organic collaboration binds follow-ups, retries and user controls to the original sessions across restarts", async t => {
+  const f = await fixture(t);
+  f.terminals[0].agentSessionId = "native-a";
+  f.terminals[1].agentSessionId = "native-b";
+  const send = (key: string, parent?: string) => f.peers.send("a","b","Compare the measurement","question", undefined, undefined, {requestKey:key, followUpTo:parent});
+  const q = send("q1");
+  assert.equal(send("q1").id, q.id);
+  const a = f.mailbox.replyAgent("b", q.id, "Measured at 800 MHz", "native-b");
+  assert.equal(f.mailbox.replyAgent("b", q.id, a.text, "native-b").id, a.id);
+  const follow = send("q2", a.id);
+  assert.equal(follow.threadId, q.threadId);
+  assert.equal(send("q2", a.id).id, follow.id);
+  assert.throws(() => send("q2"), /요청 키/);
+  f.mailbox.setPaused("b","native-b",true);
+  assert.deepEqual(f.peers.events("b","native-b").messages, []);
+  assert.equal(f.peers.result("a",follow.id).status,"unavailable");
+  assert.deepEqual(f.mailbox.consume("b",{sessionId:"native-b"}),[]);
+  assert.throws(() => send("new"), /일시정지/);
+  const restored = new Mailbox(f.directory, f.resolver);
+  assert.equal(restored.isPaused("b","native-b"), true);
+  assert.equal(restored.isPaused("b","another"), false);
+  f.mailbox.setPaused("b","native-b",false);
+  assert.deepEqual(f.peers.events("b","native-b").messages.map(m=>m.id),[follow.id]);
+  f.mailbox.closePeerThread("b","native-b",q.threadId);
+  assert.deepEqual(f.peers.events("b","native-b").messages,[]);
+  assert.throws(()=>f.mailbox.replyAgent("b",follow.id,"again","native-b"),/종료/);
+  assert.notEqual(send("separate").threadId, q.threadId);
+});
+
 test("IDE user metadata is internal, native-bound, durable and idempotent; old runtimes do not imply input support", async (t) => {
   const f = await fixture(t);
   f.terminals.find(terminal => terminal.id === "b")!.agentSessionId = "native-b";

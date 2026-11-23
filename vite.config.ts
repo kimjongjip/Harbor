@@ -28,7 +28,21 @@ export function pdfResources(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), pdfResources()],
+  plugins: [
+    react(),
+    pdfResources(),
+    {
+      name: "harbor-workspace-manifest",
+      apply: "build",
+      async closeBundle() {
+        // Electron packager strips its lockfile. Keep a copy outside the web root.
+        const target = resolve("dist/worker-manifest");
+        await mkdir(target, { recursive: true });
+        for (const file of ["package.json", "package-lock.json"])
+          await cp(resolve(file), resolve(target, file));
+      },
+    },
+  ],
   build: {
     outDir: "dist/client",
     rollupOptions: {

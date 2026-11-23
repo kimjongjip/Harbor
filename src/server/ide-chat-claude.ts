@@ -1,6 +1,8 @@
+import { managedClaudeServer, type ManagedPeerCall } from "./managed-peers.js";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -27,12 +29,16 @@ export interface ClaudeChatEvents {
   native(id: string, model?: string): void;
 }
 export interface ClaudeChatTurn {
+  images?: string[];
   host: HostConfig;
   password?: string;
   nativeId: string;
   resume: boolean;
   cwd: string;
   model?: string;
+  reviewOnly?: boolean;
+  effort?: import("../shared/ide-chat.js").ChatEffort;
+  peerCall?: ManagedPeerCall;
   text: string;
   requestId: string;
   events: ClaudeChatEvents;
@@ -66,7 +72,13 @@ export async function installedClaudeExecutable(): Promise<string> {
       : ["claude", "node_modules/@anthropic-ai/claude-code/cli.js"]) {
       const candidate = path.join(dir.replace(/^"|"$/g, ""), suffix);
       try {
-        await access(candidate);
+        if (!(await stat(candidate)).isFile()) continue;
+        await access(
+          candidate,
+          process.platform === "win32" || suffix.endsWith(".js")
+            ? constants.R_OK
+            : constants.X_OK,
+        );
         return candidate;
       } catch {
         /* next PATH entry */
@@ -409,7 +421,29 @@ export function createClaudeChatFactory(
         yield {
           type: "user",
           session_id: turn.nativeId,
-          message: { role: "user", content: turn.text },
+          message: {
+            role: "user",
+            content: turn.images?.length
+              ? [
+                  ...(turn.text.trim()
+                    ? [{ type: "text" as const, text: turn.text }]
+                    : []),
+                  ...turn.images.map((url) => {
+                    const comma = url.indexOf(",");
+                    const media_type = url.slice(5, url.indexOf(";")) as
+                      "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+                    return {
+                      type: "image" as const,
+                      source: {
+                        type: "base64" as const,
+                        media_type,
+                        data: url.slice(comma + 1),
+                      },
+                    };
+                  }),
+                ]
+              : turn.text,
+          },
           parent_tool_use_id: null,
           uuid: randomUUID(),
         };
@@ -419,6 +453,9 @@ export function createClaudeChatFactory(
       running = (dependencies.query || query)({
         prompt: input(),
         options: {
+          ...(turn.peerCall && !turn.reviewOnly
+            ? { mcpServers: { harbor: managedClaudeServer(turn.peerCall) } }
+            : {}),
           cwd: turn.cwd,
           model: turn.model || undefined,
           ...(turn.resume
@@ -426,8 +463,18 @@ export function createClaudeChatFactory(
             : { sessionId: turn.nativeId }),
           pathToClaudeCodeExecutable: executable,
           permissionMode: "default",
+          ...(turn.effort ? { effort: turn.effort } : {}),
+          ...(turn.reviewOnly
+            ? {
+                tools: [],
+                mcpServers: {},
+                strictMcpConfig: true,
+                settingSources: [],
+                persistSession: true,
+              }
+            : {}),
           canUseTool: permissions,
-          settingSources: ["user", "project", "local"],
+          settingSources: turn.reviewOnly ? [] : ["user", "project", "local"],
           systemPrompt: { type: "preset", preset: "claude_code" },
           includePartialMessages: true,
           abortController,

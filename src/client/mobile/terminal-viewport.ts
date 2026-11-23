@@ -15,6 +15,7 @@ export function mobileTerminalViewport(
     paused = false,
     frame = 0,
     cellHeight = 1;
+  let restoredTop: number | undefined;
   let previousTop = 0,
     disposed = false;
   let flow: HTMLElement | null = null,
@@ -39,7 +40,11 @@ export function mobileTerminalViewport(
     const end = terminalContentEnd(term.buffer.active);
     host.style.height = `${Math.max(scroller.clientHeight, end * cellHeight + 16)}px`;
     host.style.width = `${screen.clientWidth + 16}px`;
-    if (following) scroller.scrollTop = scroller.scrollHeight;
+    if (restoredTop !== undefined) {
+      scroller.scrollTop = restoredTop;
+      if (Math.abs(scroller.scrollTop - restoredTop) < 2)
+        restoredTop = undefined;
+    } else if (following) scroller.scrollTop = scroller.scrollHeight;
     else if (transitioning) scroller.scrollTop = previousTop;
     else if (!flow && oldCellHeight > 1 && cellHeight !== oldCellHeight)
       scroller.scrollTop = (previousTop / oldCellHeight) * cellHeight;
@@ -79,6 +84,7 @@ export function mobileTerminalViewport(
   const wheel = (event: WheelEvent) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    restoredTop = undefined;
     if (event.deltaY < 0) pauseFollowing();
     // Chromium may retain the old scroll target after the live/frozen DOM
     // update. Route vertical wheel movement to this one reading surface.
@@ -96,6 +102,7 @@ export function mobileTerminalViewport(
     }
   };
   const touchStart = (event: TouchEvent) => {
+    restoredTop = undefined;
     touchY = event.touches[0]?.clientY;
   };
   const touchMove = (event: TouchEvent) => {
@@ -134,7 +141,18 @@ export function mobileTerminalViewport(
       if (flow) resize.observe(flow);
       refresh();
     },
+    savedPosition() {
+      return following ? undefined : (restoredTop ?? previousTop);
+    },
+    restorePosition(top: number) {
+      restoredTop = top;
+      previousTop = top;
+      following = false;
+      report();
+      refresh();
+    },
     latest() {
+      restoredTop = undefined;
       following = true;
       unread = false;
       report();

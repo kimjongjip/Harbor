@@ -505,6 +505,24 @@ test(
         ),
         null,
       );
+      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
+      const managed = page.locator(".managed-chat-workspace");
+      await managed
+        .getByLabel("AI에게 보낼 메시지")
+        .fill("Independent managed draft");
+      await page.getByRole("button", { name: "터미널", exact: true }).click();
+      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
+      assert.equal(
+        await managed.getByLabel("AI에게 보낼 메시지").inputValue(),
+        "Independent managed draft",
+      );
+      assert.equal(
+        requests.some(
+          (r) =>
+            r.path === "/api/ide-chat/conversations" && r.method === "POST",
+        ),
+        false,
+      );
       assert.deepEqual(errors, []);
     } finally {
       await desktop

@@ -17,6 +17,9 @@ export interface MailboxParticipant {
 export interface MailboxMessage {
   id: string;
   threadId: string;
+  peerRequestKey?: string;
+  peerDepth?: number;
+  peerClosed?: boolean;
   replyToId?: string;
   sender: MailboxParticipant;
   recipient: MailboxParticipant;

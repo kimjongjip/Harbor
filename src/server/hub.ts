@@ -1,3 +1,4 @@
+import { managedCodexTools, type ManagedPeerCall } from "./managed-peers.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -15,7 +16,7 @@ import type {
   SessionView,
 } from "../shared/types.js";
 import { sessionKey } from "../shared/types.js";
-import { RpcClient, type RpcMessage } from "./rpc.js";
+import { RpcClient, RpcRequestRejected, type RpcMessage } from "./rpc.js";
 import { Store } from "./store.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
@@ -29,6 +30,11 @@ import {
 } from "./session.js";
 
 export class Hub extends EventEmitter {
+  managedPeerCall?: (
+    hostId: string,
+    threadId: string,
+    ...args: Parameters<ManagedPeerCall>
+  ) => Promise<unknown>;
   hosts = new Map<string, HostView>();
   sessions = new Map<string, SessionView>();
   clients = new Map<string, RpcClient>();
@@ -131,6 +137,7 @@ export class Hub extends EventEmitter {
       pinned,
     } = s;
     this.store.session({
+      ...(s.peerTools ? { peerTools: true } : {}),
       id,
       hostId,
       threadId,
@@ -392,6 +399,7 @@ export class Hub extends EventEmitter {
       cwd: string;
       model?: string;
       permission: PermissionMode;
+      peerTools?: boolean;
     },
   ) {
     const host = this.host(hostId);
@@ -404,15 +412,40 @@ export class Hub extends EventEmitter {
     if (host.kind === "local" && !statSync(cwd).isDirectory())
       throw new Error("프로젝트 폴더를 찾을 수 없습니다.");
     const client = this.client(hostId);
-    const result = await client.call("thread/start", {
+    const baseStart = {
       cwd,
       ...(input.model ? { model: input.model } : {}),
       sandbox: input.permission,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       serviceName: "codex-harbor",
-    });
+    };
+    let peerTools = !!(input.peerTools && this.managedPeerCall),
+      result;
+    try {
+      result = await client.call(
+        "thread/start",
+        peerTools
+          ? { ...baseStart, dynamicTools: managedCodexTools }
+          : baseStart,
+      );
+    } catch (error) {
+      if (
+        !peerTools ||
+        !(error instanceof RpcRequestRejected) ||
+        !/dynamic.?tools|dynamic tool|unknown (?:field|variant).*function/i.test(
+          error.message,
+        )
+      )
+        throw error;
+      peerTools = false;
+      result = await client.call("thread/start", baseStart);
+    }
     const s = this.track(hostId, result.thread, input);
+    if (peerTools) {
+      s.peerTools = true;
+      this.saveSession(s);
+    }
     s.loaded = true;
     if (input.title)
       await client
@@ -536,6 +569,8 @@ export class Hub extends EventEmitter {
     text: string,
     options: {
       mode?: "send" | "steer";
+      effort?: import("../shared/ide-chat.js").ChatEffort;
+      strictReview?: boolean;
       readOnly?: boolean;
       jobId?: string;
       images?: string[];
@@ -581,7 +616,8 @@ export class Hub extends EventEmitter {
         result = await client.call("turn/start", {
           threadId: s.threadId,
           input,
-          approvalPolicy: "on-request",
+          ...(options.effort ? { effort: options.effort } : {}),
+          approvalPolicy: options.strictReview ? "never" : "on-request",
           approvalsReviewer: "user",
           sandboxPolicy: readOnly
             ? { type: "readOnly" }
@@ -715,6 +751,25 @@ export class Hub extends EventEmitter {
     );
     // A shared daemon may deliver a request belonging to another client; never decide it here.
     if (!s) return;
+    if (
+      m.method === "item/tool/call" &&
+      !p.namespace &&
+      this.managedPeerCall &&
+      managedCodexTools.some((t) => t.name === p.tool)
+    ) {
+      const respond = (success: boolean, text: string) => {
+        if (this.clients.get(hostId) === client && client.alive)
+          client.respond(m.id!, {
+            success,
+            contentItems: [{ type: "inputText", text }],
+          });
+      };
+      void this.managedPeerCall(hostId, s.threadId, p.tool, p.arguments).then(
+        (result) => respond(true, JSON.stringify(result)),
+        (error) => respond(false, errorText(error)),
+      );
+      return;
+    }
     const approval: Approval = {
       id: `${hostId}:${String(m.id)}`,
       requestId: m.id!,
@@ -927,11 +982,12 @@ export class Hub extends EventEmitter {
       this.changed();
     }
   }
-  private runAndWait(
+  runAndWait(
     id: string,
     text: string,
     jobId: string,
     signal: AbortSignal,
+    strictReview = false,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       let turnId: string | undefined;
@@ -1002,7 +1058,12 @@ export class Hub extends EventEmitter {
         aborted();
         return;
       }
-      void this.send(id, text, { readOnly: true, jobId })
+      void this.send(id, text, {
+        readOnly: true,
+        strictReview,
+        jobId,
+        beforeDispatch: async () => signal.throwIfAborted(),
+      })
         .then((r) => {
           turnId = r.turn?.id;
           if (shouldInterrupt) stopTurn();

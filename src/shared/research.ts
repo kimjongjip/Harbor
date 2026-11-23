@@ -136,7 +136,18 @@ export interface ResearchAssignment {
   reportedAt?: number;
   decisionAnswer?: { text: string; at: number };
 }
+export interface WorkflowTemplate {
+  id: string;
+  title: string;
+  steps: string[];
+}
+export interface ResearchWorkflow extends WorkflowTemplate {
+  hostBindings?: string[];
+  requestId: string;
+  fingerprint: string;
+}
 export interface ResearchWork {
+  workflowStep?: number;
   id: string;
   assignmentId: string;
   participant: number;
@@ -162,6 +173,7 @@ export interface ResearchEvent {
   participant?: number;
 }
 export interface ResearchLab {
+  workflow?: ResearchWorkflow;
   id: string;
   title: string;
   goal: string;
@@ -224,6 +236,33 @@ export interface ResearchLabView extends ResearchLab {
     }
   >;
 }
+export function workflowResults(lab: ResearchLab) {
+  return (lab.workflow?.steps ?? []).map((description, index) => {
+    const work = lab.works.filter((w) => w.workflowStep === index).at(-1);
+    return { index, description, work };
+  });
+}
+
+export function workflowResultText(lab: ResearchLab): string {
+  if (!lab.workflow) return "";
+  return (
+    "\n\n## 워크플로 단계별 실행 기록\n\n" +
+    workflowResults(lab)
+      .map(({ index, description, work }) =>
+        [
+          `${index + 1}. ${description}`,
+          work ? `   작업 ${work.id} · ${work.status} · AI 보고` : "   대기",
+          work?.metrics,
+          work?.result,
+          ...(work?.artifacts ?? []),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      )
+      .join("\n\n")
+  );
+}
+
 export const researchPhaseLabel: Record<ResearchPhase, string> = {
   preparation: "주제 준비",
   analysis: "각자 분석",

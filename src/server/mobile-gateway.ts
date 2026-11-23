@@ -33,8 +33,15 @@ import {
 } from "../shared/annotations.js";
 import type { MobileState, MobileConversationPage } from "../shared/mobile.js";
 import type { TerminalReplayMetadata } from "../shared/types.js";
+import { labQuestionRouter } from "./lab-questions.js";
 
 export interface MobileOperations {
+  workspaceChat?: (
+    guard: Parameters<
+      typeof import("./workspace-chat.js").workspaceChatRouter
+    >[3],
+  ) => express.RequestHandler;
+  labQuestions?: import("./lab-questions.js").LabQuestions;
   controlChanged?(): void;
   desktop?: {
     http: express.RequestHandler;
@@ -166,6 +173,11 @@ export class MobileGateway {
     }
     return this.view();
   }
+  setManagedChat(id: string, enabled: boolean) {
+    this.access.setManagedChat(id, enabled);
+    this.changed();
+    return this.view();
+  }
   revoke(id: string) {
     this.controls.revoke(id);
     this.access.revoke(id);
@@ -182,7 +194,7 @@ export class MobileGateway {
       ...state,
       terminals,
       hosts:
-        device?.kind === "desktop"
+        device?.kind === "desktop" || device?.managedChat
           ? state.hosts
           : state.hosts.filter((h) => terminals.some((t) => t.hostId === h.id)),
       labs: [],
@@ -191,7 +203,12 @@ export class MobileGateway {
       ),
       controls: this.controls.views(),
       viewer: device
-        ? { deviceId, name: device.name, kind: device.kind }
+        ? {
+            deviceId,
+            name: device.name,
+            kind: device.kind,
+            ...(device.managedChat ? { managedChat: true } : {}),
+          }
         : undefined,
     };
   }
@@ -391,6 +408,27 @@ export class MobileGateway {
       }
       this.operations.desktop.http(req, res, next);
     });
+    app.use((req, res, next) => {
+      if (
+        req.method !== "POST" ||
+        !/^\/(?:mobile|desktop)-api\/(?:ide-chat|workspaces\/[A-Za-z0-9_-]+\/chat)\/conversations\/[a-f0-9-]{36}\/messages$/.test(
+          req.path,
+        )
+      )
+        return next();
+      const d = this.access.authenticate(req.headers.cookie);
+      if (
+        !d ||
+        (req.path.startsWith("/desktop-api/")
+          ? d.kind !== "desktop"
+          : d.kind !== "mobile" || !d.managedChat)
+      ) {
+        res.sendStatus(403);
+        return;
+      }
+      // 12 MiB of image bytes encode to 16 MiB, plus JSON and prompt.
+      express.json({ limit: "17mb" })(req, res, next);
+    });
     app.use((req, res, next) =>
       express.json({
         limit: req.path.startsWith("/desktop-api/editor/") ? "12mb" : "96kb",
@@ -430,10 +468,60 @@ export class MobileGateway {
       }
       next();
     });
+    if (this.operations.workspaceChat)
+      app.use(
+        "/mobile-api/workspaces/:hostId/chat",
+        this.operations.workspaceChat((req, _res, id) => {
+          const device = this.authenticated(req);
+          if (
+            device.kind !== "mobile" ||
+            !device.managedChat ||
+            !this.stateFor(device.id).hosts.some(
+              (h) => h.id === id && h.serverWorkspace,
+            )
+          )
+            throw new IdeChatError(
+              "이 기기의 서버 AI 대화 접근을 확인하세요.",
+              403,
+            );
+          return { kind: "mobile", id: device.id };
+        }),
+      );
+    if (this.operations.ideChat) {
+      app.use(
+        "/mobile-api/ide-chat",
+        createIdeChatRouter(this.operations.ideChat, {
+          gitWrites: (req, id) =>
+            !!this.authenticated(req).managedChat &&
+            !!this.operations.ideChat?.terminalFor(id),
+          authorize: (req, { hostId, terminalId, write }) => {
+            const device = this.authenticated(req);
+            if (device.kind !== "mobile" || !device.managedChat)
+              throw new IdeChatError(
+                "호스트 PC에서 이 기기의 AI 대화 접근을 켜세요.",
+                403,
+              );
+            if (!this.operations.state().hosts.some((h) => h.id === hostId))
+              throw new IdeChatError("서버를 찾을 수 없습니다.", 404);
+            if (write && terminalId)
+              this.controls.assert(
+                terminalId,
+                device.id,
+                req.get("X-Harbor-Client"),
+                req.get("X-Harbor-Control"),
+              );
+          },
+          actor: (req) => this.authenticated(req).id,
+        }),
+      );
+    }
     if (this.operations.ideChat)
       app.use(
         "/desktop-api/ide-chat",
         createIdeChatRouter(this.operations.ideChat, {
+          gitWrites: (req, id) =>
+            !!this.authenticated(req, undefined, true) &&
+            !!this.operations.ideChat?.terminalFor(id),
           authorize: (req, { hostId, terminalId, write }) => {
             try {
               const device = this.authenticated(req, undefined, true);
@@ -520,6 +608,22 @@ export class MobileGateway {
             }
           },
         }),
+      );
+    if (this.operations.labQuestions)
+      app.use(
+        "/mobile-api/lab-questions",
+        (req, res, next) => {
+          if (!this.authenticated(req).managedChat) {
+            res.status(403).json({ error: "이 기기의 AI 대화를 허용하세요." });
+            return;
+          }
+          next();
+        },
+        labQuestionRouter(
+          this.operations.labQuestions,
+          (res) =>
+            new Set(this.stateFor(res.locals.deviceId).hosts.map((h) => h.id)),
+        ),
       );
     app.get("/mobile-api/state", (_req, res) =>
       res.json(this.stateFor(res.locals.deviceId)),

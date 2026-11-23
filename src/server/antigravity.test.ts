@@ -33,6 +33,7 @@ const update=u=>send({method:'session/update',params:{sessionId:sid,update:u}});
 function finish(req){update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'## fixture answer'}});update({sessionUpdate:'usage_update',used:250,size:1000,cost:{amount:1.5,currency:'USD'}});send({id:req,result:{stopReason:'end_turn'}})}
 rl.on('line',s=>{const m=JSON.parse(s);if(m.method==='initialize')send({id:m.id,result:{protocolVersion:1}});
 else if(m.method==='session/new'||m.method==='session/load'){if(m.params.mcpServers[0].name!=='harbor')process.exit(2);fs.appendFileSync('trace',JSON.stringify([m.method,m.params.sessionId])+'\\n');send({id:m.id,result:{sessionId:sid,configOptions:[{id:'model',category:'model',currentValue:'fixture-model'}]}})}
+else if(m.method==='session/set_config_option'){if(m.params.value!=='fixture-model-low')process.exit(3);send({id:m.id,result:{configOptions:[{id:'model',category:'model',currentValue:'fixture-model'},{id:'thought_level',category:'thought_level',currentValue:'low'}]}})}
 else if(m.method==='session/prompt'){const text=m.params.prompt[0].text;fs.appendFileSync('trace',JSON.stringify(['prompt',m.params.sessionId,text])+'\\n');if(text.includes('approve-fixture')){prompting=m.id;send({id:901,method:'session/request_permission',params:{sessionId:sid,toolCall:{title:'test tool'},options:[{optionId:'one',name:'one'}]}})}else finish(m.id)}
 else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.result.outcome])+'\\n');finish(prompting)}});
 `,
@@ -84,7 +85,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
           cwd: dir,
           env: {
             ...process.env,
-            HARBOR_AGY_CONFIG: "",
+            HARBOR_AGY_CONFIG: JSON.stringify({model:"fixture-model-low"}),
             HARBOR_SESSION_TOKEN: "fixture",
             HARBOR_AGY_BRIDGE: `http://127.0.0.1:${address.port}/bridge/mcp`,
           },
@@ -126,6 +127,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       const usage = await history.usage(host, id);
       assert.equal(usage?.usedTokens, 250);
       assert.equal(usage?.contextWindow, 1000);
+      assert.equal(usage?.model,"fixture-model-low");
       proc.stdin.write("/exit\r");
       await wait(() => proc.exitCode !== null);
       states.length = 0;

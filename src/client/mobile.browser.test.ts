@@ -207,6 +207,27 @@ test(
       assert.equal(await cardBorder("테스트 Codex"), "rgb(165, 100, 16)");
       assert.equal(await cardBorder("NPU PIM"), "rgb(57, 104, 199)");
       assert.equal(await cardBorder("Compiler"), "rgb(34, 131, 84)");
+      await page
+        .getByRole("button", { name: "NPU PIM 고정", exact: true })
+        .click();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "NPU PIM 고정", exact: true })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
+      await page
+        .getByRole("button", { name: "내 확인 필요", exact: true })
+        .click();
+      await page.waitForFunction(
+        () =>
+          document.querySelectorAll(".host-group:not([hidden]) .session.card")
+            .length === 1,
+      );
+      assert.equal(await cardBorder("테스트 Codex"), "rgb(165, 100, 16)");
+      await page
+        .getByRole("button", { name: "내 확인 필요", exact: true })
+        .click();
       await mkdir(resolve(".cache/mobile-review"), { recursive: true });
       await page.screenshot({
         path: resolve(".cache/mobile-review/session-card-status.png"),
@@ -240,7 +261,7 @@ test(
         await new Promise<void>((resolve) => (releaseInitial = resolve));
         return initialSnapshot(id);
       };
-      await page.getByRole("button", { name: /테스트 Codex/ }).click();
+      await cards.filter({ hasText: "테스트 Codex" }).click();
       await page
         .locator(".mobile-terminal-flow")
         .getByText("Native completion status", { exact: true })
@@ -956,7 +977,7 @@ test(
       // Changing sessions keeps independent drafts and refresh returns to the
       // selected session at its latest output, without sending the saved draft.
       await page.getByLabel("세션 목록", { exact: true }).click();
-      await page.getByRole("button", { name: /테스트 Codex/ }).click();
+      await cards.filter({ hasText: "테스트 Codex" }).click();
       await page
         .getByLabel("터미널에 보낼 입력")
         .fill("same-session readiness");

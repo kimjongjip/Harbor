@@ -10,7 +10,20 @@ export interface IdeChatLive {
     "codex-native" | "claude-channel" | "antigravity-acp" | "unavailable";
   reason?: string;
 }
+export type ChatEffort = "low" | "medium" | "high" | "xhigh";
+export interface ChatReservation {
+  notBefore?:number;
+  needsAuthorization?: boolean;
+  id: string;
+  text: string;
+  error?: string;
+}
 export interface IdeChatConversation {
+  /** Present on chats where Harbor owns the peer tool binding. */
+  peerEnabled?: boolean;
+  reviewOnly?: boolean;
+  effort?: ChatEffort;
+  queue?: ChatReservation[];
   id: string;
   runtimeId: string;
   hostId: string;
@@ -26,11 +39,14 @@ export interface IdeChatConversation {
   historyNotice?: string;
   error?: string;
   revision: number;
+  contentRevision?: number;
   updatedAt: number;
   /** A view of the existing CLI; never a second native conversation process. */
   live?: IdeChatLive;
 }
 export interface IdeChatCreate {
+  reviewOnly?: boolean;
+  effort?: ChatEffort;
   hostId: string;
   provider: IdeChatProvider;
   requestId: string;
@@ -39,6 +55,8 @@ export interface IdeChatCreate {
   resumeId?: string;
 }
 export interface IdeChatSend {
+  images?: string[];
+  delivery?: "steer" | "next" | "reset";
   runtimeId: string;
   requestId: string;
   text: string;

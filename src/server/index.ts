@@ -2,6 +2,11 @@ import express from "express";
 import { MobileAccess } from "./mobile-access.js";
 import { MobileGateway } from "./mobile-gateway.js";
 import { DesktopAccess } from "./desktop-access.js";
+import { RemoteWorkspaces } from "./remote-workspaces.js";
+import { LoopbackPorts,loopbackPortRouter } from "./loopback-ports.js";
+import { workspaceCanSwitch } from "./workspace-update.js";
+import { WorkspaceAccess } from "./workspace-access.js";
+import { workspaceChatRouter } from "./workspace-chat.js";
 import {
   desktopPreferenceKeys,
   type DesktopWorkspace,
@@ -19,6 +24,8 @@ import { MobileConversations } from "./mobile-conversation.js";
 import { IdeChats, IdeChatError, createIdeChatRouter } from "./ide-chat.js";
 import { IdeLiveChats } from "./ide-chat-live.js";
 import { ResearchLabManager } from "./research-manager.js";
+import { LabQuestions, labQuestionRouter } from "./lab-questions.js";
+import { labRunner } from "./lab-providers.js";
 import {
   researchSettings,
   validateResearchSettings,
@@ -27,7 +34,7 @@ import {
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { resolve, join, posix } from "node:path";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import { AutoApproval } from "./auto-approval.js";
@@ -47,6 +54,10 @@ import {
 import { historyActivities } from "./history-activity.js";
 import { HistoryResumer } from "./history-resume.js";
 import { ClaudeHistory } from "./claude-history.js";
+import { reviewWorktree, performWorktree } from "./worktree-review.js";
+import { workflowResultText } from "../shared/research.js";
+import { workflowRouter } from "./research-workflows.js";
+import { ManagedPeers } from "./managed-peers.js";
 import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { createBridgeRouter } from "./bridge-router.js";
@@ -100,8 +111,23 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535)
   throw new Error("PORT must be between 1024 and 65535");
 const token = randomBytes(32).toString("hex");
 const store = new Store();
+const workspaceSocket = process.env.HARBOR_WORKSPACE_SOCKET;
+const workspaceAccess = workspaceSocket
+  ? new WorkspaceAccess(
+      readFileSync(join(store.directory, "workspace.key"), "utf8").trim(),
+    )
+  : undefined;
+const remoteWorkspaces = new RemoteWorkspaces(store.directory);
+const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
+  workspaceChatRouter(
+    remoteWorkspaces,
+    (id) => hub.host(id),
+    passwordFor,
+    authorize,
+  );
 const runtimeDiagnostics = startRuntimeDiagnostics(store.directory);
 const hub = new Hub(store);
+const loopbackPorts = new LoopbackPorts(id=>hub.host(id));
 const terminals = new Terminals({ directory: store.directory });
 const richTerminals = new RichTerminals(
   12000,
@@ -140,8 +166,11 @@ const autoApproval = new AutoApproval(
   (id) => terminals.list().find((terminal) => terminal.id === id),
   () => broadcastState(),
 );
+let managedPeers: ManagedPeers | undefined;
 const mailbox = new Mailbox(store.directory, {
-  terminal: (id) => terminals.list().find((item) => item.id === id),
+  terminal: (id) =>
+    terminals.list().find((item) => item.id === id) ||
+    managedPeers?.list().find((item) => item.id === id),
   host: (id) => store.data.hosts.find((item) => item.id === id),
 });
 const peerFlushes = new Set<string>();
@@ -305,7 +334,7 @@ const bridge = new AgentBridge(mailbox, {
   research: () => research,
   requests,
   onChange: () => broadcastState(),
-  terminals: () => terminals.list(),
+  terminals: () => [...terminals.list(), ...(managedPeers?.list() || [])],
   host: (id) => store.data.hosts.find((item) => item.id === id),
   onConnected: (id, kind) => terminals.markAgentConnected(id, kind),
   onState: (id, status) => terminals.markAgentState(id, status),
@@ -532,6 +561,26 @@ const desktop: DesktopAccess = new DesktopAccess(
 );
 const server = createServer(app);
 app.disable("x-powered-by");
+let workspaceUpdating = false,
+  workspaceWrites = 0;
+if (workspaceAccess) {
+  app.use(workspaceAccess.middleware);
+  app.use((req, res, next) => {
+    if (workspaceUpdating) {
+      res.status(503).json({ error: "서버 업데이트 적용 중입니다." });
+      return;
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      workspaceWrites++;
+      // A disconnected requester may still own an asynchronous command.
+      // On an uncertain write, leave switching to the operator.
+      res.once("finish", () => {
+        workspaceWrites--;
+      });
+    }
+    next();
+  });
+}
 app.use((req, res, next) => {
   if (desktop.device(req)) {
     res.setHeader("Cache-Control", "no-store");
@@ -539,9 +588,10 @@ app.use((req, res, next) => {
     return;
   }
   if (
-    !allowedHost(req.headers.host, port) ||
-    (!req.path.startsWith("/html-preview/") &&
-      !allowedOrigin(req.headers.origin, port))
+    !workspaceAccess &&
+    (!allowedHost(req.headers.host, port) ||
+      (!req.path.startsWith("/html-preview/") &&
+        !allowedOrigin(req.headers.origin, port)))
   ) {
     res.status(403).json({ error: "허용되지 않은 요청 출처입니다." });
     return;
@@ -572,6 +622,7 @@ const state = () => {
     ...current,
     hosts: current.hosts.map((host) => ({
       ...host,
+      serverWorkspace: remoteWorkspaces.enabled(host),
       hasSavedPassword: credentials.has(host),
       terminalConnected: opened.some(
         (terminal) => terminal.hostId === host.id && !terminal.exited,
@@ -580,6 +631,10 @@ const state = () => {
     terminals: opened.map((terminal) => ({
       ...terminal,
       autoApproval: autoApproval.state(terminal.id),
+      collaborationPaused: mailbox.isPaused(
+        terminal.id,
+        terminal.agentSessionId,
+      ),
     })),
     mailbox: mailbox.list(),
     requests: requests.list(),
@@ -661,11 +716,41 @@ const liveIdeChats = new IdeLiveChats({
     },
   },
 });
+managedPeers = new ManagedPeers({
+  mailbox,
+  peers: bridge.peers,
+  terminals: () => terminals.list(),
+  hostName: (id) => hub.host(id).name,
+});
+hub.managedPeerCall = (hostId, nativeId, name, args) =>
+  managedPeers!.call({ hostId, nativeId, provider: "codex" }, name, args);
 const ideChats = new IdeChats({
+  reservationDirectory: store.directory,
+  reservationQuota:(id,provider,model,fresh)=>hostInsights.reservationQuota(hub.host(id),provider,model,fresh),
+  gitAction: async (id, cwd, input, guard) => {
+    const host = hub.host(id);
+    if (host.kind === "ssh") await passwordFor(id);
+    return performWorktree(
+      host,
+      cwd,
+      input,
+      (h, cmd) => files.researchCommand(h, cmd),
+      guard,
+    );
+  },
+  worktree: async (id, cwd, file) => {
+    const host = hub.host(id);
+    if (host.kind === "ssh") await passwordFor(id);
+    return reviewWorktree(host, cwd, file, (h, command) =>
+      files.researchCommand(h, command),
+    );
+  },
+  managedPeers,
   runtimeId: mobileRuntimeId,
   hub,
   live: liveIdeChats,
-  openAntigravity: async (hostId, cwd, resumeId, guard) => {
+  antigravityModel:async(hostId,id)=>(await antigravityHistory.usage(hub.host(hostId),id))?.model,
+  openAntigravity: async (hostId, cwd, resumeId, guard, model) => {
     const host = hub.host(hostId);
     if (host.kind !== "local")
       throw new Error("Antigravity는 이 컴퓨터에서 실행할 수 있습니다.");
@@ -678,6 +763,7 @@ const ideChats = new IdeChats({
       : await terminals.create(host, folder || "", undefined, {
           program: "antigravity",
           resumeCwd: folder,
+          antigravityModel:model,
         });
     for (let i = 0; i < 200; i++) {
       await guard();
@@ -742,6 +828,26 @@ app.use(
     },
   }),
 );
+const labQuestions = new LabQuestions(
+  store.directory,
+  labRunner(hub, passwordFor, (hostId, path) =>
+    files.resolvePath(hub.host(hostId), path, "~"),
+  ),
+  (member) => {
+    const h = hub.host(member.hostId);
+    return JSON.stringify([
+      h.id,
+      h.kind,
+      h.address,
+      h.port,
+      h.username,
+      h.identityFile,
+      h.codexPath,
+      h.defaultCwd,
+    ]);
+  },
+);
+const localAntigravityAvailable = !!findAntigravity();
 const mobile: MobileGateway = new MobileGateway(
   new MobileAccess(store.directory),
   {
@@ -758,8 +864,10 @@ const mobile: MobileGateway = new MobileGateway(
       revoke: (id) => desktop.revoke(id),
     },
     editor: editorFiles,
+    labQuestions,
     controlChanged: () => broadcastTerminalControls(),
     ideChat: ideChats,
+    workspaceChat: relayChat,
     resize: (id, cols, rows) => terminals.resize(id, cols, rows),
     annotate: (id, text, comment) => {
       const terminal = annotationTerminal(id);
@@ -777,8 +885,14 @@ const mobile: MobileGateway = new MobileGateway(
       return { reference: capture.reference };
     },
     state: () => ({
+      antigravityIntegration: localAntigravityAvailable,
       runtimeId: mobileRuntimeId,
-      hosts: store.data.hosts.map(({ id, name, kind }) => ({ id, name, kind })),
+      hosts: store.data.hosts.map((h) => ({
+        id: h.id,
+        name: h.name,
+        kind: h.kind,
+        serverWorkspace: remoteWorkspaces.enabled(h),
+      })),
       terminals: terminals
         .mobileList()
         .map((t) => ({ ...t, autoApproval: autoApproval.state(t.id) })),
@@ -800,6 +914,7 @@ const mobile: MobileGateway = new MobileGateway(
 app.use(
   "/api/ide-chat",
   createIdeChatRouter(ideChats, {
+    gitWrites: (req, id) => !desktop.device(req) || !!ideChats.terminalFor(id),
     authorize: (request, { hostId, terminalId, write }) => {
       desktop.device(request);
       hub.host(hostId);
@@ -826,6 +941,115 @@ terminals.on("mobileActivity", () => mobile.changed());
 requests.on("change", () => mobile.changed());
 research.on("change", () => mobile.changed());
 app.get("/api/mobile", (_req, res) => res.json(mobile.view()));
+if (workspaceAccess)
+  app.use(
+    "/_workspace/chat/lab-questions",
+    labQuestionRouter(labQuestions, (res) => {
+      if (!res.locals.workspaceActor)
+        throw Object.assign(Error("허용되지 않은 연구실 요청입니다."), {
+          status: 403,
+        });
+      return new Set(["local"]);
+    }),
+  );
+if (workspaceAccess)
+  app.post("/_workspace/chat/conversations/:id/control", async (req, res) => {
+    const actor = String(res.locals.workspaceActor || "");
+    if (!/^(desktop|mobile)-/.test(actor))
+      throw Object.assign(Error("등록된 기기에서 입력 제어를 요청하세요."), {
+        status: 403,
+      });
+    const input = z
+      .object({
+        runtimeId: z.string().uuid(),
+        clientId: z.string().uuid(),
+        action: z.enum(["claim", "renew", "release"]),
+        token: z.string().uuid().optional(),
+        takeover: z.boolean().optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const chat = await ideChats.read(String(req.params.id), async () => {});
+    if (
+      chat.hostId !== "local" ||
+      chat.runtimeId !== input.runtimeId ||
+      !chat.live?.terminalId
+    )
+      throw Object.assign(Error("터미널 연결을 확인하세요."), { status: 409 });
+    res.json(
+      mobile.controls.change(
+        chat.live.terminalId,
+        actor,
+        actor.startsWith("mobile-") ? "휴대폰" : "연결된 PC",
+        input,
+      ),
+    );
+  });
+if (workspaceAccess)
+  app.use(
+    "/_workspace/chat",
+    createIdeChatRouter(ideChats, {
+      gitWrites: (req, id) =>
+        String(req.res?.locals.workspaceActor).startsWith("host-") ||
+        !!ideChats.terminalFor(id),
+      actor: (req) => String(req.get("X-Harbor-Actor")),
+      authorize: (req, { hostId, terminalId, write }) => {
+        if (hostId !== "local" || !req.res?.locals.workspaceActor)
+          throw new IdeChatError("허용되지 않은 서버 대화입니다.", 403);
+        if (write && terminalId) {
+          const actor = String(req.res.locals.workspaceActor);
+          if (actor.startsWith("host-")) mobile.controls.local(terminalId);
+          else
+            mobile.controls.assert(
+              terminalId,
+              actor,
+              req.get("X-Harbor-Client"),
+              req.get("X-Harbor-Control"),
+            );
+        }
+      },
+    }),
+  );
+app.use(
+  "/api/workspaces/:hostId/chat",
+  relayChat((req) => {
+    const d = desktop.device(req);
+    return d ? { kind: "desktop", id: d.id } : { kind: "host", id: "local" };
+  }),
+);
+app.use("/api/hosts/:hostId/loopback-ports",loopbackPortRouter(loopbackPorts,req=>!desktop.device(req)&&!workspaceAccess&&validToken(req.headers["x-harbor-token"],token),passwordFor));
+app.post("/api/hosts/:id/server-workspace", async (req, res) => {
+  if (desktop.device(req) || workspaceAccess) {
+    res.status(403).json({ error: "호스트 PC의 서버 관리에서 여세요." });
+    return;
+  }
+  const { install, password } = z
+    .object({
+      install: z.boolean(),
+      password: z.string().max(2048).optional(),
+    })
+    .strict()
+    .parse(req.body);
+  const host = hub.host(String(req.params.id));
+  const workspace = await remoteWorkspaces.open(
+    host,
+    await passwordFor(host.id, password),
+    install,
+  );
+  mobile.changed();
+  broadcastState();
+  res.json(workspace);
+});
+app.delete("/api/hosts/:id/server-workspace", (req, res) => {
+  if (desktop.device(req) || workspaceAccess) {
+    res.sendStatus(403);
+    return;
+  }
+  remoteWorkspaces.forget(hub.host(String(req.params.id)));
+  mobile.changed();
+  broadcastState();
+  res.json({ ok: true });
+});
 const mobileNetwork = new MobileNetwork();
 const tailscaleSetup = new TailscaleSetup();
 app.get("/api/mobile/setup", async (_req, res) =>
@@ -931,6 +1155,19 @@ app.post("/api/terminals/:id/control", (req, res) => {
       action: "claim",
       takeover: true,
     }),
+  );
+});
+app.put("/api/mobile/devices/:id/chat", (req, res) => {
+  if (desktop.device(req)) {
+    res.status(403).json({ error: "호스트 PC에서 설정하세요." });
+    return;
+  }
+  const { enabled } = z
+    .object({ enabled: z.boolean() })
+    .strict()
+    .parse(req.body);
+  res.json(
+    mobile.setManagedChat(z.string().uuid().parse(req.params.id), enabled),
   );
 });
 app.delete("/api/mobile/devices/:id", (req, res) => {
@@ -1049,8 +1286,10 @@ function upgradeWorkbench(
   if (url.pathname !== "/ws") return; // Vite handles its own HMR upgrade in development.
   if (
     !desktop.device(request) &&
-    (!allowedHost(request.headers.host, port) ||
-      !allowedOrigin(request.headers.origin, port) ||
+    ((workspaceAccess
+      ? !workspaceAccess.authorized(request)
+      : !allowedHost(request.headers.host, port) ||
+        !allowedOrigin(request.headers.origin, port)) ||
       !validToken(url.searchParams.get("token"), token))
   ) {
     socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
@@ -1259,7 +1498,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.55" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.0" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -1274,7 +1513,7 @@ app.get("/api/bootstrap", (req, res) =>
     workspace: desktop.device(req) ? desktopWorkspace : undefined,
     state: state(),
     sshAliases: sshAliases(),
-    localCwd: process.cwd(),
+    localCwd: workspaceSocket ? hub.host("local").defaultCwd : process.cwd(),
     credentialStorageAvailable: credentials.available,
     capabilities: {
       terminalColors: true,
@@ -1297,7 +1536,7 @@ app.put("/api/desktop/workspace", (req, res) => {
     .object({
       activeId: z.string().max(128),
       page: z.enum(["hosts", "terminals", "files"]),
-      workspaceView: z.enum(["terminal", "ide"]),
+      workspaceView: z.enum(["terminal", "ide", "chat"]),
       sidebar: z.enum(["servers", "files", "activity", "research"]),
       sidebarVisible: z.boolean(),
       preferences: z.partialRecord(
@@ -1309,6 +1548,9 @@ app.put("/api/desktop/workspace", (req, res) => {
     .parse(req.body);
   res.json({ ok: true });
 });
+app.get("/api/diagnostics/memory", (_req, res) =>
+  res.json(runtimeDiagnostics.snapshot()),
+);
 app.post("/api/diagnostics/view-connection", (req, res) => {
   viewConnections.trace(viewConnectionEvent.parse(req.body));
   res.json({ ok: true });
@@ -1340,6 +1582,28 @@ app.post("/api/notices/read", (req, res) => {
   notices.read(terminalId);
   res.json({ ok: true });
 });
+app.post("/api/terminals/:id/collaboration", (req, res) => {
+  const id = req.params.id;
+  if (desktop.device(req)) desktop.authorize(req, id, true);
+  const input = z
+    .discriminatedUnion("action", [
+      z.object({
+        action: z.literal("pause"),
+        sessionId: z.string().min(1),
+        paused: z.boolean(),
+      }),
+      z.object({
+        action: z.literal("close"),
+        sessionId: z.string().min(1),
+        threadId: z.string().uuid(),
+      }),
+    ])
+    .parse(req.body);
+  if (input.action === "pause")
+    mailbox.setPaused(id, input.sessionId, input.paused);
+  else mailbox.closePeerThread(id, input.sessionId, input.threadId);
+  res.json({ ok: true });
+});
 app.post("/api/mailbox", (req, res) => res.json(mailbox.send(req.body)));
 app.post("/api/mailbox/:id/read", (req, res) =>
   res.json(mailbox.mark(String(req.params.id), "read")),
@@ -1363,7 +1627,11 @@ app.patch("/api/hosts/:id", (req, res) => {
     throw new Error(
       "서버 설정을 변경하려면 이 서버의 열린 터미널을 먼저 닫으세요.",
     );
+  const previous = { ...hub.host(id) };
+  remoteWorkspaces.checkEdit(previous);
   const host = hub.updateHost(id, hostInput.parse(req.body));
+  loopbackPorts.closeHost(id);
+  remoteWorkspaces.changed(previous, host);
   history.close(id);
   codexUsageHistory.clear(id);
   codexAgentTelemetry.clear(id);
@@ -1478,6 +1746,7 @@ app.post("/api/hosts/:id/connect", async (req, res) => {
   res.json(await hub.connect(id, await passwordFor(id, body.password)));
 });
 app.post("/api/hosts/:id/disconnect", (req, res) => {
+  remoteWorkspaces.disconnect(hub.host(String(req.params.id)));
   history.close(String(req.params.id));
   codexUsageHistory.clear(String(req.params.id));
   codexAgentTelemetry.clear(String(req.params.id));
@@ -1597,6 +1866,18 @@ app.post("/api/discussions/:id/cancel", (req, res) => {
   hub.cancelDiscussion(String(req.params.id));
   res.json({ ok: true });
 });
+app.use(
+  "/api/research-workflows",
+  workflowRouter(
+    store.directory,
+    research,
+    (id) => terminals.list().find((t) => t.id === id),
+    (req, id) => {
+      if (desktop.device(req)) desktop.authorize(req, id, true);
+    },
+  ),
+);
+app.use("/api/lab-questions", labQuestionRouter(labQuestions));
 app.get("/api/hosts/:id/research-models", async (req, res) => {
   if (
     !desktop.device(req) &&
@@ -1932,7 +2213,7 @@ app.post("/api/research/:id/export", (req, res) => {
   const path = join(directory, `${lab.id}.md`);
   writeFileSync(
     path,
-    `# ${lab.title}\n\n${lab.status === "completed" ? "최종 검토를 마친 결과" : "현재까지의 결과 · 검토 진행 중"}\n\n${lab.bestResult}\n`,
+    `# ${lab.title}\n\n${lab.status === "completed" ? "최종 검토를 마친 결과" : "현재까지의 결과 · 검토 진행 중"}\n\n${lab.bestResult}${workflowResultText(lab)}\n`,
     { mode: 0o600 },
   );
   const local = store.data.hosts.find((h) => h.kind === "local");
@@ -2620,26 +2901,61 @@ richTerminals.on("block", (id, block) => {
     if (subscription.terminals.has(id))
       send(socket, { type: "terminal-rich", id, block });
 });
-server.listen(port, "127.0.0.1", () => {
+function onListening() {
   writeFileSync(
     join(store.directory, "server.json"),
-    JSON.stringify({ pid: process.pid, port, url: `http://127.0.0.1:${port}` }),
+    JSON.stringify(
+      workspaceSocket
+        ? { pid: process.pid, socket: workspaceSocket }
+        : { pid: process.pid, port, url: `http://127.0.0.1:${port}` },
+    ),
   );
-  console.log(`Harbor is ready at http://127.0.0.1:${port}`);
+  console.log(
+    `Harbor is ready at ${workspaceSocket || "http://127.0.0.1:" + port}`,
+  );
   if (process.env.HARBOR_AUTO_CONNECT === "1")
     void hub
       .connect("local")
       .catch((error) => console.warn("Local Codex:", errorText(error)));
-});
+}
+if (workspaceSocket) server.listen(workspaceSocket, onListening);
+else server.listen(port, "127.0.0.1", onListening);
 server.on("error", (error) => {
   console.error(errorText(error));
   process.exitCode = 1;
 });
 let shuttingDown = false;
+const releaseLink = process.env.HARBOR_WORKSPACE_RELEASE_LINK;
+if (workspaceSocket && releaseLink)
+  setInterval(() => {
+    if (shuttingDown || workspaceWrites || !workspaceCanSwitch(releaseLink))
+      return;
+    if (
+      terminals.list().some((t) => !t.exited) ||
+      ideChats.hasActiveWork() ||
+      hub
+        .state()
+        .sessions.some(
+          (s) => s.activeTurnId || ["running", "waiting"].includes(s.status),
+        ) ||
+      hub.state().discussions.some((d) => d.status === "running") ||
+      research
+        .list()
+        .some((l) => !["completed", "paused"].includes(l.status)) ||
+      labQuestions.list().some((j) => j.status === "working") ||
+      requests.list().some((r) => r.status === "pending")
+    )
+      return;
+    workspaceUpdating = true;
+    process.exitCode = 75;
+    shutdown("signal-term");
+  }, 30000).unref();
 function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
   if (shuttingDown) return;
   shuttingDown = true;
   runtimeDiagnostics.shutdown(reason);
+  remoteWorkspaces.close();
+  loopbackPorts.closeAll();
   void mobile.stop();
   tailscaleSetup.close();
   clearTimeout(stateBroadcast);
@@ -2647,6 +2963,7 @@ function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
   research.shutdown();
   clearInterval(heartbeat);
   codexPeers.disposeAll();
+  labQuestions.close();
   ideChats.close();
   hub.shutdown();
   history.shutdown();
@@ -2662,7 +2979,7 @@ function shutdown(reason: "signal-int" | "signal-term" | "desktop-request") {
   server.close();
   bridgeServer.close();
   bridgeServer.closeAllConnections();
-  setTimeout(() => process.exit(0), 1000).unref();
+  setTimeout(() => process.exit(workspaceUpdating ? 75 : 0), 1000).unref();
 }
 process.on("SIGINT", () => shutdown("signal-int"));
 process.on("SIGTERM", () => shutdown("signal-term"));
