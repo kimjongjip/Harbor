@@ -26,6 +26,19 @@ test(
       id: crypto.randomUUID(),
       terminal: { kind: "terminal", title: "닫힌 세션", terminalId: closedId },
     });
+    const running = {
+      ...f.state.terminals[0],
+      id: crypto.randomUUID(),
+      title: "NPU PIM",
+      agentKind: "claude" as const,
+      agentState: "working" as const,
+    };
+    const idle = {
+      ...f.state.terminals[0],
+      id: crypto.randomUUID(),
+      title: "Compiler",
+    };
+    f.state.terminals.push(running, idle);
     const blockId = "abcdef0123456789abcd";
     const answer = {
       id: blockId,
@@ -185,7 +198,37 @@ test(
         .click();
       const previewResponse = await initialPreview;
       assert.match((await previewResponse.json()).data, /READY/);
-      assert.equal(await page.locator(".session.card:visible").count(), 1);
+      const cards = page.locator(".session.card:visible");
+      assert.equal(await cards.count(), 3);
+      const cardBorder = (title: string) =>
+        cards
+          .filter({ has: page.getByText(title, { exact: true }) })
+          .evaluate((el) => getComputedStyle(el).borderColor);
+      assert.equal(await cardBorder("테스트 Codex"), "rgb(165, 100, 16)");
+      assert.equal(await cardBorder("NPU PIM"), "rgb(57, 104, 199)");
+      assert.equal(await cardBorder("Compiler"), "rgb(34, 131, 84)");
+      await mkdir(resolve(".cache/mobile-review"), { recursive: true });
+      await page.screenshot({
+        path: resolve(".cache/mobile-review/session-card-status.png"),
+      });
+      idle.agentState = "working";
+      f.gateway.changed();
+      await cards
+        .filter({ hasText: "Compiler" })
+        .getByText(/작업 중/)
+        .waitFor();
+      assert.equal(await cardBorder("Compiler"), "rgb(57, 104, 199)");
+      idle.connectionState = "disconnected";
+      f.gateway.changed();
+      await cards
+        .filter({ hasText: "Compiler" })
+        .getByText(/연결 확인 필요/)
+        .waitFor();
+      assert.equal(await cardBorder("Compiler"), "rgb(130, 144, 163)");
+      f.state.terminals = f.state.terminals.filter(
+        (t) => t.id !== idle.id && t.id !== running.id,
+      );
+      f.gateway.changed();
       assert.equal(
         await page.getByRole("button", { name: /닫힌 세션/ }).count(),
         0,

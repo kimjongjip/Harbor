@@ -1246,40 +1246,44 @@ function App() {
                 </h2>
                 {matchingTerminals
                   .filter((t) => t.hostId === host.id)
-                  .map((t) => (
-                    <button
-                      className={`session card ${selected === t.id ? "selected" : ""}`}
-                      disabled={busy}
-                      key={t.id}
-                      onClick={() => choose(t.id)}
-                      onPointerDown={() => prepare(t.id)}
-                      onFocus={() => prepare(t.id)}
-                    >
-                      <span className="session-icon">
-                        <TerminalIcon size={20} />
-                      </span>
-                      <span className="session-copy">
-                        <strong>{t.title}</strong>
-                        <small>
-                          {t.agentKind === "claude"
-                            ? "Claude"
-                            : t.agentKind === "codex"
-                              ? "Codex"
-                              : "셸"}{" "}
-                          · {sessionStatus(t)}
-                        </small>
-                        <span className="session-cwd">{t.cwd}</span>
-                      </span>
-                      {pending.some((r) => r.terminal.terminalId === t.id) ? (
-                        <span
-                          className="request-dot"
-                          aria-label="대기 요청 있음"
-                        />
-                      ) : (
-                        <span className="session-chevron">›</span>
-                      )}
-                    </button>
-                  ))}
+                  .map((t) => {
+                    const sessionActivity = activity(t);
+                    return (
+                      <button
+                        className={`session card ${selected === t.id ? "selected" : ""}`}
+                        data-activity={sessionActivity}
+                        disabled={busy}
+                        key={t.id}
+                        onClick={() => choose(t.id)}
+                        onPointerDown={() => prepare(t.id)}
+                        onFocus={() => prepare(t.id)}
+                      >
+                        <span className="session-icon">
+                          <TerminalIcon size={20} />
+                        </span>
+                        <span className="session-copy">
+                          <strong>{t.title}</strong>
+                          <small>
+                            {t.agentKind === "claude"
+                              ? "Claude"
+                              : t.agentKind === "codex"
+                                ? "Codex"
+                                : "셸"}{" "}
+                            · {activityLabel[sessionActivity]}
+                          </small>
+                          <span className="session-cwd">{t.cwd}</span>
+                        </span>
+                        {pending.some((r) => r.terminal.terminalId === t.id) ? (
+                          <span
+                            className="request-dot"
+                            aria-label="대기 요청 있음"
+                          />
+                        ) : (
+                          <span className="session-chevron">›</span>
+                        )}
+                      </button>
+                    );
+                  })}
               </section>
             ))}
             {state && !openTerminals.length && (
