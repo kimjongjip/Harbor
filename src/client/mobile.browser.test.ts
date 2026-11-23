@@ -476,8 +476,16 @@ test(
         Math.abs((await flowScroll.evaluate((el) => el.scrollTop)) - 300) < 2,
         "rich answer reading position survives reconnect",
       );
-      await page.getByLabel("최신 내용으로 이동").click();
-      await page.getByLabel("터미널에 보낼 입력").fill("모바일 테스트");
+      const terminalDraft = page.getByLabel("터미널에 보낼 입력");
+      await terminalDraft.click();
+      assert.ok(
+        Math.abs((await flowScroll.evaluate((el) => el.scrollTop)) - 300) < 2,
+      );
+      await terminalDraft.fill("모바일 테스트");
+      await page.waitForFunction(() => {
+        const el = document.querySelector(".terminal-scroll");
+        return el && el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+      });
       await page.getByRole("button", { name: "보내기 ↵", exact: true }).click();
       await page.waitForFunction(
         () =>

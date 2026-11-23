@@ -429,14 +429,19 @@ export function TerminalConversation({
   };
   useEffect(() => {
     const input = term.onData?.((data) => {
-      // A real edit ends a frozen history selection. Mouse/protocol replies
-      // must not do this; otherwise text is silently held until a later click.
-      if (
-        data &&
-        (!data.startsWith("\x1b") || data === "\x1b" ||
-          (data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~"))) &&
-        hasSelection()
-      ) {
+      // onData also carries focus changes, mouse reports and terminal replies.
+      // Only text edits or submission should take the reader back to the prompt.
+      const editsPrompt =
+        /^[^\x00-\x1f\x7f-\x9f]/u.test(data) ||
+        data === "\r" ||
+        data === "\b" ||
+        data === "\x7f" ||
+        data === "\x1b[3~" ||
+        (data.startsWith("\x1b[200~") &&
+          data.endsWith("\x1b[201~") &&
+          data.length > 12);
+      if (!editsPrompt) return;
+      if (hasSelection()) {
         body.current?.ownerDocument.getSelection()?.removeAllRanges();
         setSelected(false);
       }
@@ -782,7 +787,7 @@ export function TerminalConversation({
       restoreConversationSelection(node, selectedPrepend.current.selection);
       selectedPrepend.current = null;
     } else if (hasSelection()) return;
-    if (saved)
+    if (saved && (saved !== "bottom" || followingRef.current))
       node.scrollTop =
         saved === "bottom"
           ? node.scrollHeight
@@ -801,7 +806,8 @@ export function TerminalConversation({
     if (!node) return;
     const observer = new ResizeObserver(() => {
       // Images, fonts and math can finish layout later than the history response.
-      if (following && !hasSelection()) node.scrollTop = node.scrollHeight;
+      if (followingRef.current && !hasSelection())
+        node.scrollTop = node.scrollHeight;
     });
     if (node.firstElementChild) observer.observe(node.firstElementChild);
     return () => observer.disconnect();
@@ -839,14 +845,12 @@ export function TerminalConversation({
           if (menuVisible.current) return;
           const node = body.current;
           if (!node) return;
-          const next =
-            node.scrollHeight - node.clientHeight - node.scrollTop < 40;
-          followingRef.current = next;
-          setFollowing(next);
-          if (next && !hasSelection() && pending.current) {
-            latest.current = pending.current;
-            setDetail(pending.current);
-            pending.current = null;
+          if (
+            followingRef.current &&
+            node.scrollHeight - node.clientHeight - node.scrollTop >= 40
+          ) {
+            followingRef.current = false;
+            setFollowing(false);
           }
           if (node.scrollTop < 24 && detail?.nextCursor && !error)
             void load.current(true, true);

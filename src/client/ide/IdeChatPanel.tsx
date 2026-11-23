@@ -1211,6 +1211,11 @@ export default function IdeChatPanel({
           disabled={!hostId || live?.canSend === false}
           onChange={(event) => {
             view.draft = event.target.value;
+            if (!following.current && scroll.current) {
+              following.current = true;
+              setBottom(true);
+              scroll.current.scrollTop = scroll.current.scrollHeight;
+            }
             repaint();
           }}
           onKeyDown={(event) => {

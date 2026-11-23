@@ -1521,6 +1521,7 @@ function App() {
                   aria-label="터미널에 보낼 입력"
                   value={draft}
                   onChange={(e) => {
+                    if (!terminalFollowRef.current) viewportRef.current?.latest();
                     if (!draft)
                       draftSessions.current.set(
                         selected,

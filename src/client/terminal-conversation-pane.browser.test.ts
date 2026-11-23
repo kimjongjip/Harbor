@@ -489,6 +489,73 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         "abcdef",
         "same native input stays usable inline, without a separate composer",
       );
+
+      const reader = page.locator(".terminal-conversation-body");
+      const latest = page.getByRole("button", { name: "맨 아래로" });
+      await page.evaluate(async () => {
+        const term = (window as any).term;
+        await new Promise<void>((done) => term.write("\x1b[?1004h", done));
+        document.querySelector<HTMLElement>(
+          ".terminal-conversation-body",
+        )!.style.flex = "0 0 150px";
+      });
+      const readAbove = async () => {
+        await reader.evaluate((el) => {
+          el.scrollTop = 20;
+        });
+        await latest.waitFor();
+        return reader.evaluate((el) => el.scrollTop);
+      };
+      const beforeClick = await readAbove();
+      await page.evaluate(() => (window as any).term.textarea.blur());
+      await reader.click({ position: { x: 3, y: 7 } });
+      await page.waitForFunction(
+        () => document.activeElement === (window as any).term.textarea,
+      );
+      await page.evaluate(async () => {
+        await new Promise<void>((done) =>
+          (window as any).term.write("\x1b[6n", done),
+        );
+      });
+      await page.waitForTimeout(120);
+      assert.equal(
+        await reader.evaluate((el) => el.scrollTop),
+        beforeClick,
+        "click, focus reports and cursor queries preserve the reading position",
+      );
+      await reader.evaluate((el) => {
+        el.scrollTop = el.scrollHeight - el.clientHeight - 8;
+      });
+      await reader.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      assert.equal(
+        await latest.isVisible(),
+        true,
+        "layout scrolling near the end keeps reading paused",
+      );
+      await latest.click();
+      await latest.waitFor({ state: "hidden" });
+      await readAbove();
+      await page.evaluate(() => (window as any).term.focus());
+      await page.keyboard.type("g");
+      await latest.waitFor({ state: "hidden" });
+      assert.ok(
+        await reader.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop < 2,
+        ),
+      );
+      await page.evaluate(async () => {
+        await new Promise<void>((done) =>
+          (window as any).term.write("\x1b[?1004l", done),
+        );
+        document.querySelector<HTMLElement>(
+          ".terminal-conversation-body",
+        )!.style.flex = "";
+      });
       control.change(id, "fixture-phone", "Fixture iPhone", {
         clientId: "phone",
         action: "claim",
@@ -514,7 +581,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.evaluate(() => (window as any).term.focus());
       await page.keyboard.type("must stay local");
       await page.waitForTimeout(150);
-      assert.equal(received.join(""), "abcdef");
+      assert.equal(
+        received.filter((data) => !data.startsWith("\x1b")).join(""),
+        "abcdefg",
+      );
       assert.equal(control.view(id)?.clientId, "phone");
       assert.equal(claims, 0);
       assert.equal(sizes.length, beforePeerSizes);

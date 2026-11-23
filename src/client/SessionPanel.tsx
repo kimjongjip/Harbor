@@ -643,7 +643,13 @@ export default function SessionPanel({
                 void attach(files);
               }
             }}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              if (!nearBottom.current && scrollRef.current) {
+                nearBottom.current = true;
+                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+              }
+              setText(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (
                 e.key === "Enter" &&
