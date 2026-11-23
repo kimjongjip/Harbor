@@ -148,7 +148,11 @@ test("community sources use separate provenance, preserve licenses and cannot ma
     "systematic-debugging",
     "rigs",
   ];
-  const result = await library.install(host, ids, ["claude", "codex"]);
+  const result = await library.install(host, ids, [
+    "claude",
+    "codex",
+    "antigravity",
+  ]);
   assert.ok(result.every((r) => r.state === "installed"));
   const status = await library.status(host);
   assert.equal(status.skills.graft, undefined);
@@ -172,6 +176,7 @@ test("community sources use separate provenance, preserve licenses and cannot ma
       assert.deepEqual(status.skills[id], {
         claude: "installed",
         codex: "installed",
+        antigravity: "installed",
       });
     }
   }
@@ -230,7 +235,7 @@ test("installation is per user, covers both providers/resources, preserves exist
     ["installed", "installed"],
   );
   assert.equal(downloads(), 1, "download once for both providers");
-  for (const root of Object.values(initial.roots)) {
+  for (const root of [initial.roots.claude, initial.roots.codex]) {
     for (const file of payload)
       assert.deepEqual(
         await fs.readFile(path.join(root, "pdf", file.path)),
@@ -241,6 +246,7 @@ test("installation is per user, covers both providers/resources, preserves exist
   assert.deepEqual(status.skills.pdf, {
     claude: "installed",
     codex: "installed",
+    antigravity: "available",
   });
   const original = path.join(initial.roots.claude, "pdf", "SKILL.md");
   await fs.writeFile(original, "User edit");

@@ -32,7 +32,7 @@ export interface IdeConversationOperations {
   terminal(id: string): TerminalInfo | undefined;
   readHistory(
     hostId: string,
-    provider: "codex" | "claude",
+    provider: import("../shared/agent-provider").AgentProvider,
     sessionId: string,
     cursor?: string,
   ): Promise<HistoryDetail>;
@@ -81,7 +81,7 @@ export class IdeConversations {
     const terminal = this.operations.terminal(id);
     if (
       !terminal ||
-      !["codex", "claude"].includes(terminal.agentKind || "") ||
+      !terminal.agentKind ||
       (terminal.agentSessionId || terminal.resumeThreadId) !== sessionId ||
       (previous &&
         (terminal.hostId !== previous.hostId ||

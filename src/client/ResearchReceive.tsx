@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { useEffect, useState } from "react";
 import type { AppState } from "../shared/types";
 import type { ResearchLabView } from "../shared/research";
@@ -99,7 +100,7 @@ export function ResearchReceive({
       )}
       {notice && <p>{notice}</p>}
       <button type="button" onClick={() => onOpen(p.terminalId)}>
-        해당 {p.kind === "claude" ? "Claude" : "Codex"} 터미널 열기
+        해당 {agentLabel(p.kind)} 터미널 열기
       </button>
       {p.kind === "claude" && (
         <details>

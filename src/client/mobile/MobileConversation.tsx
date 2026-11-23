@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../../shared/agent-provider";
 import {
   useEffect,
   useLayoutEffect,
@@ -162,7 +163,7 @@ export function MobileConversation({
           cursorRef.current = page.nextCursor;
           setCursor(page.nextCursor);
         }
-        setProvider(page.provider === "claude" ? "Claude" : "Codex");
+        setProvider(agentLabel(page.provider));
         if (page.notice) setNotice(page.notice);
         setLoaded(true);
         setLegacy(false);

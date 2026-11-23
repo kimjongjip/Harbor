@@ -4,9 +4,11 @@ import { researchSettings } from "./research-settings.js";
 import { cliApprovalArgs } from "./cli-approval.js";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { connect as tcpConnect, type Socket } from "node:net";
 import { Duplex } from "node:stream";
+import { findAntigravity } from "./antigravity.js";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { isLegacySharedCodex, type PeerRuntime } from "./peer-delivery.js";
 import type * as pty from "node-pty";
@@ -98,6 +100,7 @@ export class Terminals extends EventEmitter {
     const entry = this.entries.get(id);
     return entry && !entry.info.exited ? entry.process.monitorPid : undefined;
   }
+  private historyRoot?: string;
   private opening = 0;
   private sequence = new Map<string, number>();
   private bridge?: TerminalBridge;
@@ -116,6 +119,8 @@ export class Terminals extends EventEmitter {
     } = {},
   ) {
     super();
+    if (options.directory)
+      this.historyRoot = resolve(options.directory, "antigravity");
     if (options.directory)
       this.registry = new DurableRegistry(resolve(options.directory));
     this.connect = options.connect || passwordConnection;
@@ -149,7 +154,10 @@ export class Terminals extends EventEmitter {
   configureBridge(bridge: TerminalBridge) {
     this.bridge = bridge;
   }
-  markAgentConnected(id: string, kind: "codex" | "claude" = "codex") {
+  markAgentConnected(
+    id: string,
+    kind: NonNullable<TerminalInfo["agentKind"]> = "codex",
+  ) {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
       if (entry.info.agentKind !== kind) delete entry.info.agentCompletion;
@@ -207,6 +215,7 @@ export class Terminals extends EventEmitter {
     entry.info.peerDetail = runtime.detail;
     if (runtime.state !== "offline") {
       entry.info.agentKind = runtime.kind;
+      if (runtime.kind === "antigravity") entry.info.agentConnected = true;
       if (runtime.sessionId) entry.info.agentSessionId = runtime.sessionId;
       if (runtime.kind !== "claude" || !entry.info.agentState)
         entry.info.agentState = runtime.state;
@@ -501,9 +510,12 @@ export class Terminals extends EventEmitter {
     // never change a running CLI or an existing tmux session's approval mode.
     host = { ...host };
     if (options.researchLaunch) {
-      const kind = (options.program || "").startsWith("claude")
-        ? "claude"
-        : "codex";
+      const kind =
+        options.program === "antigravity"
+          ? "antigravity"
+          : (options.program || "").startsWith("claude")
+            ? "claude"
+            : "codex";
       const settings = researchSettings(kind, {
         model: options.researchLaunch.model,
         effort: options.researchLaunch.effort,
@@ -517,19 +529,33 @@ export class Terminals extends EventEmitter {
       throw new Error(
         "터미널은 최대 16개까지 열 수 있습니다. 사용하지 않는 터미널을 닫으세요.",
       );
-    cwd = host.kind === "local" ? homedir() : "~";
+    const agyProgram =
+      options.program === "antigravity" ||
+      options.program === "antigravity-cli";
+    if (agyProgram && host.kind !== "local")
+      throw Error("Antigravity는 이 컴퓨터에서 실행할 수 있습니다.");
+    cwd =
+      options.program === "antigravity"
+        ? options.researchLaunch?.cwd || options.resumeCwd || homedir()
+        : host.kind === "local"
+          ? homedir()
+          : "~";
     this.opening++;
     const program = options.program || "shell";
     const sequence = (this.sequence.get(host.id) || 0) + 1;
     this.sequence.set(host.id, sequence);
     const info: TerminalInfo = {
       cliApprovalMode:
-        host.cliApprovalMode === "full-access" ? "full-access" : "native",
+        !agyProgram && host.cliApprovalMode === "full-access"
+          ? "full-access"
+          : "native",
       id: randomUUID(),
       hostId: host.id,
       cwd,
       program,
-      title: options.title?.trim() || `${host.name} ${sequence}`,
+      title:
+        options.title?.trim() ||
+        `${agyProgram ? "Antigravity" : host.name} ${sequence}`,
       ...(options.claudePeerChannel ? { claudePeerChannel: true } : {}),
       exited: false,
       integration: "unavailable",
@@ -600,9 +626,59 @@ export class Terminals extends EventEmitter {
       };
       delete env.HARBOR_SESSION_TOKEN;
       if (host.kind === "local") {
+        if (process.platform === "win32" && program !== "antigravity") {
+          const agy = findAntigravity();
+          if (agy) {
+            const key =
+              Object.keys(env).find((k) => k.toUpperCase() === "PATH") ||
+              "Path";
+            const bin = dirname(agy);
+            if (
+              !(env[key] || "")
+                .split(";")
+                .some((dir) => dir.toLowerCase() === bin.toLowerCase())
+            )
+              env[key] = bin + ";" + (env[key] || "");
+          }
+        }
         if (!isAbsolute(cwd) || !statSync(cwd).isDirectory())
           throw new Error("터미널의 작업 폴더를 확인하세요.");
-        if (process.platform === "win32") {
+        if (program === "antigravity-cli") {
+          const exe = findAntigravity();
+          if (!exe)
+            throw Error("이 PC에서 Antigravity CLI(agy)를 찾을 수 없습니다.");
+          command = exe;
+          args = [];
+        } else if (program === "antigravity") {
+          const exe = findAntigravity();
+          if (!exe)
+            throw Error("이 PC에서 Antigravity CLI(agy)를 찾을 수 없습니다.");
+          if (!this.bridge || !this.historyRoot)
+            throw Error("Harbor 세션 연결이 준비되지 않았습니다.");
+          const issued = this.bridge.issue(info.id);
+          env.HARBOR_SESSION_TOKEN = issued.token;
+          env.HARBOR_AGY_BRIDGE = `http://127.0.0.1:${this.bridge.port}/bridge/mcp`;
+          if (options.researchLaunch)
+            env.HARBOR_AGY_CONFIG = JSON.stringify({
+              model: options.researchLaunch.model,
+              effort: options.researchLaunch.effort,
+            });
+          command = process.execPath;
+          args = [
+            fileURLToPath(
+              new URL(
+                import.meta.url.endsWith(".ts")
+                  ? "../../desktop/antigravity.cjs"
+                  : "../desktop/antigravity.cjs",
+                import.meta.url,
+              ),
+            ),
+            exe,
+            this.historyRoot,
+            ...(options.resumeThreadId ? [options.resumeThreadId] : []),
+          ];
+          info.integration = "ready";
+        } else if (process.platform === "win32") {
           command = "powershell.exe";
           const issued = this.bridge?.issue(info.id);
           if (issued) {

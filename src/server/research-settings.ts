@@ -46,7 +46,7 @@ export const researchSettingsSchema = z
   .strict();
 
 export function researchSettings(
-  kind: "codex" | "claude",
+  kind: import("../shared/agent-provider.js").AgentProvider,
   input: unknown,
   fallback: ResearchEffort = "default",
 ): ResearchAgentSettings {
@@ -62,7 +62,7 @@ export function researchSettings(
 
 /** Read-only preflight, before creating any terminal or research workspace. */
 export async function validateResearchSettings(
-  kind: "codex" | "claude",
+  kind: import("../shared/agent-provider.js").AgentProvider,
   input: ResearchAgentSettings,
   load: () => Promise<ResearchModel[]>,
 ): Promise<ResearchAgentSettings> {
@@ -97,7 +97,7 @@ export async function validateResearchSettings(
 }
 
 export function researchArguments(
-  kind: "codex" | "claude",
+  kind: import("../shared/agent-provider.js").AgentProvider,
   input: ResearchAgentSettings,
 ): string[] {
   const settings = researchSettings(kind, {

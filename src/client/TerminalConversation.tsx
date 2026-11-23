@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import {
   memo,
   startTransition,
@@ -888,7 +889,7 @@ export function TerminalConversation({
           {detail?.notice && <p role="status">{detail.notice}</p>}
           {shown.turns.slice(0, shown.count).map((turn, turnIndex) => {
             const props = {
-              provider: provider === "claude" ? "Claude" : "Codex",
+              provider: agentLabel(provider),
               hostId: info.hostId,
               cwd: detail?.thread.cwd || info.cwd,
               sessionId,

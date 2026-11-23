@@ -146,13 +146,15 @@ export class IdeLiveChats {
       this.operations.codex.available(terminal.id) &&
       this.operations.codex.currentSession(terminal.id) === binding.nativeId;
     const claude =
-      binding.provider === "claude" &&
+      binding.provider !== "codex" &&
       this.operations.claude.available(terminal.id, binding.nativeId);
     if (!codex && !claude)
       return unavailable(
-        binding.provider === "claude"
-          ? "이 Claude 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다."
-          : "이 Codex 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다.",
+        binding.provider === "antigravity"
+          ? "Antigravity 입력 연결을 준비하고 있습니다. 같은 터미널에서 연결 상태를 확인하세요."
+          : binding.provider === "claude"
+            ? "이 Claude 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다."
+            : "이 Codex 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다.",
         status,
       );
     return {
@@ -162,7 +164,11 @@ export class IdeLiveChats {
         terminalId: terminal.id,
         canSend: true,
         canInterrupt: false,
-        transport: codex ? "codex-native" : "claude-channel",
+        transport: codex
+          ? "codex-native"
+          : binding.provider === "antigravity"
+            ? "antigravity-acp"
+            : "claude-channel",
       },
     };
   }

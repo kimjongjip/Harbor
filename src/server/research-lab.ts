@@ -118,7 +118,7 @@ export const researchPrepareSchema = z
     hostId: id.optional(),
     title: z.string().trim().min(1).max(180).default("새 연구실"),
     cwd: z.string().trim().min(1).max(4096),
-    leadKind: z.enum(["codex", "claude"]).default("claude"),
+    leadKind: z.enum(["codex", "claude", "antigravity"]).default("claude"),
     effort: z.enum(["default", "low"]).default("low"),
     terminalId: id.optional(),
     agentSettings: researchSettingsSchema.optional(),
@@ -134,7 +134,7 @@ export const researchProposalSchema = z
   .strict();
 export const researchStartSchema = researchProposalSchema
   .extend({
-    partnerKind: z.enum(["codex", "claude"]).default("codex"),
+    partnerKind: z.enum(["codex", "claude", "antigravity"]).default("codex"),
     partnerHostId: id.optional(),
     partnerTerminalId: id.optional(),
     partnerCwd: z.string().trim().min(1).max(4096).optional(),
@@ -157,7 +157,7 @@ const participantSchema = z.object({
   hostId: id.optional(),
   sessionId: id.optional(),
   name: z.string().max(200),
-  kind: z.enum(["codex", "claude"]),
+  kind: z.enum(["codex", "claude", "antigravity"]),
   cwd: z.string().max(4096),
   owned: z.boolean(),
   settings: researchSettingsSchema.optional(),
@@ -223,7 +223,7 @@ const labSchema = z
         terminalId: id,
         hostId: id,
         sessionId: id,
-        kind: z.enum(["codex", "claude"]),
+        kind: z.enum(["codex", "claude", "antigravity"]),
         name: z.string().max(200),
         requestId: id,
         fingerprint: z.string().length(64),
@@ -546,7 +546,7 @@ export class ResearchLabs extends EventEmitter {
             ? "codex"
             : undefined);
       if (actual !== p.kind)
-        throw new Error("실행 중인 Codex 또는 Claude 세션을 선택하세요.");
+        throw new Error("실행 중인 Harbor 연동 AI 세션을 선택하세요.");
     });
     return hostId;
   }

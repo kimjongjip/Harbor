@@ -7,7 +7,7 @@ export const SKILL_SOURCE = {
   checkedAt: "2026-11-11",
   url: "https://github.com/anthropics/skills",
 } as const;
-export type SkillProvider = "claude" | "codex";
+export type SkillProvider = import("./agent-provider.js").AgentProvider;
 export interface CatalogSkill {
   id: string;
   title: string;
@@ -219,10 +219,7 @@ export interface SkillInstallResult {
   state: "installed" | "existing" | "error";
   message?: string;
 }
-export const skillInvocation = (
-  skill: CatalogSkill,
-  provider: SkillProvider,
-) =>
+export const skillInvocation = (skill: CatalogSkill, provider: SkillProvider) =>
   skill.kind === "guide"
     ? skill.example
-    : `${provider === "claude" ? "/" : "$"}${skill.id} ${skill.example}`;
+    : `${provider === "codex" ? "$" : "/"}${skill.id} ${skill.example}`;

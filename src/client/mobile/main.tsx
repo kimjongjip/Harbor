@@ -1264,11 +1264,13 @@ function App() {
                         <span className="session-copy">
                           <strong>{t.title}</strong>
                           <small>
-                            {t.agentKind === "claude"
-                              ? "Claude"
-                              : t.agentKind === "codex"
-                                ? "Codex"
-                                : "셸"}{" "}
+                            {t.agentKind === "antigravity"
+                              ? "Antigravity"
+                              : t.agentKind === "claude"
+                                ? "Claude"
+                                : t.agentKind === "codex"
+                                  ? "Codex"
+                                  : t.program==="antigravity-cli" ? "Antigravity CLI" : "셸"}{" "}
                             · {activityLabel[sessionActivity]}
                           </small>
                           <span className="session-cwd">{t.cwd}</span>

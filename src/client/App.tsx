@@ -91,7 +91,7 @@ const nativeWindowKey = window.harborDesktop?.workspaceTabs
   ? new URLSearchParams(location.search).get("workspace") || "main"
   : null;
 type HistoryDrop = {
-  provider?: "codex" | "claude";
+  provider?: import("../shared/agent-provider").AgentProvider;
   sshSessionMode?: "direct" | "tmux";
   hostId: string;
   threadId: string;
@@ -113,6 +113,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     terminalInputOptimized,
     terminalReplayState,
     claudeIntegration,
+    antigravityIntegration,
   } = useHarbor(noSessions, onError, startup);
   const { hosts: orderedHosts, moveHost, moveBy } = useServerOrder(state.hosts);
   const { theme, setTheme } = useTheme();
@@ -880,6 +881,15 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     사용할 수 있습니다.
                   </p>
                 )}
+                {antigravityIntegration && (
+                  <CodexHistory
+                    provider="antigravity"
+                    hosts={orderedHosts.filter((h) => h.kind === "local")}
+                    initialHostId="local"
+                    onResume={created}
+                    onConnect={() => {}}
+                  />
+                )}
                 <div className="harbor-side-bottom">
                   <button
                     onClick={() => {
@@ -1297,6 +1307,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         }
                       >
                         <DesktopIdeView
+                          antigravityIntegration={antigravityIntegration}
                           terminalId={ideTerminal?.id || ""}
                           terminal={ideTerminal}
                           hostId={host?.id || ""}
@@ -1550,6 +1561,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
         {newTerminal && (
           <NewTerminalDialog
             claudeIntegration={claudeIntegration}
+            antigravityIntegration={antigravityIntegration}
             hosts={orderedHosts}
             initialHostId={newTerminal.hostId}
             initialCwd={newTerminal.cwd}

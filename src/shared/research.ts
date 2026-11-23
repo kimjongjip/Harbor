@@ -46,7 +46,9 @@ export const researchEffortLabel: Record<ResearchEffort, string> = {
   max: "최대 · max",
   ultra: "ultra",
 };
-export function researchEffortsFor(kind: "codex" | "claude") {
+export function researchEffortsFor(
+  kind: import("./agent-provider.js").AgentProvider,
+) {
   return kind === "codex"
     ? researchEfforts
     : researchEfforts.filter(
@@ -117,7 +119,7 @@ export interface ResearchParticipant {
   hostId?: string;
   sessionId?: string;
   name: string;
-  kind: "codex" | "claude";
+  kind: import("./agent-provider.js").AgentProvider;
   cwd: string;
   owned: boolean;
   settings?: ResearchAgentSettings;
@@ -195,7 +197,7 @@ export interface ResearchManager {
   terminalId: string;
   hostId: string;
   sessionId: string;
-  kind: "codex" | "claude";
+  kind: import("./agent-provider.js").AgentProvider;
   name: string;
   requestId: string;
   fingerprint: string;

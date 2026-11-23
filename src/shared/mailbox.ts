@@ -9,7 +9,7 @@ export interface MailboxParticipant {
   hostId?: string;
   hostName?: string;
   cwd?: string;
-  agentKind?: "codex" | "claude";
+  agentKind?: import("./agent-provider.js").AgentProvider;
   /** Native conversation identity, rather than a reusable terminal identity. */
   sessionId?: string;
 }

@@ -11,7 +11,7 @@ export interface IdeConversationPage {
   runtimeId: string;
   terminalId: string;
   sessionId: string;
-  provider: "codex" | "claude";
+  provider: import("./agent-provider.js").AgentProvider;
   items: MessageItem[];
   nextCursor: string | null;
   capabilities: IdeConversationCapabilities;

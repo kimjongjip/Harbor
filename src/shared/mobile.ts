@@ -3,8 +3,11 @@ import type { MessageItem } from "./types";
 
 export interface MobileConversationPage {
   sessionId: string;
-  provider: "codex" | "claude";
-  items: Pick<MessageItem, "id" | "turnId" | "kind" | "text" | "imageCount" | "phase" | "turnStatus">[];
+  provider: import("./agent-provider.js").AgentProvider;
+  items: Pick<
+    MessageItem,
+    "id" | "turnId" | "kind" | "text" | "imageCount" | "phase" | "turnStatus"
+  >[];
   timeline?: MessageItem[];
   activity?: MessageItem[];
   timelineIds?: string[];

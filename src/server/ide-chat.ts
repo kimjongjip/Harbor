@@ -62,6 +62,12 @@ export interface IdeChatDependencies {
   ): boolean;
   claude?: ClaudeChatFactory;
   live?: IdeLiveChats;
+  openAntigravity?(
+    hostId: string,
+    cwd: string | undefined,
+    resumeId: string | undefined,
+    guard: Guard,
+  ): Promise<string>;
 }
 interface Managed {
   view: IdeChatConversation;
@@ -106,7 +112,7 @@ const approvalIdSchema = z
   .min(1)
   .max(512)
   .refine((value) => !/[\x00-\x1f\x7f]/.test(value));
-const providerSchema = z.enum(["codex", "claude"]);
+const providerSchema = z.enum(["codex", "claude", "antigravity"]);
 const createSchema = z
   .object({
     hostId: idSchema,
@@ -566,9 +572,26 @@ export class IdeChats {
           409,
         );
     };
-    const live =
+    let live =
       input.resumeId &&
       this.dependencies.live?.find(hostId, provider, input.resumeId);
+    if (
+      !live &&
+      provider === "antigravity" &&
+      this.dependencies.live &&
+      this.dependencies.openAntigravity
+    ) {
+      await guard();
+      const id = await this.dependencies.openAntigravity(
+        hostId,
+        input.cwd,
+        input.resumeId,
+        guard,
+      );
+      live = this.dependencies.live.find(hostId, provider, id);
+      if (!live)
+        throw new IdeChatError("Antigravity 세션 연결을 확인하세요.", 409);
+    }
     if (live && this.dependencies.live) {
       await guard();
       const current = this.dependencies.live.get(live);
@@ -622,6 +645,11 @@ export class IdeChats {
       history?.thread.cwd || input.cwd,
     );
     await guard();
+    if (provider === "antigravity")
+      throw new IdeChatError(
+        "새 터미널에서 Antigravity를 연 뒤 IDE의 ‘현재 터미널 대화’를 선택하세요.",
+        409,
+      );
     let session: SessionView | undefined;
     if (provider === "codex") {
       const password = await this.dependencies.password(hostId);

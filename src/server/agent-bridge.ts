@@ -44,12 +44,17 @@ interface BridgeOptions {
   manager?(): ResearchLabManager | undefined;
   terminals(): TerminalInfo[];
   host(id: string): Pick<HostConfig, "id" | "name"> | undefined;
-  onConnected?(terminalId: string, kind?: "codex" | "claude"): void;
+  onConnected?(terminalId: string, kind?: TerminalInfo["agentKind"]): void;
   onState?(terminalId: string, state: "shell" | "codex"): void;
   onChange?(): void;
   onClaudeEvent?(terminalId: string, event: ClaudeHookEvent): void;
   onUsage?(terminalId: string, usage: TerminalUsage): void;
   onClaudeContinuation?(terminalId: string, sessionId: string): void;
+  onAntigravityCompleted?(
+    terminalId: string,
+    sessionId: string,
+    turnId: string,
+  ): Promise<void>;
   requests?: Requests;
   onPeerRuntime?(terminalId: string, runtime: PeerRuntime): void;
   acceptCodexSession?(terminalId: string, sessionId: string): boolean;
@@ -443,6 +448,33 @@ export class AgentBridge {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid runtime",
         });
+      }
+    });
+    this.peerHandle.post("/antigravity-completed", async (req, res) => {
+      const { terminalId } = res.locals.harborCredential as Credential;
+      const input = z
+        .object({ sessionId: z.string().uuid(), turnId: z.string().uuid() })
+        .strict()
+        .safeParse(req.body);
+      const runtime = this.peers.runtime(terminalId);
+      if (
+        !input.success ||
+        runtime?.kind !== "antigravity" ||
+        runtime.state === "offline" ||
+        runtime.sessionId !== input.data.sessionId
+      ) {
+        res.status(409).json({ error: "현재 Antigravity 대화를 확인하세요." });
+        return;
+      }
+      try {
+        await this.options.onAntigravityCompleted?.(
+          terminalId,
+          input.data.sessionId,
+          input.data.turnId,
+        );
+        res.json({});
+      } catch {
+        res.status(503).json({ error: "완료된 답변을 읽지 못했습니다." });
       }
     });
     this.peerHandle.post("/ack", (req, res) => {
@@ -1208,10 +1240,14 @@ export class AgentBridge {
         ?.name;
       const knownRuntime = this.peers.runtime(credential.terminalId);
       const kind =
-        clientName === "harbor-claude-adapter" ||
-        (knownRuntime?.kind === "claude" && knownRuntime.state !== "offline")
-          ? "claude"
-          : "codex";
+        this.options.terminals().find((t) => t.id === credential.terminalId)
+          ?.program === "antigravity"
+          ? "antigravity"
+          : clientName === "harbor-claude-adapter" ||
+              (knownRuntime?.kind === "claude" &&
+                knownRuntime.state !== "offline")
+            ? "claude"
+            : "codex";
       const version =
         typeof clientVersion === "string"
           ? /(\d+)\.(\d+)\.(\d+)/.exec(clientVersion)

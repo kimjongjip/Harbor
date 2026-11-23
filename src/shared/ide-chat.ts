@@ -1,12 +1,13 @@
 import type { Approval, MessageItem, SessionStatus } from "./types.js";
 import type { HistoryPage } from "./history.js";
 
-export type IdeChatProvider = "codex" | "claude";
+export type IdeChatProvider = import("./agent-provider.js").AgentProvider;
 export interface IdeChatLive {
   terminalId: string;
   canSend: boolean;
   canInterrupt: boolean;
-  transport: "codex-native" | "claude-channel" | "unavailable";
+  transport:
+    "codex-native" | "claude-channel" | "antigravity-acp" | "unavailable";
   reason?: string;
 }
 export interface IdeChatConversation {

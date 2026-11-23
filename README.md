@@ -126,3 +126,6 @@ npm run build:desktop
 `build:desktop`은 Windows에서 Electron·별도 Node.js 런타임을 포함한 `release/Harbor-win32-x64` 폴더를 만듭니다. **Harbor.exe 하나가 아니라 해당 폴더 전체**를 ZIP으로 전달해야 합니다. 현재 자동 설치형 EXE·코드 서명·자동 업데이트는 제공하지 않습니다.
 
 `.gitignore`는 공개할 파일을 명시적으로 허용합니다. `.data`, `.cache`, `.runtime`, `artifacts`, `dist`, `release`, 로컬 개발용 검증 스크립트는 제외합니다. 새 루트 파일·스크립트를 추가할 때 공개 대상인지 검토하고 허용 목록을 갱신하세요. 비밀값을 `git add -f`로 추가하지 마세요.
+## Antigravity 연결
+
+**새 터미널 → 이 컴퓨터 → Antigravity · Harbor 연동**을 선택하면 로컬 `agy`의 Google 로그인으로 대화를 엽니다. Codex·Claude 세션에 질문하거나 답장을 받을 수 있고, 같은 대화를 IDE와 모바일에서 확인할 수 있습니다. **Antigravity · 기본 CLI**는 Google의 터미널 UI를 엽니다. Windows에서는 사용자 설치 폴더의 `agy.exe`를 직접 찾아 실행합니다.

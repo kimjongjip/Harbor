@@ -357,7 +357,7 @@ export function liveTranscriptLayout(
   state: {
     waiting: boolean;
     pendingHistory?: boolean;
-    provider?: "codex" | "claude";
+    provider?: import("../shared/agent-provider").AgentProvider;
     navigatingHistory?: boolean;
   },
 ): LiveTranscriptLayout {

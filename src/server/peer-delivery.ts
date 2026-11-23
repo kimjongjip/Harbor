@@ -5,7 +5,7 @@ import { Mailbox } from "./mailbox.js";
 
 export const peerRuntimeSchema = z
   .object({
-    kind: z.enum(["codex", "claude"]),
+    kind: z.enum(["codex", "claude", "antigravity"]),
     sessionId: z.string().trim().min(1).max(256).optional(),
     state: z.enum(["idle", "working", "waiting", "offline"]),
     delivery: z.enum(["automatic", "shared", "hook", "poll", "unavailable"]),

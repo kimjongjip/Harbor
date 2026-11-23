@@ -35,6 +35,7 @@ import { Store } from "./store.js";
 import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
 import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
 import { Hub, errorText } from "./hub.js";
+import { AntigravityHistory, findAntigravity } from "./antigravity.js";
 import { Terminals } from "./terminals.js";
 import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
@@ -114,10 +115,21 @@ let hostInsights: HostInsights | undefined;
 const codexUsageHistory = new CodexUsageHistory();
 const codexAgentTelemetry = new CodexAgentTelemetry();
 const claudeHistory = new ClaudeHistory();
-const historyProvider = z.enum(["codex", "claude"]).default("codex");
+const antigravityHistory = new AntigravityHistory(
+  join(store.directory, "antigravity"),
+);
+const historyProvider = z
+  .enum(["codex", "claude", "antigravity"])
+  .default("codex");
 const historySnapshots = new TerminalHistorySnapshots();
-const historyReader = (provider: "codex" | "claude") =>
-  provider === "claude" ? claudeHistory : history;
+const historyReader = (
+  provider: import("../shared/agent-provider.js").AgentProvider,
+) =>
+  provider === "antigravity"
+    ? antigravityHistory
+    : provider === "claude"
+      ? claudeHistory
+      : history;
 const notices = new TerminalNotices();
 const requests = new Requests(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
@@ -339,6 +351,49 @@ const bridge = new AgentBridge(mailbox, {
   onClaudeContinuation: (id, sessionId) => {
     terminals.markClaudeContinuation(id, sessionId);
     mobile.completions.continued(id);
+  },
+  onAntigravityCompleted: async (id, sessionId, turnId) => {
+    const terminal = terminals
+      .list()
+      .find(
+        (t) =>
+          t.id === id &&
+          !t.exited &&
+          t.program === "antigravity" &&
+          t.agentSessionId === sessionId,
+      );
+    if (!terminal) return;
+    const detail = await antigravityHistory.read(
+      hub.host(terminal.hostId),
+      undefined,
+      sessionId,
+    );
+    const answer = detail.items.find(
+      (m) =>
+        m.turnId === turnId &&
+        m.kind === "assistant" &&
+        m.turnStatus === "completed",
+    );
+    if (
+      !answer?.text ||
+      !terminals
+        .list()
+        .some((t) => t.id === id && !t.exited && t.agentSessionId === sessionId)
+    )
+      return;
+    if (
+      answer.text.length <= 128000 &&
+      Buffer.byteLength(answer.text) <= 256000
+    )
+      richTerminals.publishCard(id, {
+        sessionId,
+        requestId: answer.id,
+        text: answer.text,
+        cwd: terminal.cwd,
+        columns: 80,
+        viewportRows: 30,
+      });
+    mobile.completions.completed(id, sessionId, turnId);
   },
   onClaudeEvent: (id, event) => {
     if (
@@ -572,7 +627,7 @@ const liveIdeChats = new IdeLiveChats({
     available: (id, nativeId) => {
       const runtime = bridge.peers.runtime(id);
       return (
-        runtime?.kind === "claude" &&
+        (runtime?.kind === "claude" || runtime?.kind === "antigravity") &&
         runtime.sessionId === nativeId &&
         runtime.delivery === "automatic" &&
         runtime.userInputVersion === 1 &&
@@ -583,7 +638,7 @@ const liveIdeChats = new IdeLiveChats({
       await beforeDispatch();
       const runtime = bridge.peers.runtime(id);
       if (
-        runtime?.kind !== "claude" ||
+        (runtime?.kind !== "claude" && runtime?.kind !== "antigravity") ||
         runtime.sessionId !== input.sessionId ||
         runtime.delivery !== "automatic" ||
         runtime.userInputVersion !== 1 ||
@@ -591,7 +646,7 @@ const liveIdeChats = new IdeLiveChats({
       )
         throw Object.assign(
           new IdeChatError(
-            "현재 Claude 채널에 연결할 수 없습니다. 같은 터미널에서 입력할 수 있습니다.",
+            "현재 세션의 IDE 입력 연결을 확인하세요. 같은 터미널에서 입력할 수 있습니다.",
             409,
           ),
           { definiteRejection: true },
@@ -610,6 +665,30 @@ const ideChats = new IdeChats({
   runtimeId: mobileRuntimeId,
   hub,
   live: liveIdeChats,
+  openAntigravity: async (hostId, cwd, resumeId, guard) => {
+    const host = hub.host(hostId);
+    if (host.kind !== "local")
+      throw new Error("Antigravity는 이 컴퓨터에서 실행할 수 있습니다.");
+    const folder = resumeId
+      ? (await antigravityHistory.summary(host, undefined, resumeId)).cwd
+      : cwd;
+    await guard();
+    const terminal = resumeId
+      ? await historyResumer.resume(host, resumeId, { provider: "antigravity" })
+      : await terminals.create(host, folder || "", undefined, {
+          program: "antigravity",
+          resumeCwd: folder,
+        });
+    for (let i = 0; i < 200; i++) {
+      await guard();
+      const current = terminals.list().find((t) => t.id === terminal.id);
+      if (!current || current.exited) break;
+      if (current.agentSessionId && current.agentConnected)
+        return current.agentSessionId;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error("Antigravity 터미널에서 로그인 및 연결 상태를 확인하세요.");
+  },
   host: (id) => hub.host(id),
   password: passwordFor,
   resolveCwd: async (id, cwd) => {
@@ -1180,7 +1259,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "1.18.53" }),
+  res.json({ ok: true, name: "codex-harbor", version: "1.18.54" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -1202,6 +1281,7 @@ app.get("/api/bootstrap", (req, res) =>
       terminalInputOptimized: true,
       terminalReplayState: true,
       claudeIntegration: true,
+      antigravityIntegration: !!findAntigravity(),
       connectionMonitoring: !desktop.device(req),
     },
   }),
@@ -1662,6 +1742,12 @@ app.post("/api/research/:id/start", async (req, res) => {
       ? existing.researchSettings
       : researchSettings(body.partnerKind, body.partnerSettings, lab.effort);
     const host = hub.host(existing?.hostId || body.partnerHostId || lab.hostId);
+    if (
+      !existing &&
+      body.partnerKind === "antigravity" &&
+      (host.kind !== "local" || !findAntigravity())
+    )
+      throw new Error("Antigravity가 설치된 이 컴퓨터를 선택하세요.");
     const password = await passwordFor(host.id);
     if (!existing)
       settings = await validateResearchSettings(
@@ -1711,7 +1797,7 @@ app.post("/api/research/:id/start", async (req, res) => {
       workspace = prepared.workspace;
       const terminal = await terminals.create(host, "", password, {
         program: body.partnerKind,
-        title: `${lab.title.slice(0, 65)} · ${body.partnerKind === "claude" ? "Claude" : "Codex"}`,
+        title: `${lab.title.slice(0, 65)} · ${body.partnerKind === "antigravity" ? "Antigravity" : body.partnerKind === "claude" ? "Claude" : "Codex"}`,
         researchLaunch: { cwd: prepared.folders[0], ...settings! },
       });
       ownedId = terminal.id;
@@ -1896,7 +1982,12 @@ app.post("/api/research/:id/reopen", async (req, res) => {
               )
             : undefined;
           return terminals.create(host, "", password, {
-            program: participant.kind === "claude" ? "claude-resume" : "resume",
+            program:
+              participant.kind === "antigravity"
+                ? "antigravity"
+                : participant.kind === "claude"
+                  ? "claude-resume"
+                  : "resume",
             resumeThreadId: participant.sessionId,
             title: participant.name,
             ...researchReconnectOptions(participant, settings),
@@ -1921,7 +2012,15 @@ app.post("/api/terminals", async (req, res) => {
       hostId: z.string(),
       cwd: cleanPath.default(""),
       program: z
-        .enum(["shell", "codex", "resume", "claude", "claude-resume"])
+        .enum([
+          "shell",
+          "codex",
+          "resume",
+          "claude",
+          "claude-resume",
+          "antigravity",
+          "antigravity-cli",
+        ])
         .default("shell"),
       title: name.optional(),
       startupPlaceholder: z.boolean().optional(),
@@ -2013,6 +2112,10 @@ app.get("/api/hosts/:id/history", async (req, res) => {
 app.get("/api/hosts/:id/history/:threadId/activity/:ref", (req, res) => {
   const host = hub.host(String(req.params.id));
   const provider = historyProvider.parse(req.query.provider);
+  if (provider === "antigravity") {
+    res.status(404).json({ error: "추가 도구 출력이 없습니다." });
+    return;
+  }
   const sessionId = historyThreadId.parse(req.params.threadId);
   const ref = z
     .string()
@@ -2142,6 +2245,10 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
     return;
   }
   const host = hub.host(terminal.hostId);
+  if (terminal.agentKind === "antigravity") {
+    res.json({ usage: await antigravityHistory.usage(host, sessionId) });
+    return;
+  }
   const usage = await terminalUsage.read(
     terminal.id,
     terminal.agentKind,

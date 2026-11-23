@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
@@ -53,6 +54,7 @@ export function terminalLabel(info: TerminalInfo, _terminals?: TerminalInfo[]) {
 
 export function NewTerminalDialog({
   claudeIntegration = false,
+  antigravityIntegration = false,
   hosts,
   initialHostId,
   onClose,
@@ -60,6 +62,7 @@ export function NewTerminalDialog({
   credentialStorageAvailable,
 }: {
   claudeIntegration?: boolean;
+  antigravityIntegration?: boolean;
   hosts: HostView[];
   initialHostId?: string;
   initialCwd?: string;
@@ -82,9 +85,8 @@ export function NewTerminalDialog({
   const [sshSessionMode, setSshSessionMode] = useState<"direct" | "tmux">(
     "tmux",
   );
-  const [launch, setLaunch] = useState<
-    "shell" | "codex" | "resume" | "claude" | "claude-resume"
-  >("shell");
+  const [launch, setLaunch] =
+    useState<NonNullable<TerminalInfo["program"]>>("shell");
   return (
     <Modal
       title="새 터미널"
@@ -102,7 +104,7 @@ export function NewTerminalDialog({
               hostId,
               title: title || undefined,
               program: launch,
-              autoApprove,
+              autoApprove: !launch.startsWith("antigravity") && autoApprove,
               claudePeerChannel:
                 claudeIntegration &&
                 (launch === "shell" || launch.startsWith("claude")) &&
@@ -139,6 +141,7 @@ export function NewTerminalDialog({
               aria-label="서버"
               value={hostId}
               onChange={(event) => {
+                if (launch.startsWith("antigravity")) setLaunch("shell");
                 setHostId(event.target.value);
                 setPassword("");
                 setSshSessionMode("tmux");
@@ -224,6 +227,14 @@ export function NewTerminalDialog({
               }
             >
               <option value="shell">터미널 셸</option>
+              {antigravityIntegration && host?.kind === "local" && (
+                <>
+                  <option value="antigravity">Antigravity · Harbor 연동</option>
+                  <option value="antigravity-cli">
+                    Antigravity · 기본 CLI
+                  </option>
+                </>
+              )}
               <option value="codex">Codex · 새 대화</option>
               {claudeIntegration && (
                 <option value="claude">Claude · 새 대화</option>
@@ -238,15 +249,17 @@ export function NewTerminalDialog({
             <small>
               {launch === "shell"
                 ? "셸에서 원하는 명령을 직접 실행합니다."
-                : "선택한 CLI를 실행하고 작업 상태와 알림을 연결합니다."}
+                : launch === "antigravity-cli"
+                  ? "Google의 기본 터미널 화면으로 엽니다."
+                  : "선택한 CLI를 실행하고 작업 상태와 알림을 연결합니다."}
             </small>
           </label>
           <label className="field">
             <span className="host-check">
               <input
                 type="checkbox"
-                checked={autoApprove}
-                disabled={busy}
+                checked={!launch.startsWith("antigravity") && autoApprove}
+                disabled={busy || launch.startsWith("antigravity")}
                 onChange={(event) => setAutoApprove(event.target.checked)}
               />
               이 세션의 실행 승인 요청을 Harbor가 자동 수락
@@ -690,7 +703,7 @@ export default function TerminalWorkspace({
             }
           >
             {info.agentConnected
-              ? `${info.agentKind === "claude" ? "Claude" : "Codex"} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}`
+              ? `${agentLabel(info.agentKind || "codex")} · ${{ working: "작업 중", idle: "입력 대기", waiting: "승인 대기" }[info.agentState || "idle"]}`
               : "셸"}
           </span>
         )}

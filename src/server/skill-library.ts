@@ -431,6 +431,12 @@ export class SkillLibrary {
       roots: {
         claude: io.paths.join(locations.claudeConfig, "skills"),
         codex: io.paths.join(locations.home, ".agents", "skills"),
+        antigravity: io.paths.join(
+          locations.home,
+          ".gemini",
+          "antigravity-cli",
+          "skills",
+        ),
       },
     };
   }
@@ -439,11 +445,11 @@ export class SkillLibrary {
     const skills: SkillLibraryStatus["skills"] = Object.fromEntries(
       INSTALLABLE_SKILLS.map((s) => [
         s.id,
-        { claude: "available", codex: "available" },
+        { claude: "available", codex: "available", antigravity: "available" },
       ]),
     );
     const errors: SkillLibraryStatus["errors"] = {};
-    for (const provider of ["claude", "codex"] as const) {
+    for (const provider of ["claude", "codex", "antigravity"] as const) {
       try {
         if (!(await directory(io, roots[provider], false))) continue;
         for (const skill of INSTALLABLE_SKILLS) {
@@ -497,7 +503,7 @@ export class SkillLibrary {
           try {
             if (
               !INSTALLABLE_SKILLS.some((s) => s.id === id) ||
-              !["claude", "codex"].includes(provider)
+              !["claude", "codex", "antigravity"].includes(provider)
             )
               throw new Error("올바르지 않은 스킬 선택입니다.");
             await directory(io, roots[provider], false);
@@ -553,9 +559,9 @@ export function createSkillRouter(
         .min(1)
         .max(INSTALLABLE_SKILLS.length),
       providers: z
-        .array(z.enum(["claude", "codex"]))
+        .array(z.enum(["claude", "codex", "antigravity"]))
         .min(1)
-        .max(2),
+        .max(3),
     })
     .strict();
   router.get("/:id/skills", async (req, res) => {

@@ -21,7 +21,10 @@ export async function prepareResearchWorkspaces(
   directory: string,
   cwd: string,
   kind: "ideas" | "code" | "research",
-  agents: Array<"claude" | "codex"> = ["claude", "codex"],
+  agents: import("../shared/agent-provider.js").AgentProvider[] = [
+    "claude",
+    "codex",
+  ],
 ) {
   cwd = await researchDirectory(cwd);
   const root = join(directory, "research-workspaces", randomUUID());
@@ -72,7 +75,10 @@ export async function prepareRemoteResearchWorkspaces(
   cwd: string,
   kind: "ideas" | "code" | "research",
   remote: RemoteResearchWorkspace,
-  agents: Array<"claude" | "codex"> = ["claude", "codex"],
+  agents: import("../shared/agent-provider.js").AgentProvider[] = [
+    "claude",
+    "codex",
+  ],
 ) {
   cwd = await remote.researchDirectory(host, cwd);
   const home = await remote.researchDirectory(host, "~");

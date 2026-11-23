@@ -6,7 +6,7 @@ import type { QuotaWindow } from "./host-insights.js";
 
 /** A provider-reported snapshot, never a sum of every request in a conversation. */
 export interface TerminalUsage {
-  provider: "codex" | "claude";
+  provider: import("./agent-provider.js").AgentProvider;
   sessionId: string;
   usedTokens: number | null;
   contextWindow: number | null;

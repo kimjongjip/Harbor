@@ -17,7 +17,13 @@ import {
 } from "./codex-peer-runtime.js";
 
 export type TerminalProgram =
-  "shell" | "codex" | "resume" | "claude" | "claude-resume";
+  | "shell"
+  | "codex"
+  | "resume"
+  | "claude"
+  | "claude-resume"
+  | "antigravity"
+  | "antigravity-cli";
 export interface TerminalOptions {
   claudePeerChannel?: boolean;
   /** Persistence is opt-in for each new SSH terminal; defaults remain direct. */

@@ -2,11 +2,13 @@ import type { MailboxMessage, MailboxParticipant } from "../shared/mailbox";
 import type { TerminalInfo } from "../shared/types";
 
 export function peerName(peer: MailboxParticipant) {
-  return peer.agentKind === "claude"
-    ? "Claude"
-    : peer.agentKind === "codex"
-      ? "Codex"
-      : "AI";
+  return peer.agentKind === "antigravity"
+    ? "Antigravity"
+    : peer.agentKind === "claude"
+      ? "Claude"
+      : peer.agentKind === "codex"
+        ? "Codex"
+        : "AI";
 }
 
 export function messageDelivery(

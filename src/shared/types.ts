@@ -177,8 +177,15 @@ export interface TerminalInfo {
   reconnectAttempt?: number;
   exitCode?: number;
   exitSignal?: string;
-  program?: "shell" | "codex" | "resume" | "claude" | "claude-resume";
-  agentKind?: "codex" | "claude";
+  program?:
+    | "shell"
+    | "codex"
+    | "resume"
+    | "claude"
+    | "claude-resume"
+    | "antigravity"
+    | "antigravity-cli";
+  agentKind?: import("./agent-provider.js").AgentProvider;
   agentState?: "working" | "idle" | "waiting";
   agentSessionId?: string;
   /** Exact native Stop answer proof; contains no answer text and is not persisted. */

@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -40,12 +41,12 @@ export default function CodexHistory({
   onConnect,
 }: {
   hosts: HostView[];
-  provider?: "codex" | "claude";
+  provider?: import("../shared/agent-provider").AgentProvider;
   initialHostId?: string;
   onResume: (terminal: TerminalInfo) => void;
   onConnect: (host: HostView) => void;
 }) {
-  const label = provider === "claude" ? "Claude" : "Codex";
+  const label = agentLabel(provider);
   const { theme } = useTheme();
   const [expanded, setExpanded] = useState(() => {
     try {

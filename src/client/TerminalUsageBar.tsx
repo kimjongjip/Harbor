@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
@@ -15,7 +16,7 @@ import {
 interface Props {
   terminalId: string;
   hostId?: string;
-  provider: "codex" | "claude";
+  provider: import("../shared/agent-provider").AgentProvider;
   sessionId?: string;
   active: boolean;
   visible?: boolean;
@@ -187,7 +188,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   ]
     .filter(Boolean)
     .join("\n");
-  const providerName = provider === "claude" ? "Claude" : "Codex";
+  const providerName = agentLabel(provider);
   const tone =
     percent === null
       ? "unknown"
@@ -342,7 +343,9 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             title={
               provider === "codex"
                 ? "모델별 누적 토큰을 공식 API 표준 단가로 환산합니다. 캐시 쓰기는 기본 30분 단가를 적용합니다. 구독 청구액·잔여 사용량과 별개이며 빠른 처리·도구 요금·계약 할인은 포함하지 않습니다."
-                : "Claude /cost와 같은 세션 누적 예상 비용(USD)입니다. 실제 청구액과 다를 수 있습니다."
+                : provider === "antigravity"
+                  ? "Antigravity가 ACP로 보고한 세션 비용(USD)입니다."
+                  : "Claude /cost와 같은 세션 누적 예상 비용(USD)입니다. 실제 청구액과 다를 수 있습니다."
             }
           >
             <span>

@@ -10,7 +10,7 @@ export class MobileConversations {
     private terminal: (id: string) => TerminalInfo | undefined,
     private readHistory: (
       hostId: string,
-      provider: "codex" | "claude",
+      provider: import("../shared/agent-provider.js").AgentProvider,
       sessionId: string,
       cursor?: string,
       options?: HistoryReadOptions,
@@ -26,19 +26,32 @@ export class MobileConversations {
     const provider = target?.agentKind;
     if (
       !target ||
-      (provider !== "codex" && provider !== "claude") ||
+      !provider ||
       (target.agentSessionId || target.resumeThreadId) !== sessionId
     )
       throw new Error("대화가 변경됐습니다. 현재 세션을 다시 선택하세요.");
     const hostId = target.hostId;
-    const key = JSON.stringify([id, hostId, provider, sessionId, cursor, !!options.includeActivity]);
+    const key = JSON.stringify([
+      id,
+      hostId,
+      provider,
+      sessionId,
+      cursor,
+      !!options.includeActivity,
+    ]);
     const existing = this.pending.get(key);
     if (existing) return existing;
     if (this.pending.size >= 8)
       throw new Error(
         "다른 대화 기록을 불러오는 중입니다. 잠시 후 다시 시도하세요.",
       );
-    const request = this.readHistory(hostId, provider, sessionId, cursor, options)
+    const request = this.readHistory(
+      hostId,
+      provider,
+      sessionId,
+      cursor,
+      options,
+    )
       .then((detail) => {
         const current = this.terminal(id);
         if (
@@ -46,7 +59,8 @@ export class MobileConversations {
           current.hostId !== hostId ||
           current.agentKind !== provider ||
           (current.agentSessionId || current.resumeThreadId) !== sessionId ||
-          detail.thread.id !== sessionId || detail.thread.hostId !== hostId
+          detail.thread.id !== sessionId ||
+          detail.thread.hostId !== hostId
         )
           throw new Error(
             "조회 중 대화가 변경됐습니다. 현재 세션을 다시 선택하세요.",
@@ -56,16 +70,20 @@ export class MobileConversations {
           provider,
           items: detail.items
             .filter((item) => item.kind === "user" || item.kind === "assistant")
-            .map(({ id, turnId, kind, text, imageCount, phase, turnStatus }) => ({
-              id,
-              turnId,
-              kind,
-              text,
-              imageCount,
-              phase,
-              turnStatus,
-            })),
-          ...(options.includeActivity && detail.timeline ? { timeline: detail.timeline } : {}),
+            .map(
+              ({ id, turnId, kind, text, imageCount, phase, turnStatus }) => ({
+                id,
+                turnId,
+                kind,
+                text,
+                imageCount,
+                phase,
+                turnStatus,
+              }),
+            ),
+          ...(options.includeActivity && detail.timeline
+            ? { timeline: detail.timeline }
+            : {}),
           nextCursor: detail.nextCursor,
           ...(detail.notice ? { notice: detail.notice } : {}),
         });

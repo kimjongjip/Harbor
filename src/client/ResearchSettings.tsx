@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { useEffect, useId, useState } from "react";
 import {
   codexModelId,
@@ -20,7 +21,7 @@ export function ResearchSettingsFields({
   onModel,
   onEffort,
 }: {
-  kind: "codex" | "claude";
+  kind: import("../shared/agent-provider.js").AgentProvider;
   hostId: string;
   label: string;
   model: string;
@@ -74,7 +75,7 @@ export function ResearchSettingsFields({
   return (
     <fieldset className="research-agent-settings">
       <legend>
-        {label} 설정 · {kind === "claude" ? "Claude" : "Codex"}
+        {label} 설정 · {agentLabel(kind)}
       </legend>
       <label>
         모델
@@ -166,7 +167,7 @@ export function ResearchSettingsSummary({
   settings,
   onOpen,
 }: {
-  kind: "codex" | "claude";
+  kind: import("../shared/agent-provider.js").AgentProvider;
   settings?: ResearchAgentSettings;
   onOpen?(): void;
 }) {

@@ -63,6 +63,9 @@ export function useHarbor(
   const [terminalReplayState, setTerminalReplayState] = useState(
     !!initial?.capabilities?.terminalReplayState,
   );
+  const [antigravityIntegration, setAntigravityIntegration] = useState(
+    !!initial?.capabilities?.antigravityIntegration,
+  );
   const [claudeIntegration, setClaudeIntegration] = useState(
     !!initial?.capabilities?.claudeIntegration,
   );
@@ -118,6 +121,9 @@ export function useHarbor(
           data.capabilities?.terminalInputOptimized === true,
         );
         setTerminalReplayState(data.capabilities?.terminalReplayState === true);
+        setAntigravityIntegration(
+          data.capabilities?.antigravityIntegration === true,
+        );
         setClaudeIntegration(data.capabilities?.claudeIntegration === true);
         setReady(true);
         const socket = new WebSocket(
@@ -200,5 +206,6 @@ export function useHarbor(
     terminalInputOptimized,
     terminalReplayState,
     claudeIntegration,
+    antigravityIntegration,
   };
 }

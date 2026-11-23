@@ -19,6 +19,7 @@ const editorApi = createIdeApi((path, init) =>
 );
 
 export default function DesktopIdeView({
+  antigravityIntegration,
   onFocusTerminal,
   onShowTerminal,
   onShowChat,
@@ -28,6 +29,7 @@ export default function DesktopIdeView({
   newConversation = false,
   ...props
 }: {
+  antigravityIntegration?: boolean;
   terminalId: string;
   terminal?: TerminalInfo;
   hostId: string;
@@ -136,6 +138,7 @@ export default function DesktopIdeView({
             }
           >
             <IdeChatPanel
+              antigravityIntegration={antigravityIntegration}
               hostId={props.hostId}
               terminal={
                 newConversation || nativeTerminal ? undefined : terminal

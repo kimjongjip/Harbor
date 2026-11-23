@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../../shared/agent-provider";
 import {
   memo,
   useEffect,
@@ -152,11 +153,7 @@ const ChatItem = memo(
     return (
       <article className={`ide-chat-message ${item.kind}`}>
         <strong>
-          {item.kind === "user"
-            ? "나"
-            : conversation.provider === "claude"
-              ? "Claude"
-              : "Codex"}
+          {item.kind === "user" ? "나" : agentLabel(conversation.provider)}
         </strong>
         {renderMarkdown ? (
           renderMarkdown(displayed.text, {
@@ -295,6 +292,7 @@ function ApprovalCard({
 }
 
 export default function IdeChatPanel({
+  antigravityIntegration,
   hostId: suppliedHostId,
   hostName,
   terminal,
@@ -306,6 +304,7 @@ export default function IdeChatPanel({
   onFocusTerminal,
   onShowTerminal,
 }: {
+  antigravityIntegration?: boolean;
   hostId?: string;
   hostName?: string;
   terminal?: TerminalInfo;
@@ -905,7 +904,7 @@ export default function IdeChatPanel({
     }
   }
   const conversation = view.conversation,
-    label = provider === "claude" ? "Claude" : "Codex",
+    label = agentLabel(provider),
     running = conversation?.status === "running",
     live = conversation?.live;
   function showLiveTerminal() {
@@ -925,6 +924,9 @@ export default function IdeChatPanel({
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
+          {antigravityIntegration && hostId === "local" && (
+            <option value="antigravity">Antigravity</option>
+          )}
         </select>
         <span className="ide-chat-host" title={hostName}>
           {hostName || "서버 선택"}
@@ -965,7 +967,7 @@ export default function IdeChatPanel({
           <button
             type="button"
             aria-label="현재 터미널 대화"
-            title={`${currentTerminal.title} · ${currentTerminal.agentKind === "claude" ? "Claude" : "Codex"}`}
+            title={`${currentTerminal.title} · ${agentLabel(currentTerminal.agentKind || "codex")}`}
             disabled={!!resuming}
             aria-pressed={
               conversation?.provider === currentTerminal.agentKind &&

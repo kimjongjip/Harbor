@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import {
   memo,
   useCallback,
@@ -62,7 +63,7 @@ export const TerminalCrew = memo(function TerminalCrew({
   crew,
   unavailable = false,
 }: {
-  provider: "claude" | "codex";
+  provider: import("../shared/agent-provider").AgentProvider;
   state: TerminalAgentState;
   active: boolean;
   crew?: TerminalCrewSnapshot;
@@ -282,9 +283,7 @@ export const TerminalCrew = memo(function TerminalCrew({
         </div>
       )}
       <div className="crew-main" data-state={state}>
-        <div className="crew-leader-label">
-          메인 · {provider === "claude" ? "Claude" : "Codex"}
-        </div>
+        <div className="crew-leader-label">메인 · {agentLabel(provider)}</div>
         <div className="crew-stage">
           <CrewCharacter character={character} state={state} leader />
         </div>

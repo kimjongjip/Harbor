@@ -29,7 +29,7 @@ const participantSchema = z.object({
   hostId: idSchema.optional(),
   hostName: z.string().max(200).optional(),
   cwd: z.string().max(4096).optional(),
-  agentKind: z.enum(["codex", "claude"]).optional(),
+  agentKind: z.enum(["codex", "claude", "antigravity"]).optional(),
   sessionId: idSchema.optional(),
 });
 const messageSchema = z.object({
@@ -153,7 +153,11 @@ export class Mailbox extends EventEmitter {
       text: z.string().min(1).max(MAILBOX_TEXT_LIMIT).refine(text => Boolean(text.trim()) && !text.includes("\0")),
     }).strict().parse(input);
     const recipient = this.participant(parsed.toTerminalId);
-    if (recipient.agentKind !== "claude" || recipient.sessionId !== parsed.sessionId)
+    if (
+      (recipient.agentKind !== "claude" &&
+        recipient.agentKind !== "antigravity") ||
+      recipient.sessionId !== parsed.sessionId
+    )
       throw new Error("현재 Claude 대화의 입력 연결을 확인하세요.");
     const previous = this.messages.find(message => message.ideInput?.requestId === parsed.requestId &&
       message.recipient.terminalId === parsed.toTerminalId && message.recipient.sessionId === parsed.sessionId);

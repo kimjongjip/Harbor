@@ -1,6 +1,6 @@
 import type { MessageItem } from "./types.js";
 export interface HistoryThread {
-  provider?: "codex" | "claude";
+  provider?: import("./agent-provider.js").AgentProvider;
   id: string;
   hostId: string;
   title: string;

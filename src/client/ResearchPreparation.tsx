@@ -68,7 +68,8 @@ export function NewResearchDialog({
     initialHostId || state.hosts[0]?.id || "",
   );
   const [cwd, setCwd] = useState(initialCwd || "~");
-  const [leadKind, setLeadKind] = useState<"claude" | "codex">("claude");
+  const [leadKind, setLeadKind] =
+    useState<import("../shared/agent-provider").AgentProvider>("claude");
   const [effort, setEffort] = useState<ResearchEffort>("low");
   const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false),
@@ -161,7 +162,7 @@ export function NewResearchDialog({
               <select
                 value={leadKind}
                 onChange={(e) => {
-                  const next = e.target.value as "codex" | "claude";
+                  const next = e.target.value as typeof leadKind;
                   setLeadKind(next);
                   setModel("");
                   if (!researchEffortsFor(next).includes(effort))
@@ -170,6 +171,9 @@ export function NewResearchDialog({
               >
                 <option value="claude">Claude</option>
                 <option value="codex">Codex</option>
+                {hostId === "local" && (
+                  <option value="antigravity">Antigravity</option>
+                )}
               </select>
             </label>
             <label>
@@ -178,6 +182,13 @@ export function NewResearchDialog({
                 value={hostId}
                 onChange={(e) => {
                   setHostId(e.target.value);
+                  if (
+                    leadKind === "antigravity" &&
+                    e.target.value !== "local"
+                  ) {
+                    setLeadKind("claude");
+                    setModel("");
+                  }
                   setCwd(
                     state.hosts.find((h) => h.id === e.target.value)
                       ?.defaultCwd || "~",
@@ -566,9 +577,9 @@ function StartResearchDialog({
   const [context, setContext] = useState(lab.proposal?.context || ""),
     [revision, setRevision] = useState(lab.revision);
   const [mode, setMode] = useState("new"),
-    [partnerKind, setPartnerKind] = useState<"codex" | "claude">(
-      lab.participants[0].kind === "claude" ? "codex" : "claude",
-    );
+    [partnerKind, setPartnerKind] = useState<
+      import("../shared/agent-provider").AgentProvider
+    >(lab.participants[0].kind === "claude" ? "codex" : "claude");
   const [partnerModel, setPartnerModel] = useState("");
   const [partnerEffort, setPartnerEffort] = useState<ResearchEffort>(
     lab.effort,
@@ -838,7 +849,7 @@ function StartResearchDialog({
                 <select
                   value={partnerKind}
                   onChange={(e) => {
-                    const next = e.target.value as "codex" | "claude";
+                    const next = e.target.value as typeof partnerKind;
                     setPartnerKind(next);
                     setPartnerModel("");
                     if (!researchEffortsFor(next).includes(partnerEffort))
@@ -847,6 +858,9 @@ function StartResearchDialog({
                 >
                   <option value="codex">Codex</option>
                   <option value="claude">Claude</option>
+                  {partnerHostId === "local" && (
+                    <option value="antigravity">Antigravity</option>
+                  )}
                 </select>
               </label>
               <ResearchSettingsFields
@@ -864,6 +878,11 @@ function StartResearchDialog({
                   value={partnerHostId}
                   onChange={(e) => {
                     setPartnerHostId(e.target.value);
+                    if (
+                      partnerKind === "antigravity" &&
+                      e.target.value !== "local"
+                    )
+                      setPartnerKind("claude");
                     setPartnerCwd(
                       e.target.value === lab.hostId
                         ? lab.cwd

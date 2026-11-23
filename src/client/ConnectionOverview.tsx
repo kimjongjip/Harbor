@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { ArrowRight, Network, Terminal } from "lucide-react";
 import type { AppState, TerminalInfo } from "../shared/types";
 import { peerConnection } from "./peer-status";
@@ -10,6 +11,7 @@ export function connectionLabel(terminal: TerminalInfo) {
   )
     return "서버 세션 없음";
   if (terminal.connectionState === "disconnected") return "세션 연결 확인 필요";
+  if (!terminal.exited && terminal.program === "antigravity-cli") return "Antigravity · 기본 CLI";
   if (
     terminal.exited &&
     terminal.persistent === false &&
@@ -20,7 +22,7 @@ export function connectionLabel(terminal: TerminalInfo) {
   return terminal.exited
     ? "종료"
     : terminal.agentConnected
-      ? `${terminal.agentKind === "claude" ? "Claude" : "Codex"} · ${peerConnection(terminal)}`
+      ? `${agentLabel(terminal.agentKind || "codex")} · ${peerConnection(terminal)}`
       : terminal.integration === "ready"
         ? "셸 · AI 실행 대기"
         : "셸만 연결";

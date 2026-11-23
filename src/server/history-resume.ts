@@ -6,7 +6,7 @@ import type {
 import type { HistoryThread } from "../shared/history.js";
 import type { Terminals } from "./terminals.js";
 
-type Provider = "codex" | "claude";
+type Provider = "codex" | "claude" | "antigravity";
 interface ResumeOptions {
   provider: Provider;
   colors?: TerminalColors;
@@ -47,8 +47,11 @@ export class HistoryResumer {
         (terminal) =>
           terminal.hostId === host.id &&
           (terminal.agentKind ||
-            (terminal.program?.startsWith("claude") ? "claude" : "codex")) ===
-            provider &&
+            (terminal.program === "antigravity"
+              ? "antigravity"
+              : terminal.program?.startsWith("claude")
+                ? "claude"
+                : "codex")) === provider &&
           (terminal.resumeThreadId === threadId ||
             terminal.agentSessionId === threadId) &&
           !terminal.exited,
@@ -69,10 +72,15 @@ export class HistoryResumer {
           );
         const cwd = this.validateCwd(thread.cwd);
         return this.terminals.create(host, cwd, password, {
-          program: provider === "claude" ? "claude-resume" : "resume",
+          program:
+            provider === "antigravity"
+              ? "antigravity"
+              : provider === "claude"
+                ? "claude-resume"
+                : "resume",
           title: thread.title.slice(0, 100),
           resumeThreadId: threadId,
-          ...(provider === "claude" ? { resumeCwd: cwd } : {}),
+          ...(provider !== "codex" ? { resumeCwd: cwd } : {}),
           colors,
           sshSessionMode:
             options.sshSessionMode ?? (host.kind === "ssh" ? "tmux" : "direct"),

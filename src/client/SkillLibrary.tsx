@@ -1,3 +1,4 @@
+import { providerName as agentLabel } from "../shared/agent-provider";
 import { useEffect, useState } from "react";
 import {
   BookOpen,
@@ -78,7 +79,7 @@ export function SkillLibraryDialog({
   const [results, setResults] = useState<SkillInstallResult[]>([]);
   const [copied, setCopied] = useState("");
   const providers: SkillProvider[] =
-    target === "both" ? ["claude", "codex"] : [target as SkillProvider];
+    target === "all" ? ["claude","codex","antigravity"] : target === "both" ? ["claude", "codex"] : [target as SkillProvider];
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
@@ -253,20 +254,26 @@ export function SkillLibraryDialog({
               onChange={(e) => setTarget(e.target.value)}
             >
               <option value="both">Claude + Codex 둘 다</option>
+              {status?.roots.antigravity && <option value="all">Claude + Codex + Antigravity</option>}
               <option value="claude">Claude Code</option>
               <option value="codex">Codex CLI</option>
+              {status?.roots.antigravity && (
+                <option value="antigravity">Antigravity CLI</option>
+              )}
             </select>
           </label>
           <details className="skill-install-roots">
             <summary>설치 위치</summary>
             {providers.map((provider) => (
               <div key={provider}>
-                <strong>{provider === "claude" ? "Claude" : "Codex"}</strong>
+                <strong>{agentLabel(provider)}</strong>
                 <code>
                   {status?.roots[provider] ||
                     (provider === "claude"
                       ? "~/.claude/skills"
-                      : "~/.agents/skills")}
+                      : provider === "antigravity"
+                        ? "~/.gemini/antigravity-cli/skills"
+                        : "~/.agents/skills")}
                 </code>
               </div>
             ))}
@@ -295,8 +302,7 @@ export function SkillLibraryDialog({
             (provider) =>
               status.errors?.[provider] && (
                 <div key={provider} className="form-error" role="alert">
-                  {provider === "claude" ? "Claude" : "Codex"}:{" "}
-                  {status.errors[provider]}
+                  {agentLabel(provider)}: {status.errors[provider]}
                 </div>
               ),
           )}
@@ -323,7 +329,7 @@ export function SkillLibraryDialog({
                   : r.state === "existing"
                     ? "기존 폴더 보존"
                     : "설치 실패"}{" "}
-                · {r.id} · {r.provider === "claude" ? "Claude" : "Codex"}
+                · {r.id} · {agentLabel(r.provider)}
                 {r.message && ` — ${r.message}`}
               </div>
             ))}
@@ -444,7 +450,7 @@ export function SkillLibraryDialog({
                       return (
                         <span key={provider} data-state={state}>
                           {state === "installed" && <Check size={12} />}
-                          {provider === "claude" ? "Claude" : "Codex"} ·{" "}
+                          {agentLabel(provider)} ·{" "}
                           {state === "installed"
                             ? "설치됨"
                             : state === "existing"
@@ -496,11 +502,12 @@ export function SkillLibraryDialog({
                         </div>
                       </>
                     ) : (
-                      (["claude", "codex"] as const).map((provider) => (
+                      (status?.roots.antigravity
+                        ? (["claude", "codex", "antigravity"] as const)
+                        : (["claude", "codex"] as const)
+                      ).map((provider) => (
                         <div className="skill-example" key={provider}>
-                          <span>
-                            {provider === "claude" ? "Claude" : "Codex"}
-                          </span>
+                          <span>{agentLabel(provider)}</span>
                           <code>{skillInvocation(skill, provider)}</code>
                           <button
                             type="button"
@@ -570,7 +577,7 @@ export function SkillLibraryDialog({
           <span>
             {busy
               ? "파일 다운로드와 서버 복사 중 · 터미널 작업은 계속 실행됩니다."
-              : `대상: ${host.name} · ${target === "both" ? "Claude + Codex" : target === "claude" ? "Claude" : "Codex"}`}
+              : `대상: ${host.name} · ${providers.map(agentLabel).join(" + ")}`}
           </span>
         </div>
         <button className="button ghost" disabled={busy} onClick={onClose}>

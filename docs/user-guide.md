@@ -600,3 +600,12 @@ git log -1 --oneline
 받는 Codex의 상태가 **공유 대기열 수신**이면 Harbor가 같은 서버에서 열려 있는 대화 ID를 확인한 뒤 메시지를 보냅니다. 작업 중이면 Codex가 대기열 순서에 따라 처리합니다. **CLI 알림 전달**은 CLI의 수락이고, **AI 확인**과 **답장 도착**은 별도로 표시됩니다.
 
 Claude는 새 터미널의 **Claude 대기 중에도 세션 메시지 받기**를 켜고 시작하세요. 이미 훅 방식으로 열린 대화는 작업을 마친 뒤 Claude에서 `/exit`하고 같은 Harbor 셸에서 `claude --harbor-peers --resume`으로 선택합니다. Claude가 요청하는 채널 허용과 계정·조직 설정이 적용됩니다.
+## 로컬 Antigravity 사용하기
+
+- **새 터미널 → 이 컴퓨터 → Antigravity · Harbor 연동**으로 시작합니다. 원래 Google CLI 화면과 전용 슬래시 명령을 쓰려면 **Antigravity · 기본 CLI**를 선택합니다.
+- 연동 모드는 세션마다 ACP 엔진 하나를 사용합니다. IDE에서 **현재 터미널 대화**를 선택하거나 모바일에서 세션 카드를 열면 같은 대화로 이어집니다. 다른 세션에 질문·답장할 때는 Harbor 메시지 도구를 사용하며 대기 중에도 받을 수 있습니다.
+- 승인 요청에는 터미널에서 `/approve 번호` 또는 `/deny`로 답합니다. `Ctrl+C`는 현재 작업을 중단합니다. `/model`, `/effort`, `/mode`는 이 CLI에서 제공하는 선택지를 표시하며, 뒤에 값을 붙이면 해당 대화의 설정을 변경합니다.
+- 왼쪽 **Antigravity 대화 기록**에서 대화를 선택해 재개합니다. 기본 CLI에서만 작업한 대화는 처음 재개할 때 원래 메시지를 읽습니다. 오른쪽 패널에는 ACP가 보고한 모델·컨텍스트·USD 비용을 표시하며 값이 없으면 미수집으로 표시합니다.
+- 스킬 라이브러리에서 **설치할 AI → Antigravity CLI**를 선택하면 해당 계정의 `~/.gemini/antigravity-cli/skills`에 설치합니다. 연구실에는 로컬 Antigravity 세션을 참여자로 선택할 수 있습니다.
+
+기존 Google 로그인을 사용합니다. CLI 인증이 필요하면 기본 CLI에서 로그인한 뒤 연동 모드를 여세요. [Google Antigravity ACP 안내](https://antigravity.google/docs/cli/acp/)
