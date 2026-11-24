@@ -187,6 +187,15 @@ test("existing native session IDs are matched within host and provider; exited s
   assert.equal(reopened.persistent, true);
 });
 
+test("an old resume hint cannot select a terminal now running another conversation", async () => {
+  const f = fixture();
+  const active = await f.resumer.resume(host, id, { provider: "codex" });
+  active.agentSessionId = "other-native-session";
+  const reopened = await f.resumer.resume(host, id, { provider: "codex" });
+  assert.notEqual(reopened.id, active.id);
+  assert.equal(reopened.resumeThreadId, id);
+});
+
 test("local tmux, externally active conversations and invalid paths never launch a terminal", async () => {
   const f = fixture();
   await assert.rejects(

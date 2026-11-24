@@ -56,6 +56,7 @@ function harness(provider: "codex" | "claude" | "antigravity" = "codex") {
     agentState: "working",
     peerDelivery: "automatic",
   };
+  const terminals = [terminal];
   let now = 1000,
     reads = 0,
     channel = true,
@@ -110,8 +111,8 @@ function harness(provider: "codex" | "claude" | "antigravity" = "codex") {
   const live = new IdeLiveChats({
     cacheScope: () => cacheScope,
     now: () => now,
-    terminals: () => [terminal],
-    terminal: (id) => (id === terminal.id ? terminal : undefined),
+    terminals: () => terminals,
+    terminal: (id) => terminals.find(t => t.id === id),
     readHistory,
     codex: {
       available: () => native,
@@ -167,6 +168,7 @@ function harness(provider: "codex" | "claude" | "antigravity" = "codex") {
     );
   return {
     terminal,
+    terminals,
     page,
     live,
     chats,
@@ -190,6 +192,8 @@ for (const provider of ["codex", "claude"] as const) {
     const view = await h.open();
     assert.equal(view.nativeId, h.terminal.agentSessionId);
     assert.equal(view.live?.terminalId, h.terminal.id);
+    assert.equal(view.live?.origin, "terminal");
+    assert.equal(view.live?.terminalTitle, "Existing CLI");
     assert.equal(view.status, "running");
     assert.equal(view.items[1].text, "Old answer");
     assert.equal(view.cwd, "/native-project");
@@ -226,6 +230,57 @@ test("Antigravity settings follow current native values after the terminal chang
   assert.equal((await h.chats.settings(chat.id, input, noop)).model, "model-b");
   assert.equal(changes, 2);
   await assert.rejects(h.chats.settings(chat.id, { runtimeId: chat.runtimeId, changedFields: ["effort"] }, noop), /선택/);
+});
+
+test("Antigravity chat distinguishes its own ACP adapter from a separately opened terminal", async t => {
+  for (const internal of [false, true]) {
+    const h = harness("antigravity");
+    t.after(() => h.chats.close());
+    h.terminal.program = "antigravity";
+    if (internal) h.terminal.managedChatAdapter = true;
+    const chat = await h.open();
+    assert.equal(chat.live?.origin, internal ? "managed" : "terminal");
+    assert.equal(chat.live?.terminalTitle, internal ? undefined : h.terminal.title);
+    assert.equal(chat.live?.transport, "antigravity-acp");
+    assert.equal(h.chats.ownsLiveTerminal(h.terminal.id, chat.nativeId), internal);
+    h.terminal.agentState = "waiting";
+    const waiting = h.chats.snapshot(chat.id);
+    assert.equal(waiting.live?.canSend, false);
+    assert.equal(waiting.live?.origin, chat.live?.origin);
+    assert.equal(waiting.live?.terminalTitle, chat.live?.terminalTitle);
+    h.terminal.agentState = "idle";
+    h.channel(false);
+    assert.equal(h.chats.snapshot(chat.id).live?.transport, "unavailable");
+    h.channel(true);
+    assert.equal(h.chats.snapshot(chat.id).live?.canSend, true);
+    h.terminal.agentSessionId = "changed-in-terminal";
+    const stale = h.chats.snapshot(chat.id);
+    assert.equal(stale.live?.terminalTitle, undefined);
+    assert.equal(stale.live?.canSend, false);
+    assert.equal(h.chats.terminalFor(chat.id), undefined);
+    assert.throws(() => h.chats.terminalFor(chat.id, true), /터미널 연결/);
+  }
+});
+
+test("an explicit terminal attach cannot substitute another handle or an old resume hint", async t => {
+  const h = harness();
+  t.after(() => h.chats.close());
+  const hinted: TerminalInfo = { ...h.terminal, id: "hinted", agentSessionId: undefined, resumeThreadId: h.page.thread.id };
+  h.terminals.unshift(hinted);
+  const input = {hostId:host.id, provider:"codex" as const, resumeId:h.page.thread.id, requestId:randomUUID()};
+  const opened = await h.chats.create(input, "desktop", noop, h.terminal.id);
+  assert.equal(opened.live?.terminalId, h.terminal.id);
+  await assert.rejects(h.chats.create(input, "desktop", noop, hinted.id), /현재 AI 대화/);
+  hinted.agentSessionId = h.page.thread.id;
+  await assert.rejects(h.chats.create(input, "desktop", noop, hinted.id), /같은 요청 ID/);
+  await assert.rejects(h.chats.create({...input,requestId:randomUUID()}, "desktop", noop, hinted.id), /다른 터미널/);
+  assert.equal(h.chats.terminalFor(opened.id,true), h.terminal.id);
+  h.terminal.exited = true;
+  const replacement = await h.chats.create({...input,requestId:randomUUID()}, "desktop", noop, hinted.id);
+  assert.notEqual(replacement.id, opened.id);
+  assert.equal(replacement.live?.terminalId, hinted.id);
+  assert.equal(h.chats.terminalFor(opened.id), undefined);
+  assert.equal(h.sent.length, 0);
 });
 
 test("live reads coalesce, refresh native saved blocks, and preserve older loaded history", async () => {
@@ -676,6 +731,19 @@ test("live router requires its exact terminal lease only for mutations, not rend
       ),
     );
     assert.equal(h.sent.length, 1);
+    h.terminal.agentSessionId = "other-session";
+    const before = contexts.length;
+    assert.equal((await post("/messages", {...input,requestId:randomUUID()}, view.live!.terminalId)).status, 409);
+    assert.ok(!contexts.slice(before).some(context => context.terminalId), "a stale binding cannot authorize a terminal lease");
+    const attach = (terminalId:string) => fetch(new URL(".", url), {
+      method:"POST", headers:{"Content-Type":"application/json","X-Harbor-Terminal":terminalId},
+      body:JSON.stringify({hostId:host.id,provider:"codex",resumeId:view.nativeId,requestId:randomUUID()})
+    });
+    assert.equal((await attach(h.terminal.id)).status,409);
+    h.terminal.agentSessionId = view.nativeId;
+    const restored = await attach(h.terminal.id);
+    assert.equal(restored.status,200);
+    assert.equal((await restored.json()).live.terminalId,h.terminal.id);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

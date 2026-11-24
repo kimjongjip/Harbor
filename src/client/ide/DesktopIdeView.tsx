@@ -22,6 +22,7 @@ export default function DesktopIdeView({
   serverWorkspace,
   antigravityIntegration,
   onFocusTerminal,
+  terminalInventory,
   onShowTerminal,
   onShowChat,
   terminal,
@@ -49,6 +50,7 @@ export default function DesktopIdeView({
   onNewChatHandled?: (id: number) => void;
   onFolderChange?: (folder: {hostId:string; cwd:string}) => void;
   onFocusTerminal: (id: string) => void;
+  terminalInventory: TerminalInfo[];
   onShowTerminal: () => void;
   onShowChat?: () => void;
 }) {
@@ -146,6 +148,7 @@ export default function DesktopIdeView({
             }
           >
             <IdeChatPanel
+              terminalInventory={terminalInventory}
               serverWorkspace={serverWorkspace}
               antigravityIntegration={antigravityIntegration}
               hostId={props.hostId}

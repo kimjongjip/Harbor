@@ -185,6 +185,8 @@ export interface TerminalInfo {
   cliApprovalMode?: CliApprovalMode;
   id: string;
   startupPlaceholder?: boolean;
+  /** The managed AI chat service launched this ACP adapter. */
+  managedChatAdapter?: true;
   hostId: string;
   cwd: string;
   title: string;

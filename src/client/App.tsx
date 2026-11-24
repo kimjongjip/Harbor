@@ -530,10 +530,11 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     }
     initializedMessages.current = true;
   }, [messages, ready, push]);
-  async function focus(id: string) {
+  async function focus(id: string, fromChat?: "chat") {
     pendingSelection.current = null;
     const request = ++focusRequest.current;
     const terminal = state.terminals.find((item) => item.id === id);
+    if (fromChat && (!terminal?.agentConnected || terminal.exited || terminal.connectionState !== "connected")) return;
     if (terminal) hostTerminals.current.set(terminal.hostId, id);
     if (popoutId && id !== popoutId) {
       const moved = await focusTerminalWindow(id).catch(() => false);
@@ -553,6 +554,10 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
       if (request !== focusRequest.current) return;
       if (moved) {
         read(id);
+        return;
+      }
+      if (fromChat) {
+        setError("해당 터미널이 열린 창을 찾을 수 없습니다.");
         return;
       }
     }
@@ -1417,6 +1422,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                       <Suspense fallback={<p>대화를 여는 중…</p>}>
                         <ManagedChat
                           presentation="terminal"
+                          terminalInventory={state.terminals}
+                          onFocusTerminal={id => void focus(id, "chat")}
                           serverWorkspace={host?.serverWorkspace}
                           rememberScope={initialChatWindow ? "chat-window."+requestedChatKey : nativeWindowKey || "desktop"}
                           hostId={host?.id}
@@ -1462,6 +1469,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         }
                       >
                         <DesktopIdeView
+                          terminalInventory={state.terminals}
                           onFolderChange={setIdeChatFolder}
                           serverWorkspace={host?.serverWorkspace}
                           antigravityIntegration={antigravityIntegration}
@@ -1482,7 +1490,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                             page === "terminals" && workspaceView === "ide"
                           }
                           onFocusTerminal={(id) => {
-                            void focus(id);
+                            void focus(id, "chat");
                           }}
                         />
                       </Suspense>

@@ -123,6 +123,40 @@ test("organic collaboration binds follow-ups, retries and user controls to the o
   assert.notEqual(send("separate").threadId, q.threadId);
 });
 
+test("managed chat input expires when its receiver stops polling and recovers only for that native session", async t => {
+  const f = await fixture(t);
+  let now = 0;
+  const peers = new PeerDelivery(f.mailbox, () => now);
+  for (const kind of ["claude", "antigravity"] as const) {
+    const capability = {kind, state:"idle", delivery:"automatic", userInputVersion:1} as const;
+    // Some Claude channel versions register before the SessionStart hook supplies the native ID.
+    peers.setRuntime("b", capability);
+    peers.observeInputReader("b");
+    peers.setRuntime("b", {...capability,sessionId:"native-b"});
+    assert.ok(peers.inputAvailable("b","native-b",kind));
+    now += 25000;
+    assert.ok(peers.inputAvailable("b","native-b",kind), "a normal long poll remains usable");
+    await peers.poll("b","native-b",0);
+    now += 40000;
+    assert.ok(peers.inputAvailable("b","native-b",kind));
+    // Server hook activity, wrong-session and abandoned polls are not a connected recipient.
+    peers.setRuntime("b", {...capability,sessionId:"native-b",state:"working"});
+    await peers.poll("b","different-session",0);
+    await peers.poll("b","native-b",0,AbortSignal.abort());
+    now += 6000;
+    assert.equal(peers.inputAvailable("b","native-b",kind),false);
+    await peers.poll("b","native-b",0);
+    assert.ok(peers.inputAvailable("b","native-b",kind));
+    peers.setRuntime("b",{...capability,sessionId:"new-b"});
+    assert.equal(peers.inputAvailable("b","new-b",kind),false);
+    assert.equal(peers.inputAvailable("b","native-b",kind),false);
+    peers.observeInputReader("b","new-b");
+    assert.ok(peers.inputAvailable("b","new-b",kind));
+    peers.revoke("b");
+    assert.equal(peers.inputAvailable("b","new-b",kind),false);
+  }
+});
+
 test("IDE user metadata is internal, native-bound, durable and idempotent; old runtimes do not imply input support", async (t) => {
   const f = await fixture(t);
   f.terminals.find(terminal => terminal.id === "b")!.agentSessionId = "native-b";
@@ -449,6 +483,12 @@ test("scoped HTTP MCP asks Claude by name, correlates its actual reply, and neve
     state: "idle",
     delivery: "automatic",
   });
+  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), false);
+  await post("/bridge/peers/runtime", b.token, {
+    kind: "claude", state: "idle", delivery: "automatic", userInputVersion: 1,
+  });
+  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), true);
+  assert.equal(bridge.peers.inputAvailable("b", "native-b", "antigravity"), false);
   await rpc(b.token, "initialize", {
     protocolVersion: "2025-06-18",
     clientInfo: { name: "harbor-claude-adapter", version: "1.0.0" },
@@ -555,6 +595,7 @@ test("scoped HTTP MCP asks Claude by name, correlates its actual reply, and neve
     delivery: "automatic",
   });
   assert.equal(bridge.peers.runtime("b")?.state, "offline");
+  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), false);
   await post("/bridge/claude", b.hookToken, {
     hook_event_name: "SessionStart",
     session_id: "new-native-b",

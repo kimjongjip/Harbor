@@ -52,6 +52,7 @@ import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from
 import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
 import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
+import { chatTerminalTarget } from "./chat-terminal";
 import { ManagedActivity } from "./ManagedActivity";
 import {ChatFolderPicker,loadChatFolders} from "./ChatFolderPicker";
 import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSettingsValue} from "./ChatSettings";
@@ -218,6 +219,7 @@ export default function IdeChatPanel({
   hostId: suppliedHostId,
   hostName,
   terminal,
+  terminalInventory,
   active,
   newChatRequest,
   onNewChatHandled,
@@ -238,6 +240,7 @@ export default function IdeChatPanel({
   hostId?: string;
   hostName?: string;
   terminal?: TerminalInfo;
+  terminalInventory?: TerminalInfo[];
   active: boolean;
   newChatRequest?: number;
   onNewChatHandled?: (id:number) => void;
@@ -414,7 +417,7 @@ export default function IdeChatPanel({
   }>();
   const currentTerminal =
     terminal?.hostId === hostId &&
-    !terminal.exited &&
+    !terminal.exited && terminal.connectionState === "connected" && terminal.agentConnected &&
     terminal.agentKind &&
     terminal.agentSessionId
       ? terminal
@@ -875,13 +878,15 @@ export default function IdeChatPanel({
     automatic = false,
   ) {
     if (resuming) return;
-    if(multiTabs && !automatic){
+    if(multiTabs && !automatic && !expectedTerminalKey){
       const open=tabs.find(t=>(t.conversation?.nativeId===thread.id || (t.restoreNative===thread.id && !t.historyPaused)) && t.provider===provider);
       if(open){activateTab(open);return;}
       if(!tabs.some(t=>t.restoreNative===thread.id && t.provider===provider) && !canOpenTab())return;
     }
+    const expectedTerminalId = expectedTerminalKey ? currentTerminal?.id : undefined;
+    if (expectedTerminalKey && (!expectedTerminalId || expectedTerminalKey !== terminalBinding.current)) return;
     const capturedScope = scope,
-      key = `${scope}:${thread.id}`,
+      key = JSON.stringify([scope, thread.id, expectedTerminalId]),
       ticket = historyGeneration.current;
     const requestId = resumes.current.get(key) || crypto.randomUUID();
     resumes.current.set(key, requestId);
@@ -893,9 +898,11 @@ export default function IdeChatPanel({
         provider,
         resumeId: thread.id,
         requestId,
-      } satisfies IdeChatCreate);
+      } satisfies IdeChatCreate, undefined, expectedTerminalId);
       if (conversation.nativeId !== thread.id || conversation.provider !== provider || conversation.hostId !== hostId)
         throw Error("요청한 대화와 서버 응답이 일치하지 않습니다.");
+      if (expectedTerminalId && conversation.live?.terminalId !== expectedTerminalId)
+        throw Error("선택한 터미널의 대화가 바뀌었습니다. 현재 대화를 다시 확인하세요.");
       if (view.restoreNative === thread.id && !entries.current.has(view.key)) return;
       let target = [...entries.current.values()].find(
         (item) =>
@@ -1121,7 +1128,7 @@ export default function IdeChatPanel({
     if (images?.length && (!directImages || delivery === "next" || delivery==="reset")) {
       target.error = directImages
         ? "이미지는 답변 완료 후 보내거나 현재 Codex 턴에 반영해 주세요."
-        : "연결된 터미널에서 파일 첨부를 사용하세요.";
+        : "이 대화는 이미지 첨부를 지원하지 않습니다.";
       repaint();
       return;
     }
@@ -1296,6 +1303,18 @@ export default function IdeChatPanel({
     label = agentLabel(provider),
     running = conversation?.status === "running",
     live = conversation?.live;
+  const inventory = terminalInventory ?? (terminal ? [terminal] : []);
+  const navigation = useRef({inventory, active, useWorkspace, currentId:currentTerminal?.id});
+  navigation.current = {inventory, active, useWorkspace, currentId:currentTerminal?.id};
+  const openingTerminal = useRef(0);
+  const sourceTerminal = !view.connectionError && onFocusTerminal
+    ? chatTerminalTarget(conversation, inventory, currentTerminal?.id, useWorkspace) : undefined;
+  const inputRestriction = !live || live.canSend ? "" : conversation?.status === "offline"
+    ? "현재 입력을 받을 수 없어 저장된 대화를 표시합니다."
+    : conversation?.status === "waiting"
+      ? useWorkspace ? "이 서버의 작업 공간에서 승인 또는 질문을 확인하세요." : "승인 또는 답변을 기다리고 있습니다."
+      : useWorkspace ? "이 서버의 대화 입력 연결을 사용할 수 없습니다."
+        : "이 대화의 입력 연결을 사용할 수 없습니다.";
   const [resetOffer,setResetOffer]=useState<{id:string;time:number}>();
   const resetChat=active && conversation && !conversation.live && conversation.provider!=="antigravity" &&
     (view.draft.trim() || conversation.status==="error") ? conversation.id : undefined;
@@ -1456,10 +1475,25 @@ export default function IdeChatPanel({
       repaint();
     }
   }
-  function showLiveTerminal() {
-    if (!live?.terminalId) return;
-    onShowTerminal?.();
-    onFocusTerminal?.(live.terminalId);
+  function showLiveTerminal(target: TerminalInfo) {
+    if (!conversation || !onFocusTerminal) return;
+    setActionKey(undefined);
+    const ticket = ++openingTerminal.current;
+    const stillHere = () => navigation.current.active && mounted.current && selected.current === view.key &&
+      view.conversation?.id === conversation.id && ticket === openingTerminal.current;
+    void call<IdeChatConversation>("/conversations/" + encodeURIComponent(conversation.id)).then(latest => {
+      if (!stillHere()) return;
+      const {inventory, currentId, useWorkspace} = navigation.current;
+      const actual = chatTerminalTarget(latest, inventory, currentId, useWorkspace);
+      if (latest.runtimeId !== conversation.runtimeId || latest.id !== conversation.id ||
+          latest.nativeId !== conversation.nativeId || actual?.id !== target.id)
+        throw Error("원본 터미널을 열 수 없습니다. 현재 대화를 다시 확인하세요.");
+      accept(view, latest);
+      onShowTerminal?.();
+      onFocusTerminal(target.id);
+    }).catch(error => {
+      if (stillHere()) { view.error = (error as Error).message; repaint(); }
+    });
   }
   function keepNewDraft(destination: IdeChatProvider) {
     freshScopes.current.add(scopeHost + ":" + destination);
@@ -1652,7 +1686,11 @@ export default function IdeChatPanel({
         {!multiTabs && <button aria-label="새 대화" title="새 대화" onClick={() => addChat()}><Plus size={17}/></button>}
         {(conversation || view.parentKey) && <details className="chat-more" ref={actionMenu} open={actionKey===view.key}>
           <summary aria-label="대화 메뉴" title="대화 메뉴" aria-expanded={actionKey===view.key} onMouseDown={e=>e.preventDefault()} onClick={e=>{e.preventDefault();setHandoffOpen(false);setActionKey(actionKey===view.key?undefined:view.key);}}><MoreHorizontal size={16}/></summary>
-          <div className="chat-more-list" role="group" aria-label="대화 동작">          {view.parentKey && (
+          <div className="chat-more-list" role="group" aria-label="대화 동작">
+          {sourceTerminal && live?.canSend && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>
+            원본 터미널 열기 · {sourceTerminal.title}
+          </button>}
+          {view.parentKey && (
             <button onClick={() => backToParent(false)}>원래 대화</button>
           )}
           {view.parentKey &&
@@ -1742,7 +1780,7 @@ export default function IdeChatPanel({
         </details>}
       </header>
 
-      {folderOpen && <ChatSettings key={view.key} workspaceUpdate={useWorkspace ? updateStatus : undefined} lastTurnPolicy={measurement?.policy} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={autoUnavailable} onAutoAccept={async(enabled)=>{
+      {folderOpen && <ChatSettings key={view.key} workspaceUpdate={useWorkspace ? updateStatus : undefined} lastTurnPolicy={measurement?.policy} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} originalTerminal={!!sourceTerminal || live?.origin === "terminal" && !!live.terminalTitle} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={autoUnavailable} onAutoAccept={async(enabled)=>{
         const target=view,c=target.conversation;
         if(!c){if((!enabled || catalog.supportsAutoAccept) && !target.reviewOnly && target.permission!=="read-only"){target.autoAccept=enabled;if(multiTabs)dirtyTabAreas.current.add(target.area||scopeHost);}repaint();return;}
         if(c.autoAccept===undefined || c.reviewOnly)throw Error("이 대화의 자동 수락 상태를 확인할 수 없습니다.");
@@ -1780,7 +1818,7 @@ export default function IdeChatPanel({
               />
             </Modal>
           )}
-      {currentTerminal && (
+      {currentTerminal && currentTerminal.id !== sourceTerminal?.id && (
         <div className="ide-chat-current-terminal">
           <button
             type="button"
@@ -1825,28 +1863,6 @@ export default function IdeChatPanel({
                 : "질문을 보내면 시작됩니다"}
         </span>
       </div>
-      )}
-      {live && (
-        <div className="ide-chat-live" role="status">
-          <span>
-            <TerminalSquare size={13} />
-            {view.connectionError
-              ? "대화 갱신 대기 중"
-              : conversation?.status === "offline"
-                ? "저장된 터미널 대화"
-                : "열린 터미널과 연결됨"}
-          </span>
-          <button
-            type="button"
-            onClick={showLiveTerminal}
-            disabled={!onShowTerminal && !onFocusTerminal}
-          >
-            {live.canSend || conversation?.status === "offline"
-              ? "터미널 보기"
-              : "터미널에서 입력"}
-          </button>
-          {live.reason && <small>{live.reason}</small>}
-        </div>
       )}
       {historyOpen && (
         <section className="ide-chat-history" aria-label={`${label} 대화 기록`}>
@@ -2092,14 +2108,12 @@ export default function IdeChatPanel({
             e.preventDefault();
             if (directImages) void attachImages(files);
             else {
-              view.error = "열린 터미널의 파일 첨부를 사용하세요.";
+              view.error = "이 대화는 이미지 첨부를 지원하지 않습니다.";
               repaint();
             }
           }}
           placeholder={
-            live?.canSend === false
-              ? "이 대화의 입력은 열린 터미널에서 계속하세요."
-              : `${label}에게 질문하거나 작업 요청…`
+            inputRestriction ? "" : `${label}에게 질문하거나 작업 요청…`
           }
           value={view.draft}
           maxLength={32000}
@@ -2157,22 +2171,15 @@ export default function IdeChatPanel({
           }}
         />
         <div className="ide-chat-compose-controls">
-          <button
+          {directImages && <button
             type="button"
             aria-label="이미지 첨부"
-            title={directImages ? "이미지 첨부" : "터미널에서 파일 첨부"}
+            title="이미지 첨부"
             disabled={!hostId || view.sending || view.readingImages}
-            onClick={() => {
-              if (directImages) imageFile.current?.click();
-              else {
-                view.notice = "열린 터미널의 파일 첨부를 사용하세요.";
-                repaint();
-                showLiveTerminal();
-              }
-            }}
+            onClick={() => imageFile.current?.click()}
           >
             <ImagePlus size={15} />
-          </button>
+          </button>}
           <input
             hidden
             ref={imageFile}
@@ -2187,11 +2194,12 @@ export default function IdeChatPanel({
             }}
           />
 
-          <small>
-            {live?.canSend === false
-              ? "입력·승인은 열린 터미널에서"
-              : "Enter 전송 · Shift+Enter 줄바꿈"}
-          </small>
+          {inputRestriction ? <div className="ide-chat-input-state" role="status">
+            <span>{inputRestriction}</span>
+            {sourceTerminal && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>
+              원본 터미널 열기 · {sourceTerminal.title}
+            </button>}
+          </div> : <small>Enter 전송 · Shift+Enter 줄바꿈</small>}
           {!!resetChat && resetOffer?.id===resetChat && resetOffer.time>Date.now() && <button type="button" title={new Date(resetOffer.time).toLocaleString("ko-KR")} disabled={!view.draft.trim() || !!view.images?.length || view.sending || view.readingImages} onClick={()=>void send("reset")}>한도 초기화 후 보내기</button>}
           {(running || conversation?.status === "waiting") && !live && (
             <>

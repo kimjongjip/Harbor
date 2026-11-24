@@ -556,6 +556,7 @@ export class Terminals extends EventEmitter {
       hostId: host.id,
       cwd,
       program,
+      ...(program === "antigravity" && options.managedChatAdapter && { managedChatAdapter: true as const }),
       title:
         options.title?.trim() ||
         `${agyProgram ? "Antigravity" : host.name} ${sequence}`,

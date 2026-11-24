@@ -126,6 +126,7 @@ export function ChatSettings({
   models,
   notice,
   bound,
+  originalTerminal,
   nativeConfiguration,
   review,
   active,
@@ -147,6 +148,7 @@ export function ChatSettings({
   models: ResearchModel[];
   notice: string;
   bound: boolean;
+  originalTerminal?: boolean;
   nativeConfiguration?: boolean;
   review: boolean;
   active: boolean;
@@ -373,8 +375,10 @@ export function ChatSettings({
               {(autoAccept !== undefined || isReadOnly) && <p>
                 {isReadOnly
                   ? "읽기 전용 대화"
-                  : bound || provider === "antigravity"
-                    ? "연결된 터미널의 Harbor 승인 정책을 따릅니다. 사용자 질문은 직접 답합니다."
+                  : provider === "antigravity"
+                    ? "이 대화의 작업 폴더 안에서 지원되는 파일 요청을 건별로 허용합니다."
+                    : bound
+                    ? "원본 터미널과 같은 승인 설정을 사용합니다."
                     : "작업 폴더 안 파일 요청만 건별로 허용합니다. 명령·질문·권한 확대는 직접 확인합니다."}
               </p>}
             </div>
@@ -415,8 +419,9 @@ export function ChatSettings({
               {provider === "antigravity"
                 ? busy && nativeConfiguration
                   ? "모델과 추론 강도는 응답이 끝나면 변경할 수 있습니다."
-                  : "열린 Antigravity 터미널의 /model·/effort에서 변경하세요. 대화 설정으로 바꾸려면 작업이 끝난 뒤 /exit하고 기록에서 같은 대화를 다시 여세요."
-                : "현재 세션의 설정은 연결된 터미널에서 변경하세요."}
+                  : originalTerminal ? "원본 터미널에서 /model 또는 /effort로 변경할 수 있습니다."
+                    : "이 Antigravity 연결은 모델 설정을 제공하지 않습니다. 서버 업데이트 후 기록에서 같은 대화를 다시 여세요."
+                : originalTerminal ? "현재 세션의 설정은 원본 터미널에서 변경하세요." : "현재 연결에서는 실행 설정을 변경할 수 없습니다."}
             </p>
           ) : (
             active &&

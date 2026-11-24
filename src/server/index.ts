@@ -730,26 +730,10 @@ const liveIdeChats = new IdeLiveChats({
     ),
   codex: codexPeers,
   claude: {
-    available: (id, nativeId) => {
-      const runtime = bridge.peers.runtime(id);
-      return (
-        (runtime?.kind === "claude" || runtime?.kind === "antigravity") &&
-        runtime.sessionId === nativeId &&
-        runtime.delivery === "automatic" &&
-        runtime.userInputVersion === 1 &&
-        runtime.state !== "offline"
-      );
-    },
-    send: async (id, input, beforeDispatch) => {
+    available: (id, nativeId, provider) => bridge.peers.inputAvailable(id, nativeId, provider),
+    send: async (id, input, beforeDispatch, provider) => {
       await beforeDispatch();
-      const runtime = bridge.peers.runtime(id);
-      if (
-        (runtime?.kind !== "claude" && runtime?.kind !== "antigravity") ||
-        runtime.sessionId !== input.sessionId ||
-        runtime.delivery !== "automatic" ||
-        runtime.userInputVersion !== 1 ||
-        runtime.state === "offline"
-      )
+      if (!bridge.peers.inputAvailable(id, input.sessionId, provider))
         throw Object.assign(
           new IdeChatError(
             "현재 세션의 IDE 입력 연결을 확인하세요. 같은 터미널에서 입력할 수 있습니다.",
@@ -866,9 +850,10 @@ const ideChats = new IdeChats({
       : await files.workingDirectory(host,cwd);
     await guard();
     const terminal = resumeId
-      ? await historyResumer.resume(host, resumeId, { provider: "antigravity" })
+      ? await historyResumer.resume(host, resumeId, { provider: "antigravity", managedChatAdapter: true })
       : await terminals.create(host, folder || "", undefined, {
           program: "antigravity",
+          managedChatAdapter: true,
           resumeCwd: folder,
           antigravityModel:model,
             antigravityEffort:options?.effort,
@@ -1094,15 +1079,16 @@ if (workspaceAccess)
       .strict()
       .parse(req.body);
     const chat = await ideChats.read(String(req.params.id), async () => {});
+    const terminalId = ideChats.terminalFor(chat.id, true);
     if (
       chat.hostId !== "local" ||
       chat.runtimeId !== input.runtimeId ||
-      !chat.live?.terminalId
+      !terminalId
     )
       throw Object.assign(Error("터미널 연결을 확인하세요."), { status: 409 });
     res.json(
       mobile.controls.change(
-        chat.live.terminalId,
+        terminalId,
         actor,
         actor.startsWith("mobile-") ? "휴대폰" : "연결된 PC",
         input,
@@ -1666,7 +1652,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.11" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.12" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

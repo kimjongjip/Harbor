@@ -1723,6 +1723,8 @@ function App() {
               <Suspense fallback={<p>대화를 여는 중…</p>}>
                 <ManagedChatPanel
                   mobileWorkspace
+                  terminalInventory={state.terminals}
+                  onFocusTerminal={choose}
                   labRequest={api}
                   serverWorkspace={chatHost?.serverWorkspace}
                   hostId={chatHost?.id}

@@ -43,8 +43,9 @@ export interface PeerAnswer {
 export class PeerDelivery extends EventEmitter {
   private readonly runtimes = new Map<string, PeerRuntimeStatus>();
   private readonly waiting = new Map<string, Set<string>>();
+  private readonly inputReaders = new Map<string, {kind: "claude" | "antigravity"; sessionId?: string; at: number}>();
 
-  constructor(private readonly mailbox: Mailbox) {
+  constructor(private readonly mailbox: Mailbox, private readonly now = () => performance.now()) {
     super();
     this.setMaxListeners(256);
     mailbox.on("change", () => this.emit("change"));
@@ -53,6 +54,13 @@ export class PeerDelivery extends EventEmitter {
   setRuntime(terminalId: string, input: PeerRuntime): PeerRuntimeStatus {
     const { endpoint: _secretEndpoint, ...runtime } =
       peerRuntimeSchema.parse(input);
+    const reader = this.inputReaders.get(terminalId);
+    if (reader) {
+      if (reader.kind !== runtime.kind || runtime.state === "offline" || runtime.delivery !== "automatic" ||
+          runtime.userInputVersion !== 1 || (reader.sessionId && reader.sessionId !== runtime.sessionId))
+        this.inputReaders.delete(terminalId);
+      else reader.sessionId = runtime.sessionId;
+    }
     this.runtimes.set(terminalId, runtime);
     this.emit("change");
     return structuredClone(runtime);
@@ -63,7 +71,23 @@ export class PeerDelivery extends EventEmitter {
     return runtime ? structuredClone(runtime) : undefined;
   }
 
+  // Only an authenticated adapter registration or a real events poll proves a receiver.
+  // Ordinary hook updates and history/status reads must not extend its lifetime.
+  observeInputReader(terminalId: string, sessionId?: string) {
+    const runtime = this.runtimes.get(terminalId);
+    if (!runtime || (runtime.kind !== "claude" && runtime.kind !== "antigravity") ||
+        runtime.state === "offline" || runtime.delivery !== "automatic" || runtime.userInputVersion !== 1 ||
+        (sessionId && runtime.sessionId !== sessionId)) return;
+    this.inputReaders.set(terminalId, {kind:runtime.kind,sessionId:runtime.sessionId,at:this.now()});
+  }
+  inputAvailable(terminalId:string, nativeId:string, kind:"claude" | "antigravity") {
+    const reader = this.inputReaders.get(terminalId);
+    // Native adapters hold each request for up to 25s; allow the next poll and retry to arrive.
+    return !!reader && reader.kind === kind && reader.sessionId === nativeId && this.now() - reader.at < 45000;
+  }
+
   revoke(terminalId: string): void {
+    this.inputReaders.delete(terminalId);
     const previous = this.runtimes.get(terminalId);
     if (previous)
       this.runtimes.set(terminalId, {
@@ -327,6 +351,7 @@ export class PeerDelivery extends EventEmitter {
     extraReady?:()=>boolean,
   ) {
     z.number().int().min(0).max(25000).parse(waitMs);
+    if (!signal?.aborted) this.observeInputReader(terminalId, sessionId);
     const current = this.events(terminalId, sessionId);
     if (current.messages.length || current.reason || !waitMs || signal?.aborted || extraReady?.())
       return current;

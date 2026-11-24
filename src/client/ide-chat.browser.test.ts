@@ -619,6 +619,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Running Codex",
           agentKind: "codex",
           agentSessionId: "live-codex",
+          agentConnected: true,
           agentState: "idle",
           connectionState: "connected",
           exited: false,
@@ -630,7 +631,8 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           exact: true,
         })
         .waitFor();
-      await page.getByText("열린 터미널과 연결됨", { exact: true }).waitFor();
+      assert.equal(await page.getByText("열린 터미널과 연결됨", { exact: true }).count(), 0);
+      assert.equal((await posts()).at(-1).headers["x-harbor-terminal"], "running-codex");
       assert.equal(await provider.inputValue(), "codex");
       assert.equal((await posts()).at(-1).body.resumeId, "live-codex");
       await page.evaluate(() => {
@@ -659,9 +661,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         await page.getByRole("button", { name: "AI 작업 중단" }).count(),
         0,
       );
-      await page
-        .getByRole("button", { name: "터미널 보기", exact: true })
-        .click();
+      await page.getByLabel("대화 메뉴", {exact:true}).click();
+      await page.getByRole("button", { name: "원본 터미널 열기 · Running Codex", exact: true }).click();
+      await page.waitForFunction(()=>(window as any).terminalActions.at(-1)==="running-codex");
       assert.deepEqual(
         await page.evaluate(() => (window as any).terminalActions),
         ["show", "running-codex"],
@@ -701,6 +703,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Running Claude",
           agentKind: "claude",
           agentSessionId: "live-claude",
+          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -716,8 +719,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         .waitFor();
       assert.equal(await input.isDisabled(), true);
       await page
-        .getByRole("button", { name: "터미널에서 입력", exact: true })
+        .getByRole("button", { name: "원본 터미널 열기 · Running Claude", exact: true })
         .click();
+      await page.waitForFunction(()=>(window as any).terminalActions.at(-1)==="running-claude");
       assert.deepEqual(
         (await page.evaluate(() => (window as any).terminalActions)).slice(-2),
         ["show", "running-claude"],
@@ -756,6 +760,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Slow session",
           agentKind: "codex",
           agentSessionId: "live-slow",
+          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -795,6 +800,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "First session",
           agentKind: "codex",
           agentSessionId: "live-first",
+          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -809,6 +815,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Second session",
           agentKind: "codex",
           agentSessionId: "live-second",
+          agentConnected: true,
           connectionState: "connected",
           exited: false,
         }),

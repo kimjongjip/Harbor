@@ -25,6 +25,7 @@ export type TerminalProgram =
   | "antigravity"
   | "antigravity-cli";
 export interface TerminalOptions {
+  managedChatAdapter?: true;
   antigravityModel?: string;
   antigravityEffort?: import("../shared/ide-chat.js").ChatEffort;
   claudePeerChannel?: boolean;

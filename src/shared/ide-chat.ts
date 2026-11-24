@@ -4,6 +4,10 @@ import type { HistoryPage } from "./history.js";
 export type IdeChatProvider = import("./agent-provider.js").AgentProvider;
 export interface IdeChatLive {
   terminalId: string;
+  /** A managed ACP process was opened by Harbor to serve this conversation. */
+  origin?: "managed" | "terminal";
+  /** Only reported for a current, independently opened terminal with a confirmed native identity. */
+  terminalTitle?: string;
   canSend: boolean;
   canInterrupt: boolean;
   transport:

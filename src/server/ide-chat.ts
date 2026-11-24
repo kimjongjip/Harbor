@@ -348,8 +348,11 @@ export class IdeChats {
   hostFor(id: string) {
     return this.managed(id).view.hostId;
   }
-  terminalFor(id: string) {
-    return this.managed(id).liveBinding?.terminalId;
+  terminalFor(id: string, requireCurrent = false) {
+    const binding = this.managed(id).liveBinding;
+    if (!binding) return;
+    if (this.dependencies.live?.get(binding).terminal) return binding.terminalId;
+    if (requireCurrent) throw new IdeChatError("현재 대화의 터미널 연결을 확인해 주세요.", 409);
   }
   async usage(id:string,guard:Guard):Promise<IdeChatUsage>{
     const m=this.managed(id);
@@ -675,14 +678,33 @@ export class IdeChats {
     input: IdeChatCreate,
     actor: string,
     guard: Guard,
+    terminalId?: string,
   ): Promise<IdeChatConversation> {
     input = createSchema.parse(input);
+    if (terminalId !== undefined) {
+      idSchema.parse(terminalId);
+      const authorize = guard;
+      guard = async () => {
+        await authorize();
+        const live = this.dependencies.live;
+        const binding = input.resumeId && live?.find(input.hostId, input.provider, input.resumeId, terminalId);
+        if (!binding || !live?.get(binding).terminal)
+          throw new IdeChatError("선택한 터미널의 현재 AI 대화를 확인하세요.", 409);
+      };
+    }
     if(input.resumeId && (input.reviewOnly || input.permission || input.effort || input.model || input.autoAccept)) throw new IdeChatError("기존 대화의 설정은 연결한 뒤 변경하세요.",409);
     if(input.autoAccept && (input.reviewOnly||input.permission==="read-only"))throw new IdeChatError("읽기 전용 대화에서는 자동 수락할 수 없습니다.",409);
     await guard();
     this.dependencies.host(input.hostId);
     const key = `${actor}:${input.requestId}`;
-    const hash = fingerprint(input);
+    const hash = fingerprint(terminalId === undefined ? input : [input, terminalId]);
+    const readResult = async (id: string) => {
+      const view = await this.read(id, guard);
+      if (terminalId !== undefined && (view.live?.terminalId !== terminalId || view.hostId !== input.hostId ||
+          view.provider !== input.provider || view.nativeId !== input.resumeId))
+        throw new IdeChatError("선택한 터미널과 대화 연결이 달라졌습니다.", 409);
+      return view;
+    };
     const prior = this.creations.get(key);
     if (prior) {
       if (prior.fingerprint !== hash)
@@ -692,19 +714,19 @@ export class IdeChats {
         );
       const id = await prior.promise;
       await guard();
-      return this.read(id, guard);
+      return readResult(id);
     }
     if (this.conversations.size >= 200 || this.creations.size >= 2000)
       throw new IdeChatError(
         "열린 IDE 대화가 너무 많습니다. 작업을 마친 후 Harbor를 다시 시작해 주세요.",
         429,
       );
-    const promise = this.createManaged(input, guard);
+    const promise = this.createManaged(input, guard, terminalId);
     this.creations.set(key, { fingerprint: hash, promise });
     try {
       const id = await promise;
       await guard();
-      return this.read(id, guard);
+      return readResult(id);
     } catch (error) {
       // Creation never sends a prompt. Retrying a failed initialization is safe
       // and must recover after a CLI closes, credentials change, or SSH returns.
@@ -753,6 +775,7 @@ export class IdeChats {
   private async createManaged(
     input: IdeChatCreate,
     guard: Guard,
+    terminalId?: string,
   ): Promise<string> {
     const nativeKey = input.resumeId
       ? this.nativeKey(input.hostId, input.provider, input.resumeId)
@@ -762,13 +785,18 @@ export class IdeChats {
         input.hostId,
         input.provider,
         input.resumeId!,
+        terminalId,
       );
       const existing = this.native.get(nativeKey);
       if (existing) {
         const managed = this.managed(existing);
         this.sync(managed);
         if (managed.hostKey === hostKey(this.dependencies.host(input.hostId))) {
-          if (live) {
+          if (live && managed.liveBinding && managed.liveBinding.terminalId !== live.terminalId) {
+            if (this.dependencies.live?.get(managed.liveBinding).terminal)
+              throw new IdeChatError("이 대화는 다른 터미널에서 연결되어 있습니다.", 409);
+            // Keep the old handle bound to its original terminal. Create a reader for the confirmed replacement.
+          } else if (live) {
             if (
               managed.run ||
               (managed.hubId &&
@@ -811,7 +839,7 @@ export class IdeChats {
         return id;
       }
     }
-    const promise = this.initializeManaged(input, guard);
+    const promise = this.initializeManaged(input, guard, terminalId);
     if (nativeKey) this.creatingNative.set(nativeKey, promise);
     try {
       return await promise;
@@ -822,6 +850,7 @@ export class IdeChats {
   private async initializeManaged(
     input: IdeChatCreate,
     guard: Guard,
+    terminalId?: string,
   ): Promise<string> {
     const { hostId, provider } = input;
     if (input.reviewOnly && (provider === "antigravity" || (input.permission && input.permission !== "read-only")))
@@ -842,7 +871,9 @@ export class IdeChats {
     if (!input.resumeId) {await this.validateSettings(hostId,provider,input); await guard();}
     let live =
       input.resumeId &&
-      this.dependencies.live?.find(hostId, provider, input.resumeId);
+      this.dependencies.live?.find(hostId, provider, input.resumeId, terminalId);
+    if (terminalId !== undefined && !live)
+      throw new IdeChatError("선택한 터미널의 대화 연결이 끝났습니다.", 409);
     if (
       !live &&
       provider === "antigravity" &&
@@ -1851,7 +1882,7 @@ export class IdeChats {
     return this.snapshot(id);
   }
   ownsLiveTerminal(terminalId:string, nativeId:string) {
-    return [...this.conversations.values()].some(c => c.liveBinding?.terminalId === terminalId &&
+    return [...this.conversations.values()].some(c => c.liveBinding?.origin === "managed" && c.liveBinding.terminalId === terminalId &&
       c.view.nativeId === nativeId && c.view.provider === "antigravity");
   }
   hasActiveWork() {
@@ -1934,7 +1965,7 @@ export function createIdeChatRouter(
     (req: Request, hostId: string, write: boolean, conversationId?: string) =>
     async () => {
       const terminalId =
-        write && conversationId ? chats.terminalFor(conversationId) : undefined;
+        write && conversationId ? chats.terminalFor(conversationId, true) : undefined;
       if (terminalId && req.get("X-Harbor-Terminal") !== terminalId)
         throw new IdeChatError("현재 대화의 터미널 연결을 확인해 주세요.", 409);
       await options.authorize(req, {
@@ -2006,6 +2037,7 @@ export function createIdeChatRouter(
         input,
         options.actor(req),
         guard(req, input.hostId, true),
+        req.get("X-Harbor-Terminal"),
       );
     }),
   );

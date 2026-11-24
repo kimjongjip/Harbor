@@ -275,27 +275,15 @@
   color: var(--accent, #4563d4);
   background: var(--accent-soft, #eef1ff);
 }
-.ide-chat-live {
+.ide-chat-input-state {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 3px 8px;
-  padding: 5px 12px;
-  border-bottom: 1px solid var(--border, #dce1ea);
+  gap: 4px 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.9em;
 }
-.ide-chat-live > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.ide-chat-live small {
-  flex-basis: 100%;
-  line-height: 1.5;
-}
-.ide-chat-live button {
+.ide-chat-input-state button {
   color: var(--accent, #4563d4);
 }
 .ide-chat-conversation-title {

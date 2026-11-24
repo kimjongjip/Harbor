@@ -476,10 +476,10 @@ export class AgentBridge {
     this.peerHandle.post("/runtime", (req, res) => {
       try {
         const credential = res.locals.harborCredential as Credential;
-        this.setPeerRuntime(
-          credential.terminalId,
-          peerRuntimeSchema.parse(req.body),
-        );
+        const report = peerRuntimeSchema.parse(req.body);
+        this.setPeerRuntime(credential.terminalId, report);
+        if (report.userInputVersion === 1)
+          this.peers.observeInputReader(credential.terminalId, report.sessionId);
         res.json({ runtime: this.peers.runtime(credential.terminalId) });
       } catch (error) {
         res.status(400).json({
