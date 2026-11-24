@@ -39,7 +39,7 @@ async function request(path,init){const body=init?.body?JSON.parse(init.body):un
 }
 const file={terminalId:'fixture-terminal',hostId:'host-a',root:'/fixture',cwd:'/fixture',path:'/fixture/example.ts',content:'// 코드와 AI 대화\nexport function answer(): number {\n  return 42;\n}\n'.replaceAll('\\n','\n'),version:'1',binding:'fixture-binding',encoding:'utf-8',bom:false};
 const editorApi={tree:async()=>({...file,path:'/fixture',parent:null,entries:[{name:'example.ts',path:file.path,kind:'file',size:100,modifiedAt:0,mode:0}],truncated:false}),read:async()=>({...file}),save:async(_old,content)=>({...file,content})};
-function Fixture(){const[host,setHost]=useState('host-a');const[workspace,setWorkspace]=useState(false);const[attachment,setAttachment]=useState();const[terminal,setTerminal]=useState();const[active,setActive]=useState(true);window.setHost=setHost;window.setAttachment=setAttachment;window.setTerminal=setTerminal;window.setActive=setActive;window.showWorkspace=()=>setWorkspace(true);return <div style={{width:workspace?'100vw':520,height:workspace?'100vh':740,display:'flex',background:'#f4f6fa',color:'#15243c'}}>{workspace&&<div style={{flex:1,minWidth:0}}><IdeWorkspace api={editorApi} terminalId="fixture-terminal" hostId="host-a" hostLabel="Fixture" workspaceCwd="/fixture" visible={true}/></div>}<div style={{width:workspace?420:520,minWidth:0,height:'100%',display:'flex',flexDirection:'column'}}><IdeChatPanel hostId={host} terminal={terminal} hostName={host==='host-a'?'Fixture A':'Fixture B'} active={active} request={request} attachment={attachment} onAttachmentConsumed={()=>setAttachment(undefined)} onShowTerminal={()=>window.terminalActions.push('show')} onFocusTerminal={id=>window.terminalActions.push(id)}/></div></div>}
+function Fixture(){const[presentation,setPresentation]=useState();window.setPresentation=setPresentation;const[host,setHost]=useState('host-a');const[workspace,setWorkspace]=useState(false);const[attachment,setAttachment]=useState();const[terminal,setTerminal]=useState();const[active,setActive]=useState(true);window.setHost=setHost;window.setAttachment=setAttachment;window.setTerminal=setTerminal;window.setActive=setActive;window.showWorkspace=()=>setWorkspace(true);return <div style={{width:workspace?'100vw':520,height:workspace?'100vh':740,display:'flex',background:'#f4f6fa',color:'#15243c'}}>{workspace&&<div style={{flex:1,minWidth:0}}><IdeWorkspace api={editorApi} terminalId="fixture-terminal" hostId="host-a" hostLabel="Fixture" workspaceCwd="/fixture" visible={true}/></div>}<div style={{width:workspace?420:520,minWidth:0,height:'100%',display:'flex',flexDirection:'column'}}><IdeChatPanel presentation={presentation} hostId={host} terminal={terminal} hostName={host==='host-a'?'Fixture A':'Fixture B'} active={active} request={request} attachment={attachment} onAttachmentConsumed={()=>setAttachment(undefined)} onShowTerminal={()=>window.terminalActions.push('show')} onFocusTerminal={id=>window.terminalActions.push(id)}/></div></div>}
 createRoot(document.getElementById('root')).render(<Fixture/>);
 `,
     );
@@ -152,6 +152,32 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         /synthetic tool output/,
       );
 
+      await input.fill("화면 변경 중 작성하던 초안");
+      await page.evaluate(() => (window as any).setPresentation("terminal"));
+      const transcript=page.locator(".managed-transcript");
+      await transcript.getByRole("table").waitFor();
+      assert.equal(await transcript.locator(".history-message.user .conversation-question").innerText(),"Codex draft A");
+      assert.equal(await transcript.locator(".history-message.assistant table").count(),1);
+      const work=transcript.locator(".conversation-work");
+      assert.equal(await work.getAttribute("open"),null);
+      await transcript.locator(".history-message.assistant table").evaluate(node=>{
+        const selection=window.getSelection()!;const range=document.createRange();range.selectNodeContents(node);
+        selection.removeAllRanges();selection.addRange(range);
+        document.addEventListener("copy",event=>{event.preventDefault();(window as any).copiedFixtureText=selection.toString();},{once:true});
+        document.execCommand("copy");
+      });
+      assert.match(await page.evaluate(()=>(window as any).copiedFixtureText),/성공/);
+      await page.evaluate(()=>window.getSelection()?.removeAllRanges());
+      await work.locator("summary").first().click();
+      await work.locator(".transcript-output").first().waitFor({timeout:4000});
+      assert.match(await work.innerText(),/synthetic tool output/);
+      await page.screenshot({path:resolve(".cache/managed-terminal-presentation.png")});
+      await work.getByRole("button",{name:"작업 과정 접기"}).click();
+      assert.equal(await work.getAttribute("open"),null);
+      assert.equal(await input.inputValue(),"화면 변경 중 작성하던 초안");
+      await page.evaluate(()=>(window as any).setPresentation(undefined));
+      await page.locator(".ide-chat-message.assistant table").waitFor();
+      await input.fill("");
       const beforeBranch = (await posts()).length;
       await page.getByRole("button", { name: "옆 대화", exact: true }).click();
       assert.match(await input.inputValue(), /참고 기록/);

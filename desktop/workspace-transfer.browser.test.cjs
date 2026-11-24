@@ -49,8 +49,11 @@ test(
       app = await electron.launch({ args: [process.cwd()], env });
       let main = await app.firstWindow();
       main.setDefaultTimeout(8000);
-      await main.getByRole("button", {name:"터미널",exact:true}).click();
-      await main.locator(".terminal-tabs").waitFor({state:"attached"});
+      // Fresh profile and an empty real backend, before creating any fixture tabs.
+      await main.getByRole("button", { name: "터미널", exact: true, pressed: true }).waitFor();
+      await main.locator(".harbor-workbench").waitFor({ state: "visible" });
+      await main.locator(".terminal-tabs").waitFor({ state: "attached" });
+      assert.equal(await main.locator(".managed-chat-workspace:visible").count(), 0);
       const boot = async () => (await fetch(base + "/api/bootstrap")).json();
       const initial = await boot();
       const create = async (title) => {

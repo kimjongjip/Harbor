@@ -7,6 +7,36 @@
   height: 100%;
   overflow: hidden;
 }
+.managed-chat-empty { display: grid; gap: 3px; padding: 12px 0; }
+.managed-chat-empty > span { color: var(--muted); font: 13px var(--font-mono, monospace); }
+
+
+.ide-chat[data-presentation="terminal"] {
+  background: var(--bg);
+}
+.ide-chat[data-presentation="terminal"] .ide-chat-scroll {
+  padding: 6px 10px 12px;
+  font-size: var(--document-font-size, 16px);
+  line-height: var(--document-line-height, 1.7);
+}
+.managed-transcript .markdown { font-size: inherit; line-height: inherit; }
+.managed-transcript pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ide-chat[data-presentation="terminal"] .conversation-work-collapse {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 13px;
+}
+.ide-chat[data-presentation="terminal"] .ide-chat-compose textarea {
+  min-height: 3.4em;
+  border-inline: 0;
+  border-radius: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--document-font-size, 16px);
+  background: var(--panel);
+}
+
 .worktree-review {
   padding: 8px 12px;
   border-block: 1px solid var(--border);

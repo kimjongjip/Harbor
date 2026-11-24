@@ -1,6 +1,5 @@
 import { providerName as agentLabel } from "../shared/agent-provider";
 import {
-  memo,
   startTransition,
   useCallback,
   useEffect,
@@ -16,9 +15,10 @@ import type { TerminalInfo } from "../shared/types";
 import type { HistoryDetail } from "../shared/history";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import { api } from "./api";
-import { TranscriptItems, type TranscriptItemsProps } from "./TranscriptItems";
+import { WorkGroup } from "./WorkGroup";
+import { TranscriptItems } from "./TranscriptItems";
 import { Markdown } from "./RichMarkdown";
-import { transcriptEntries, transcriptSections } from "./transcript-steps";
+import { transcriptSections } from "./transcript-steps";
 import { TerminalNativeFlow, type NativeFlowFrame } from "./TerminalNativeFlow";
 import {
   liveTranscriptLayout,
@@ -53,81 +53,6 @@ const turnKey = (turn: ReturnType<typeof conversationTurns>[number]) => {
   const last = turn.items.at(-1)!;
   return `${last.kind}:${last.id}`;
 };
-/** A consecutive run of tool records; progress reports remain outside. */
-const WorkGroup = memo(function WorkGroup({
-  items,
-  state,
-  busy = false,
-  open,
-  onToggle,
-  props,
-}: {
-  items: TranscriptItemsProps["items"];
-  state: "live" | "done" | "saved";
-  /** The CLI is visibly working on this turn (not merely unverified). */
-  busy?: boolean;
-  open: boolean;
-  onToggle(open: boolean): void;
-  props: Omit<TranscriptItemsProps, "items">;
-}) {
-  const count = useMemo(() => transcriptEntries(items).length, [items]);
-  const summary = useRef<HTMLElement>(null);
-  const collapse = () => {
-    const node = summary.current;
-    if (node) {
-      const body = node.closest<HTMLElement>(".terminal-conversation-body");
-      if (
-        body &&
-        node.getBoundingClientRect().top < body.getBoundingClientRect().top
-      )
-        body.scrollTop +=
-          node.getBoundingClientRect().top - body.getBoundingClientRect().top;
-      node.focus({ preventScroll: true });
-    }
-    onToggle(false);
-  };
-  return (
-    <details
-      className={`conversation-work${state === "live" ? " live" : ""}`}
-      data-work-state={state}
-      open={open}
-    >
-      <summary
-        ref={summary}
-        aria-expanded={open}
-        onClick={(event) => {
-          event.preventDefault();
-          onToggle(!open);
-        }}
-      >
-        {state === "live" && busy && (
-          <span className="conversation-work-spinner" aria-hidden="true" />
-        )}
-        {state === "live"
-          ? busy
-            ? "작업 중"
-            : "작업 기록"
-          : state === "done"
-            ? "작업 과정"
-            : "저장된 작업"}
-        {count ? ` · ${count}개` : ""}
-      </summary>
-      {open && !!items.length && (
-        <TranscriptItems items={items} {...props} stepsOpen />
-      )}
-      {open && (
-        <button
-          type="button"
-          className="conversation-work-collapse"
-          onClick={collapse}
-        >
-          작업 과정 접기
-        </button>
-      )}
-    </details>
-  );
-});
-
 /** One terminal document: persisted work and native live output/input share one scroller. */
 export function TerminalConversation({
   term,

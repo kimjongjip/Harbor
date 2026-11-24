@@ -93,8 +93,6 @@ const initialFocusId = new URLSearchParams(location.search).get("focus");
 const nativeWindowKey = window.harborDesktop?.workspaceTabs
   ? new URLSearchParams(location.search).get("workspace") || "main"
   : null;
-const managedHostPreference =
-  "harbor.managedHost." + (nativeWindowKey || "main");
 type HistoryDrop = {
   provider?: import("../shared/agent-provider").AgentProvider;
   sshSessionMode?: "direct" | "tmux";
@@ -126,14 +124,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<
     "terminal" | "ide" | "chat"
-  >(() => {
-    const placement = window.harborDesktop?.workspaceTabs?.();
-    if (popoutId || initialFocusId || (placement && placement.key !== placement.home)) return "terminal";
-    if (!remoteDesktop) try {
-      if (localStorage.getItem(managedHostPreference + ".view") === "terminal") return "terminal";
-    } catch {}
-    return "chat";
-  });
+  >("terminal");
   const [chatOpened, setChatOpened] = useState(false);
   const [ideLoaded, setIdeLoaded] = useState(false);
   const [ideHeight, setIdeHeight] = useState(72);
@@ -272,15 +263,6 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
     if (popoutId) return;
-    if (!initialFocusId && !remoteDesktop)
-      try {
-        const lastHost = localStorage.getItem(managedHostPreference);
-        if (state.hosts.some((h) => h.id === lastHost)) {
-          setHostId(lastHost!);
-          setWorkspaceView("chat");
-          return;
-        }
-      } catch {}
     if (remoteDesktop && workspace?.workspaceView === "chat" && !initialFocusId)
       return;
     const available = state.terminals.filter(
@@ -344,17 +326,6 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const host =
     state.hosts.find((item) => item.id === (hostId || active?.hostId)) ||
     state.hosts[0];
-  useEffect(() => {
-    if (!ready || !host || popoutId || remoteDesktop || !startupDone.current)
-      return;
-    try {
-      if (page === "terminals") localStorage.setItem(managedHostPreference + ".view", workspaceView);
-      if (workspaceView === "chat" && page === "terminals" && chatOpened)
-        localStorage.setItem(managedHostPreference, host.id);
-      else if (workspaceView !== "chat")
-        localStorage.removeItem(managedHostPreference);
-    } catch {}
-  }, [ready, host?.id, workspaceView, page, chatOpened]);
   const messages = state.mailbox || [];
   const seenMessages = useRef(new Set<string>());
   const initializedMessages = useRef(false);
@@ -1189,17 +1160,6 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   role="group"
                   aria-label="작업 보기"
                 >
-                  {!popoutId && (
-                    <button
-                      aria-pressed={workspaceView === "chat"}
-                      onClick={() => {
-                        setChatOpened(true);
-                        setWorkspaceView("chat");
-                      }}
-                    >
-                      <MessageSquare size={14} /> AI 대화
-                    </button>
-                  )}
                   <button
                     aria-pressed={workspaceView === "terminal"}
                     onClick={() => setWorkspaceView("terminal")}
@@ -1218,6 +1178,17 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     <Code2 size={14} />
                     IDE
                   </button>
+                  {!popoutId && (
+                    <button
+                      aria-pressed={workspaceView === "chat"}
+                      onClick={() => {
+                        setChatOpened(true);
+                        setWorkspaceView("chat");
+                      }}
+                    >
+                      <MessageSquare size={14} /> AI 대화
+                    </button>
+                  )}
                 </div>
               )}
               {page === "terminals" && (
@@ -1394,6 +1365,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     <IdeBoundary>
                       <Suspense fallback={<p>대화를 여는 중…</p>}>
                         <ManagedChat
+                          presentation="terminal"
                           serverWorkspace={host?.serverWorkspace}
                           rememberScope={nativeWindowKey || "desktop"}
                           hostId={host?.id}

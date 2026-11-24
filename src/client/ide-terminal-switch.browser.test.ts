@@ -147,6 +147,45 @@ test(
     app.get("/api/hosts/:id/files/preview", (_req, res) =>
       res.status(404).json({ error: "No fixture reports" }),
     );
+    const managedId = "fixture-managed-conversation";
+    const chat = {
+      id: managedId,
+      runtimeId: "fixture-runtime",
+      nativeId: "fixture-managed-native",
+      hostId: host.id,
+      provider: "codex",
+      title: "Synthetic background work",
+      cwd: "/fixture",
+      model: "",
+      items: [] as { id: string; kind: string; text: string }[],
+      approvals: [],
+      status: "idle",
+      revision: 0,
+      historyCursor: null,
+      updatedAt: Date.now(),
+    };
+    app.post("/api/ide-chat/conversations", (_req, res) =>
+      res.json({ ...chat, revision: ++chat.revision }),
+    );
+    app.get("/api/ide-chat/conversations/" + managedId, (_req, res) =>
+      res.json({ ...chat, revision: ++chat.revision }),
+    );
+    app.post(
+      "/api/ide-chat/conversations/" + managedId + "/messages",
+      (req, res) => {
+        chat.items.push({
+          id: req.body.requestId,
+          kind: "user",
+          text: req.body.text,
+        });
+        chat.status = "running";
+        res.json({
+          ok: true,
+          requestId: req.body.requestId,
+          status: "submitted",
+        });
+      },
+    );
     app.use("/api", (_req, res) =>
       res.json({ data: [], messages: [], requests: [], hosts: [host] }),
     );
@@ -522,6 +561,52 @@ test(
             r.path === "/api/ide-chat/conversations" && r.method === "POST",
         ),
         false,
+      );
+      const composer = managed.getByRole("textbox", {
+        name: "AI에게 보낼 메시지",
+      });
+      await managed
+        .getByRole("button", { name: "AI 메시지 전송", exact: true })
+        .click();
+      await managed
+        .getByText("Independent managed draft", { exact: true })
+        .waitFor();
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLTextAreaElement>(
+            '.managed-chat-workspace textarea[aria-label="AI에게 보낼 메시지"]',
+          )?.value === "",
+      );
+      await composer.fill("Follow-up draft while the turn is running");
+      await page.evaluate(() => {
+        localStorage.setItem("harbor.managedHost.main", "fixture");
+        localStorage.setItem("harbor.managedHost.main.view", "chat");
+      });
+      await page.reload();
+      await page
+        .getByRole("button", { name: "터미널", exact: true, pressed: true })
+        .waitFor();
+      await page
+        .locator(".terminal-instance.active .xterm-helper-textarea")
+        .first()
+        .waitFor({ state: "attached" });
+      assert.equal(await managed.isVisible(), false);
+      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
+      await managed
+        .getByText("Independent managed draft", { exact: true })
+        .waitFor();
+      assert.equal(
+        await composer.inputValue(),
+        "Follow-up draft while the turn is running",
+      );
+      assert.equal(chat.status, "running");
+      assert.equal(chat.items.length, 1);
+      assert.equal(
+        requests.filter(
+          (r) =>
+            r.path === "/api/ide-chat/conversations" && r.method === "POST",
+        ).length,
+        1,
       );
       assert.deepEqual(errors, []);
     } finally {

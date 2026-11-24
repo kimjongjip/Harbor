@@ -42,6 +42,8 @@ import { Modal } from "../Dialogs";
 import { workspaceRequest } from "./workspace-request";
 import { remoteDesktop } from "../desktop-session";
 import { WorkspaceControl } from "./WorkspaceControl";
+import { displayMessage } from "./display-message";
+import { ManagedTranscript } from "./ManagedTranscript";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
 import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
@@ -106,32 +108,6 @@ interface ChatDraft {
 function selectionPrompt(text: string, selection?: IdeSelection) {
   if (!selection) return text;
   return `${text}\n\n<editor_selection>\n${JSON.stringify({ path: selection.path, startLine: selection.startLine, endLine: selection.endLine, unsaved: selection.unsaved, text: selection.text }, null, 2)}\n</editor_selection>`;
-}
-function displayMessage(item: MessageItem): {
-  text: string;
-  selection?: Pick<
-    IdeSelection,
-    "path" | "startLine" | "endLine" | "unsaved" | "text"
-  >;
-} {
-  if (item.kind !== "user") return { text: item.text };
-  const match = item.text.match(
-    /\n\n<editor_selection>\n([\s\S]+)\n<\/editor_selection>$/,
-  );
-  if (!match) return { text: item.text };
-  try {
-    const selection = JSON.parse(match[1]);
-    if (
-      typeof selection.path !== "string" ||
-      typeof selection.text !== "string" ||
-      !Number.isInteger(selection.startLine) ||
-      !Number.isInteger(selection.endLine)
-    )
-      return { text: item.text };
-    return { text: item.text.slice(0, match.index), selection };
-  } catch {
-    return { text: item.text };
-  }
 }
 const ChatItem = memo(
   function ChatItem({
@@ -313,6 +289,7 @@ function ApprovalCard({
 }
 
 export default function IdeChatPanel({
+  presentation,
   serverWorkspace = false,
   mobileWorkspace = false,
   antigravityIntegration,
@@ -329,6 +306,7 @@ export default function IdeChatPanel({
   onShowTerminal,
   labRequest = api,
 }: {
+  presentation?: "terminal";
   serverWorkspace?: boolean;
   mobileWorkspace?: boolean;
   antigravityIntegration?: boolean;
@@ -889,8 +867,12 @@ export default function IdeChatPanel({
         scroll.current.scrollHeight -
         prepend.current.height;
       prepend.current = undefined;
-    } else if (following.current)
+    } else if (following.current) {
+      const selection = scroll.current.ownerDocument.getSelection();
+      if (presentation === "terminal" && selection && !selection.isCollapsed &&
+          scroll.current.contains(selection.anchorNode)) return;
       scroll.current.scrollTop = scroll.current.scrollHeight;
+    }
   }, [view.conversation, view.key, active, historyOpen]);
   async function older() {
     const target = view,
@@ -1254,7 +1236,7 @@ export default function IdeChatPanel({
     onFocusTerminal?.(live.terminalId);
   }
   return (
-    <section className="ide-chat" aria-label="IDE AI 대화">
+    <section className="ide-chat" data-presentation={presentation} aria-label="IDE AI 대화">
       {active &&
         useWorkspace &&
         (mobileWorkspace || remoteDesktop) &&
@@ -1556,7 +1538,7 @@ export default function IdeChatPanel({
         </section>
       )}
       <div
-        className="ide-chat-scroll"
+        className={presentation === "terminal" ? "ide-chat-scroll terminal-conversation-body" : "ide-chat-scroll"}
         ref={scroll}
         onScroll={() => {
           const el = scroll.current!;
@@ -1565,7 +1547,9 @@ export default function IdeChatPanel({
           setBottom(following.current);
         }}
       >
-        {!conversation && (
+        {!conversation && (presentation === "terminal" ? (
+          <div className="managed-chat-empty"><strong>{label}</strong><span>{hostName || hostId} · {view.cwd || "서버 홈"}</span></div>
+        ) : (
           <div className="ide-chat-empty">
             <div className="ide-chat-empty-icon">
               {provider === "claude" ? "✳" : "⌘"}
@@ -1573,7 +1557,7 @@ export default function IdeChatPanel({
             <strong>{label}와 새 대화</strong>
             <p>{hostName || "선택한 서버"}에서 질문하거나 작업을 요청하세요.</p>
           </div>
-        )}
+        ))}
         {conversation?.historyCursor && (
           <button
             className="ide-chat-older"
@@ -1583,7 +1567,7 @@ export default function IdeChatPanel({
             {view.loadingOlder ? "불러오는 중…" : "이전 메시지 더 보기"}
           </button>
         )}
-        {conversation?.items.map((item) => (
+        {conversation && presentation === "terminal" ? <ManagedTranscript key={"transcript-"+conversation.id} items={conversation.items} hostId={conversation.hostId} cwd={conversation.cwd} provider={conversation.provider} nativeId={conversation.nativeId} running={!!running}/> : conversation?.items.map((item) => (
           <ChatItem
             key={item.id}
             item={item}
