@@ -86,6 +86,7 @@ async function makeArchive(root: string, output: string) {
     "dist/pty-worker.mjs",
     "dist/worker-manifest",
     "desktop/antigravity.cjs",
+    "desktop/inspection-command.cjs",
     "scripts/harbor-image.py",
   ];
   await new Promise<void>((done, fail) => {

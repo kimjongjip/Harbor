@@ -127,13 +127,22 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const { theme, setTheme } = useTheme();
   const [typographyOpen, setTypographyOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [lastView] = useState(() => {
+    if (popoutId || initialChatWindow || remoteDesktop) return;
+    if (initialFocusId && (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming)?.type !== "reload") return;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("harbor.view."+ (nativeWindowKey || "main")) || "null");
+      if (saved && ["chat","ide","terminal"].includes(saved.view) && typeof saved.hostId === "string")
+        return saved as {view:"chat"|"ide"|"terminal";hostId:string;page?: "hosts"|"terminals"|"files"};
+    } catch { /* A new window starts in the terminal. */ }
+  });
   const [workspaceView, setWorkspaceView] = useState<
     "terminal" | "ide" | "chat"
-  >(initialChatWindow ? "chat" : "terminal");
-  const [chatOpened, setChatOpened] = useState(initialChatWindow);
+  >(initialChatWindow ? "chat" : lastView?.view || "terminal");
+  const [chatOpened, setChatOpened] = useState(initialChatWindow || lastView?.view === "chat");
   const [chatFolder, setChatFolder] = useState<{hostId:string; cwd:string}>();
   const [ideChatFolder, setIdeChatFolder] = useState<{hostId:string; cwd:string}>();
-  const [ideLoaded, setIdeLoaded] = useState(false);
+  const [ideLoaded, setIdeLoaded] = useState(lastView?.view === "ide");
   const [ideHeight, setIdeHeight] = useState(72);
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
   const [ideChatOpen, setIdeChatOpen] = useState(true);
@@ -146,7 +155,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     useState<HTMLDivElement | null>(null);
   const { notices, push, read, sync } = useNotifications();
   const [page, setPage] = useState<"hosts" | "terminals" | "files">(
-    "terminals",
+    lastView?.page === "hosts" || lastView?.page === "files" ? lastView.page : "terminals",
   );
   const [activeId, setActiveId] = useState(() => {
     if(initialChatWindow)return "";
@@ -169,7 +178,11 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const focusRequest = useRef(0);
   const hostTerminals = useRef(new Map<string, string>());
   const pendingSelection = useRef<string | null>(null);
-  const [hostId, setHostId] = useState(initialChatWindow ? requestedChatHost : "");
+  const [hostId, setHostId] = useState(initialChatWindow ? requestedChatHost : lastView?.hostId || "");
+  useEffect(() => {
+    if (!ready || remoteDesktop || initialChatWindow || popoutId) return;
+    try { sessionStorage.setItem("harbor.view."+ (nativeWindowKey || "main"),JSON.stringify({view:workspaceView,hostId,page})); } catch {}
+  },[ready,workspaceView,hostId,page]);
   const [sidebar, setSidebar] = useState<
     "servers" | "files" | "activity" | "research"
   >("servers");
@@ -254,8 +267,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
       return;
     const next = localTerminals.find((t) => !t.exited);
     setActiveId(next?.id || "");
-    if (next) setHostId(next.hostId);
-  }, [ready, placement, activeId, active, localTerminals]);
+    if (next && workspaceView !== "chat") setHostId(next.hostId);
+  }, [ready, placement, activeId, active, localTerminals,workspaceView]);
   useDesktopWorkspace(
     ready,
     { activeId, page, workspaceView, sidebar, sidebarVisible },
@@ -284,6 +297,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
     if (popoutId || initialChatWindow) return;
+    if (lastView && !remoteDesktop && (workspaceView === "chat" || page !== "terminals")) return;
     if (remoteDesktop && workspace?.workspaceView === "chat" && !initialFocusId)
       return;
     const available = state.terminals.filter(

@@ -67,6 +67,11 @@ function workspaceTarget(value, cwd, editing) {
 function allowOnce(params, mode, cwd = process.cwd()) {
   const tool = params?.toolCall,
     options = params?.options;
+  if (process.platform === "linux" && tool?.kind === "execute" && ["default","auto","accept-edits"].includes(mode) &&
+      !["failed","completed","cancelled"].includes(tool.status) && inspectionCommand(tool,cwd) && Array.isArray(options)) {
+    const choices=options.filter(o=>o?.kind==="allow_once" && typeof o.optionId==="string" && o.optionId);
+    if(choices.length===1 && options.filter(o=>o?.optionId===choices[0].optionId).length===1)return choices[0];
+  }
   if (
     !["default", "auto", "accept-edits"].includes(mode) ||
     !["edit", "read", "search"].includes(tool?.kind) ||
@@ -172,6 +177,15 @@ function allowOnce(params, mode, cwd = process.cwd()) {
       o.optionId.length,
   );
   return once.length === 1 ? once[0] : undefined;
+}
+function inspectionCommand(tool,cwd) {
+  const input=tool?.rawInput;
+  if (!input || typeof input!=="object" || Array.isArray(input) ||
+      Object.keys(input).some(k=>!["CommandLine","commandLine","command_line","command","Cwd","cwd","WaitMsBeforeAsync","SafeToAutoRun","Blocking","Description","description","Name","name"].includes(k))) return;
+  const commands=[input.CommandLine,input.commandLine,input.command_line,input.command].filter(v=>v!==undefined);
+  if(commands.length!==1 || !require("./inspection-command.cjs").isInspectionCommand(commands[0])) return;
+  if ([input.cwd,input.Cwd].some(dir=>dir!==undefined && dir!==cwd)) return;
+  return commands[0];
 }
 async function request(route, body, signal) {
   const res = await fetch(new URL(route, bridge), {
@@ -673,29 +687,37 @@ async function run(
           options: Array.isArray(p.options) ? p.options : [],
           controller: new AbortController(),
         };
-        status("waiting");
-        line(
-          "승인 요청 · " +
-            clean(p.toolCall?.title) +
-            "\n" +
-            approval.options
-              .map((o, i) => i + 1 + ". " + clean(o.name))
-              .join("\n") +
-            "\n/approve 번호 또는 /deny",
-        );
         const captured = approval,
           activeTurn = turn;
         const toolCall = {
           ...activeTurn?.capabilities.get(p.toolCall?.toolCallId),
           ...p.toolCall,
         };
+        if (toolCall.kind === "execute" && !p.toolCall?.rawInput && toolCall.inspection &&
+            p.toolCall?.title === toolCall.inspection) {
+          toolCall.rawInput={command:toolCall.inspection};
+        }
         const action = { ...p, toolCall },
           choice = allowOnce(action, permissionMode);
+        let shown = false;
+        const showApproval = () => {
+          if (shown || closed || approval !== captured) return;
+          shown = true;
+          status("waiting");
+          line("승인 요청 · " + clean(toolCall.title) + "\n" +
+            captured.options.map((o,i)=>i+1+". "+clean(o.name)).join("\n") + "\n/approve 번호 또는 /deny");
+        };
+        if (choice && activeTurn && process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN)
+          setTimeout(showApproval,500).unref();
+        else showApproval();
         const choices = captured.options.filter(o => o?.kind === "allow_once" && typeof o.optionId === "string");
         const detail = JSON.stringify(toolCall.rawInput ?? toolCall.locations ?? {});
         if (manualApprovals && activeTurn && choices.length === 1 && choices[0].optionId &&
             captured.options.filter(o=>o.optionId===choices[0].optionId).length===1 && detail.length <= 8000) {
           void (async () => {
+            if (choice) await new Promise(resolve=>setTimeout(resolve,500));
+            if (closed || approval !== captured || turn !== activeTurn) return;
+            showApproval();
             await reported;
             while (!closed && approval === captured && turn === activeTurn) {
               const response = await fetch(process.env.HARBOR_HOOK_URL, {
@@ -733,8 +755,9 @@ async function run(
                 harbor_acp: true,
                 hook_event_name: "PermissionRequest",
                 session_id: sessionId,
-                tool_name: "Antigravity/" + toolCall.kind,
+                tool_name: "Antigravity/" + (toolCall.kind === "execute" ? "inspect" : toolCall.kind),
                 tool_input: {
+                  ...(toolCall.kind === "execute" && {command:inspectionCommand(toolCall,process.cwd())}),
                   description:
                     clean(toolCall.title).slice(0, 1500) || toolCall.kind,
                 },
@@ -791,12 +814,15 @@ async function run(
       turn &&
       ["tool_call", "tool_call_update"].includes(u.sessionUpdate) &&
       typeof u.toolCallId === "string" &&
-      u.kind &&
       (turn.capabilities.has(u.toolCallId) || turn.capabilities.size < 128)
     ) {
+      const previous=turn.capabilities.get(u.toolCallId);
+      const kind=u.kind ?? previous?.kind;
       turn.capabilities.set(u.toolCallId, {
-        kind: u.kind,
-        title: clean(u.title).slice(0, 1500),
+        kind,
+        title: u.title===undefined ? previous?.title : clean(u.title).slice(0, 1500),
+        inspection:kind==="execute" && !["completed","failed","cancelled"].includes(u.status) ?
+          (u.rawInput===undefined ? previous?.inspection : inspectionCommand(u,process.cwd())) : undefined,
       });
     }
     if (

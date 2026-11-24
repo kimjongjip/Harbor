@@ -77,6 +77,7 @@ test("Antigravity native approval is bound to the private hook, ACP program and 
     session: string,
     toolName = "Antigravity/edit",
     key = token.hookToken,
+    inspectCommand?:string,
   ) =>
     fetch(
       "http://127.0.0.1:" + (server.address() as any).port + "/permission",
@@ -88,6 +89,7 @@ test("Antigravity native approval is bound to the private hook, ACP program and 
         },
         body: JSON.stringify({
           ...permission(session, toolName),
+          ...(inspectCommand && {tool_input:{command:inspectCommand}}),
           harbor_acp: true,
         }),
       },
@@ -112,6 +114,11 @@ test("Antigravity native approval is bound to the private hook, ACP program and 
     "allow",
   );
   assert.equal(auto.state(terminal.id).accepted, 1);
+  assert.deepEqual(await (await send("native-a","Antigravity/inspect",token.hookToken,"free -h && rm tmp")).json(),{});
+  if(process.platform==="linux"){
+    const approved=await (await send("native-a","Antigravity/inspect",token.hookToken,"free -h && ls -la /data/fixture/ 2>/dev/null | head -n 40")).json();
+    assert.equal(approved.hookSpecificOutput.decision.behavior,"allow");
+  }
   auto.set(terminal.id, false);
   const appeared = once(requests, "change"),
     old = send("native-a");

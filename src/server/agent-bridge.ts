@@ -279,6 +279,7 @@ const tools = [
 
 /** Stateless MCP Streamable HTTP, with a distinct capability token per terminal. */
 import { AcpManualApprovals } from "./acp-manual-approval.js";
+import { isInspectionCommand } from "../../desktop/inspection-command.cjs";
 export class AgentBridge {
   readonly acpManual = new AcpManualApprovals();
   workspaceHandoff?: (terminalId: string, nativeId: string) => boolean;
@@ -1084,7 +1085,9 @@ export class AgentBridge {
       return !!event.success && this.credentials.get(credential.terminalId)===credential &&
         runtime?.kind==="antigravity" && runtime.sessionId===event.data.session_id && runtime.state!=="offline" &&
         terminal?.program==="antigravity" && !terminal.exited && terminal.agentSessionId===event.data.session_id &&
-        /^Antigravity\/(?:edit|read|search)$/.test(event.data.tool_name);
+        (/^Antigravity\/(?:edit|read|search)$/.test(event.data.tool_name) ||
+         (process.platform === "linux" && event.data.tool_name === "Antigravity/inspect" &&
+           isInspectionCommand((event.data.tool_input as {command?:unknown})?.command)));
     };
     // No decision means Codex retains its original approval flow.
     if (!requests || !event.success || !acpBound()) {

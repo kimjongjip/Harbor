@@ -841,14 +841,9 @@ test(
       });
       await page.reload();
       await page
-        .getByRole("button", { name: "터미널", exact: true, pressed: true })
+        .getByRole("button", { name: "AI 대화", exact: true, pressed: true })
         .waitFor();
-      await page
-        .locator(".terminal-instance.active .xterm-helper-textarea")
-        .first()
-        .waitFor({ state: "attached" });
-      assert.equal(await managed.isVisible(), false);
-      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
+      assert.equal(await managed.isVisible(), true);
       await managed
         .getByText("Independent managed draft", { exact: true })
         .waitFor();
@@ -901,6 +896,7 @@ test(
       );
       // The HTTP response can precede the WS inventory. Neither background
       // completion should steal an explicit selection made after startup.
+      await page.getByRole("button", {name:"터미널",exact:true}).click();
       await page.route("**/api/bootstrap",async route=>{
         const original=await route.fetch(),boot=await original.json();
         await route.fulfill({response:original,json:{...boot,state:{...boot.state,terminals:[]}}});

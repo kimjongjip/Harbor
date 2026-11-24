@@ -17,6 +17,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { backendVersionError } = require("./backend-version.cjs");
 const { BackendSupervisor } = require("./backend-supervisor.cjs");
+function isWorkspaceEntry(value) {
+  try {
+    const url=new URL(value);
+    return url.protocol==="http:" && /^harbor-[0-9a-f]{24}\.localhost$/.test(url.hostname) &&
+      !!url.port && !url.username && !url.password && url.pathname==="/_workspace/open" &&
+      /^#[a-z0-9]+\.[0-9a-f]{32}\.[0-9a-f]{64}$/.test(url.hash);
+  } catch {return false;}
+}
 const { configureInputScheduling } = require("./input-scheduling.cjs");
 const {
   DesktopUpdater,
@@ -581,6 +589,25 @@ function createWindow(
       if (terminalId)
         void detachTerminalWindow(terminalId, win).catch(() => {});
       else createWindow(url, newWindowBounds({ source: win }));
+    } else if (isWorkspaceEntry(url)) {
+      const workspaceOrigin = new URL(url).origin;
+      const dialogWindow = new BrowserWindow({
+        parent:win, show:process.env.HARBOR_DESKTOP_HIDDEN !== "1", width:1040, height:760, title:"Harbor · 서버 작업 공간", autoHideMenuBar:true,
+        webPreferences:{contextIsolation:true,sandbox:true,nodeIntegration:false,partition:"harbor-workspace-"+new URL(url).hostname},
+      });
+      const closeWorkspace=()=>{if(!dialogWindow.isDestroyed())dialogWindow.destroy();};
+      win.once("closed",closeWorkspace);
+      dialogWindow.once("closed",()=>win.removeListener("closed",closeWorkspace));
+      dialogWindow.webContents.setWindowOpenHandler(()=>({action:"deny"}));
+      const restrict=(event,destination)=>{
+        try {if(new URL(destination).origin === workspaceOrigin)return;}catch{}
+        event.preventDefault();
+      };
+      dialogWindow.webContents.on("will-navigate",restrict);
+      dialogWindow.webContents.on("will-redirect",restrict);
+      dialogWindow.webContents.session.setPermissionRequestHandler((_contents,_permission,answer)=>answer(false));
+      dialogWindow.webContents.session.setPermissionCheckHandler(()=>false);
+      void dialogWindow.loadURL(url).catch(()=>dialogWindow.destroy());
     } else if (isWebPage(url)) void shell.openExternal(url);
     return { action: "deny" };
   });

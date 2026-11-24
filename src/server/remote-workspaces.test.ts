@@ -409,6 +409,7 @@ test("automatic workspace updates stage once, preserve a busy worker, observe ac
     "dist/server.mjs",
     "dist/pty-worker.mjs",
     "desktop/antigravity.cjs",
+    "desktop/inspection-command.cjs",
     "scripts/harbor-image.py",
   ])
     await writeFile(join(dir, file), "fixture");

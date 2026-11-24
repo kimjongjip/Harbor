@@ -74,7 +74,7 @@ export function WorkspaceApprovalLink({
       rel="noopener noreferrer"
       onClick={() => setTimeout(() => refresh((v) => v + 1), 0)}
     >
-      서버 작업 공간에서 확인
+      {window.harborDesktop?.workspaceApprovalWindow ? "Harbor에서 원본 터미널 열기" : "서버 작업 공간에서 확인"}
     </a>
   );
 }
