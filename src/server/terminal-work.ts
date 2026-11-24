@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import type { HostConfig } from "../shared/types.js";
 import type {
@@ -8,6 +9,18 @@ import type {
 import type { Files } from "./files.js";
 import { shellQuote } from "./ssh.js";
 const exec = promisify(execFile);
+
+/** Correlates inherited processes with a Claude conversation; grants no access. */
+export function claudeWorkId(nativeId: string) {
+  return createHash("sha256")
+    .update("harbor-claude-work:" + nativeId)
+    .digest("hex");
+}
+
+export function codexWorkId(nativeId: string) {
+  return createHash("sha256").update(nativeId).digest("hex");
+}
+type WorkScope = "terminal" | "claude" | "codex";
 
 // Only executable/script/log basenames leave the host; command arguments may contain secrets.
 export function taskName(command: string, executable = "process"): string {
@@ -45,6 +58,7 @@ export function workKind(
 }
 const linuxProbe = `import os,json,hashlib,subprocess,re
 scope=SCOPE
+mode=WORK_MODE
 gpu={}
 try:
  out=subprocess.run(['nvidia-smi','--query-compute-apps=pid,used_gpu_memory','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=3).stdout
@@ -59,8 +73,12 @@ for p in [x for x in os.listdir('/proc') if x.isdigit()][:16384]:
   root='/proc/'+p
   if os.stat(root).st_uid!=os.getuid(): continue
   with open(root+'/environ','rb') as f: env=f.read(131072).split(b'\\0')
-  token=next((x.split(b'=',1)[1] for x in env if x.startswith(b'HARBOR_SESSION_TOKEN=')),None)
-  if not token or hashlib.sha256(token).hexdigest()!=scope: continue
+  if mode=='claude':
+   if b'HARBOR_CLAUDE_WORK_ID='+scope.encode('ascii') not in env: continue
+  else:
+   key=b'CODEX_THREAD_ID=' if mode=='codex' else b'HARBOR_SESSION_TOKEN='
+   token=next((x[len(key):] for x in env if x.startswith(key)),None)
+   if not token or hashlib.sha256(token).hexdigest()!=scope: continue
   with open(root+'/cmdline','rb') as f: args=f.read(8192).decode('utf-8','replace').split('\\0')
   with open(root+'/stat') as f: fields=f.read().rsplit(')',1)[1].split()
   if fields[0]=='Z': continue
@@ -85,14 +103,15 @@ export class TerminalWorkMonitor {
     terminalId: string,
     scope?: string,
     pid?: number,
+    mode: WorkScope = "terminal",
   ): Promise<TerminalWorkSnapshot> {
-    const key = JSON.stringify([host, terminalId, scope, pid]);
+    const key = JSON.stringify([host, terminalId, scope, pid, mode]);
     const previous = this.cache.get(key);
     if (previous && Date.now() - previous.updatedAt < 10000)
       return Promise.resolve(previous);
     const pending = this.pending.get(key);
     if (pending) return pending;
-    const promise = this.probe(host, scope, pid)
+    const promise = this.probe(host, scope, pid, mode)
       .then((rows) => {
         const jobs: TerminalWork[] = rows
           .flatMap((row) => {
@@ -129,15 +148,26 @@ export class TerminalWorkMonitor {
     host: HostConfig,
     scope?: string,
     pid?: number,
+    mode: WorkScope = "terminal",
   ): Promise<Omit<TerminalWork, "kind" | "state">[]> {
-    if (host.kind === "ssh") {
+    if (host.kind === "ssh" || process.platform === "linux") {
       if (!scope || !/^[a-f0-9]{64}$/.test(scope)) throw new Error("No scope");
-      return JSON.parse(
-        await this.files.researchCommand(
-          host,
-          `python3 -c ${shellQuote(`exec(${JSON.stringify(linuxProbe.replace("SCOPE", JSON.stringify(scope)))})`)}`,
-        ),
-      );
+      const script = linuxProbe
+        .replace("SCOPE", JSON.stringify(scope))
+        .replace("WORK_MODE", JSON.stringify(mode));
+      const output =
+        host.kind === "ssh"
+          ? await this.files.researchCommand(
+              host,
+              `python3 -c ${shellQuote(`exec(${JSON.stringify(script)})`)}`,
+            )
+          : (
+              await exec("python3", ["-c", script], {
+                timeout: 8000,
+                maxBuffer: 1024 * 1024,
+              })
+            ).stdout;
+      return JSON.parse(output);
     }
     if (process.platform !== "win32" || !Number.isSafeInteger(pid) || !pid)
       throw new Error("No process scope");

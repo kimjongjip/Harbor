@@ -12,7 +12,7 @@ import { TerminalScreen } from "../server/terminal-screen";
 
 test(
   "full desktop IDE moves the same live terminal and preserves drafts, splits without an external Mods installer",
-  { skip: process.platform !== "win32", timeout: 90000 },
+  { skip: process.platform !== "win32", timeout: 120000 },
   async () => {
     const root = resolve(".cache/ide-terminal-switch-tests");
     await mkdir(root, { recursive: true });
@@ -47,7 +47,7 @@ test(
       integration: "unavailable",
     }));
     const state = {
-      hosts: [host],
+      hosts: [host,{...host,id:"fixture-other",name:"Other fixture server",kind:"ssh",serverWorkspace:true}],
       terminals,
       sessions: [],
       activities: [],
@@ -164,28 +164,98 @@ test(
       historyCursor: null,
       updatedAt: Date.now(),
     };
-    app.post("/api/ide-chat/conversations", (_req, res) =>
-      res.json({ ...chat, revision: ++chat.revision }),
-    );
-    app.get("/api/ide-chat/conversations/" + managedId, (_req, res) =>
-      res.json({ ...chat, revision: ++chat.revision }),
-    );
-    app.post(
-      "/api/ide-chat/conversations/" + managedId + "/messages",
-      (req, res) => {
-        chat.items.push({
-          id: req.body.requestId,
-          kind: "user",
-          text: req.body.text,
-        });
-        chat.status = "running";
-        res.json({
-          ok: true,
-          requestId: req.body.requestId,
-          status: "submitted",
-        });
-      },
-    );
+    const secondChat: typeof chat = {
+      ...chat,
+      id: "fixture-managed-claude",
+      nativeId: "fixture-native-claude",
+      provider: "claude",
+      title: "Fixture second conversation",
+      status: "idle",
+      items: [],
+    };
+    const otherCodex: typeof chat = {
+      ...chat,
+      id: "fixture-second-codex",
+      nativeId: "fixture-second-codex-native",
+      title: "Second Codex analysis",
+      items: [],
+    };
+    const conversations = [chat, secondChat, otherCodex];
+    let codexCreations = 0;
+    app.post("/api/ide-chat/conversations", (req, res) => {
+      const c =
+        req.body.provider === "claude"
+          ? secondChat
+          : codexCreations++ === 0
+            ? chat
+            : otherCodex;
+      res.json({ ...c, revision: ++c.revision });
+    });
+    app.get("/api/ide-chat/conversations/:id", (req, res) => {
+      const c = conversations.find((c) => c.id === req.params.id);
+      if (!c) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json({ ...c, revision: ++c.revision });
+    });
+    app.get("/api/ide-chat/conversations/:id/usage", (req, res) => {
+      const owner = conversations.find((v) => v.id === req.params.id);
+      if (!owner) {
+        res.sendStatus(404);
+        return;
+      }
+      const first = owner === chat;
+      res.json({
+        usage: {
+          provider: owner.provider,
+          sessionId: owner.nativeId,
+          model: first
+            ? "fixture-codex-usage"
+            : owner === otherCodex
+              ? "fixture-second-codex-usage"
+              : "fixture-claude-usage",
+          usedTokens: first ? 36000 : 77000,
+          contextWindow: 100000,
+          usedPercent: first ? 36 : 77,
+          costUsd: first ? 1.23 : 4.56,
+          updatedAt: Date.now(),
+          source: "native",
+        },
+        work: {
+          updatedAt: Date.now(),
+          jobs: first
+            ? [
+                {
+                  id: "fixture-sim",
+                  pid: 456,
+                  kind: "simulator",
+                  task: "fixture simulation",
+                  state: "running",
+                },
+              ]
+            : [],
+        },
+      });
+    });
+    app.post("/api/ide-chat/conversations/:id/messages", (req, res) => {
+      const target = conversations.find((c) => c.id === req.params.id);
+      if (!target) {
+        res.sendStatus(404);
+        return;
+      }
+      target.items.push({
+        id: req.body.requestId,
+        kind: "user",
+        text: req.body.text,
+      });
+      target.status = "running";
+      res.json({
+        ok: true,
+        requestId: req.body.requestId,
+        status: "submitted",
+      });
+    });
     app.use("/api", (_req, res) =>
       res.json({ data: [], messages: [], requests: [], hosts: [host] }),
     );
@@ -546,6 +616,10 @@ test(
       );
       await page.getByRole("button", { name: "AI 대화", exact: true }).click();
       const managed = page.locator(".managed-chat-workspace");
+      const emptyRail = managed.getByRole("complementary", { name: "Codex 컨텍스트 사용량" });
+      await emptyRail.getByText("Harbor", { exact: true }).waitFor();
+      await emptyRail.getByText("대화를 시작하면 표시됩니다.", { exact: true }).waitFor();
+      assert.ok(!requests.some(r => r.path.startsWith("/api/ide-chat/conversations/") && r.path.endsWith("/usage")), "new chat sends no managed telemetry requests");
       await managed
         .getByLabel("AI에게 보낼 메시지")
         .fill("Independent managed draft");
@@ -578,6 +652,151 @@ test(
           )?.value === "",
       );
       await composer.fill("Follow-up draft while the turn is running");
+      const panel = managed.getByRole("complementary", {
+        name: "Codex 컨텍스트 사용량",
+      });
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      await panel.locator(".crew-main").waitFor();
+      await panel.getByText("fixture simulation", { exact: true }).waitFor();
+      assert.match(
+        await panel.locator(".terminal-usage-percent").innerText(),
+        /36%/,
+      );
+      assert.match(
+        await panel.locator(".terminal-usage-cost").innerText(),
+        /1\.23/,
+      );
+      const panelBox = await panel.boundingBox(),
+        composerBox = await composer.boundingBox();
+      assert.ok(
+        panelBox &&
+          composerBox &&
+          panelBox.x >= composerBox.x + composerBox.width - 2,
+        "Harbor panel occupies the right column",
+      );
+      await panel.getByRole("button", { name: "상태 패널 접기" }).click();
+      await panel.locator(".terminal-usage-compact").waitFor();
+      assert.equal(
+        await composer.inputValue(),
+        "Follow-up draft while the turn is running",
+      );
+      await panel.getByRole("button", { name: "상태 패널 펼치기" }).click();
+      await panel.locator(".crew-main").waitFor();
+      await page.setViewportSize({ width: 700, height: 950 });
+      await panel.waitFor({ state: "hidden" });
+      assert.equal(
+        await composer.inputValue(),
+        "Follow-up draft while the turn is running",
+      );
+      await page.setViewportSize({ width: 1500, height: 950 });
+      await panel.locator(".crew-main").waitFor();
+      const picker = managed.getByLabel("AI 제공자");
+      await picker.selectOption("claude");
+      await composer.fill("Question for Claude");
+      await managed
+        .getByRole("button", { name: "AI 메시지 전송", exact: true })
+        .click();
+      const claudePanel = managed.getByRole("complementary", {
+        name: "Claude 컨텍스트 사용량",
+      });
+      await claudePanel
+        .getByText("fixture-claude-usage", { exact: true })
+        .waitFor();
+      assert.match(
+        await claudePanel.locator(".terminal-usage-percent").innerText(),
+        /77%/,
+      );
+      assert.match(
+        await claudePanel.locator(".terminal-usage-cost").innerText(),
+        /4\.56/,
+      );
+      assert.equal(
+        await managed.getByText("fixture-codex-usage", { exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await claudePanel
+          .getByText("fixture simulation", { exact: true })
+          .count(),
+        0,
+      );
+      await picker.selectOption("codex");
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      const tabs = managed.getByRole("tablist", { name: "열린 AI 대화" });
+      const tabA = tabs.getByRole("tab", { name: /Synthetic background work/ }),
+        tabB = tabs.getByRole("tab", { name: /Second Codex analysis/ });
+      await tabA.waitFor();
+      await managed
+        .getByRole("button", { name: "새 대화", exact: true })
+        .click();
+      assert.equal(await composer.inputValue(), "");
+      await composer.fill("Independent second Codex question");
+      await managed
+        .getByRole("button", { name: "AI 메시지 전송", exact: true })
+        .click();
+      await tabB.waitFor();
+      await panel
+        .getByText("fixture-second-codex-usage", { exact: true })
+        .waitFor();
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLTextAreaElement>(
+            '.managed-chat-workspace textarea[aria-label="AI에게 보낼 메시지"]',
+          )?.value === "",
+      );
+      await composer.fill("Second Codex follow-up draft");
+      const tabOrder = () => tabs.getByRole("tab").evaluateAll(nodes=>nodes.map(n=>n.getAttribute("aria-label")));
+      const expectedOrder = await tabOrder();
+      const beforeMove = expectedOrder.indexOf(await tabB.getAttribute("aria-label"));
+      assert.ok(beforeMove >= 0);
+      const afterMove = beforeMove === 0 ? 1 : beforeMove - 1;
+      [expectedOrder[beforeMove], expectedOrder[afterMove]] = [expectedOrder[afterMove], expectedOrder[beforeMove]];
+      await tabB.press(beforeMove === 0 ? "Alt+ArrowRight" : "Alt+ArrowLeft");
+      assert.deepEqual(await tabOrder(), expectedOrder, "keyboard reorders the selected tab");
+      await tabB.dragTo(tabA);
+      assert.notDeepEqual(await tabOrder(), expectedOrder, "dragging moves the tab within this window");
+      await tabB.dragTo(tabs.getByRole("tab").nth(afterMove));
+      assert.deepEqual(await tabOrder(), expectedOrder);
+      assert.equal(await tabB.getAttribute("aria-selected"), "true");
+      assert.equal(await composer.inputValue(), "Second Codex follow-up draft");
+      chat.items.push({
+        id: "progress-a",
+        kind: "assistant",
+        text: "Progress for the first Codex conversation",
+      });
+      assert.equal(
+        await managed
+          .getByText("Progress for the first Codex conversation", {
+            exact: true,
+          })
+          .count(),
+        0,
+      );
+      await tabA.click();
+      await managed
+        .getByText("Progress for the first Codex conversation", { exact: true })
+        .waitFor();
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      await page
+        .locator('[data-host-id="fixture-other"]')
+        .getByRole("button", { name: "Other fixture server", exact: true })
+        .click();
+      assert.equal(
+        await tabA.count(),
+        0,
+        "a different host and durable transport do not inherit direct Codex tabs",
+      );
+      assert.equal(await composer.inputValue(), "");
+      await page
+        .locator('[data-host-id="fixture"]')
+        .getByRole("button", { name: "Test server", exact: true })
+        .click();
+      await tabA.waitFor();
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      assert.equal(
+        await composer.inputValue(),
+        "Follow-up draft while the turn is running",
+      );
       await page.evaluate(() => {
         localStorage.setItem("harbor.managedHost.main", "fixture");
         localStorage.setItem("harbor.managedHost.main.view", "chat");
@@ -600,13 +819,47 @@ test(
         "Follow-up draft while the turn is running",
       );
       assert.equal(chat.status, "running");
-      assert.equal(chat.items.length, 1);
+      assert.equal(chat.items.filter((i) => i.kind === "user").length, 1);
+      assert.equal(await tabs.getByRole("tab").count(), 3);
+      assert.deepEqual(await tabOrder(), expectedOrder, "restored tabs retain their names and order");
+      await managed.screenshot({path:join(directory,"managed-tabs-and-harbor-panel.png")});
+      await tabB.click();
+      await panel
+        .getByText("fixture-second-codex-usage", { exact: true })
+        .waitFor();
+      assert.equal(await composer.inputValue(), "Second Codex follow-up draft");
+      page.once("dialog", (dialog) => dialog.dismiss());
+      const closeB = managed.getByRole("button", {
+        name: /Second Codex analysis 탭 닫기/,
+      });
+      await closeB.click();
+      assert.equal(
+        await composer.inputValue(),
+        "Second Codex follow-up draft",
+        "canceling close keeps the draft",
+      );
+      page.once("dialog", (dialog) => dialog.accept());
+      await closeB.click();
+      await tabB.waitFor({ state: "detached" });
+      assert.equal(otherCodex.status, "running");
+      assert.equal(
+        requests.filter(
+          (r) => r.method === "POST" && r.path.endsWith("/interrupt"),
+        ).length,
+        0,
+      );
+      await tabA.click();
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      assert.equal(
+        await composer.inputValue(),
+        "Follow-up draft while the turn is running",
+      );
       assert.equal(
         requests.filter(
           (r) =>
             r.path === "/api/ide-chat/conversations" && r.method === "POST",
         ).length,
-        1,
+        3,
       );
       // The HTTP response can precede the WS inventory. Neither background
       // completion should steal an explicit selection made after startup.

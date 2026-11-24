@@ -160,6 +160,20 @@ test("remote account keeps one workspace across desktop client shutdown; ticket,
   const app = express();
   app.use(access.middleware);
   app.use(express.json());
+  app.get(
+    "/_workspace/chat/conversations/00000000-0000-4000-a000-000000000001/usage",
+    (_req, res) => {
+      res
+        .type("html")
+        .send(
+          '<!doctype html><div id="root"></div><script src="/assets/application.js"></script>',
+        );
+    },
+  );
+  app.get(
+    "/_workspace/chat/conversations/00000000-0000-4000-a000-000000000002/usage",
+    (_req, res) => res.sendStatus(403),
+  );
   let accepted = 0;
   app.get("/api/bootstrap", (_req, res) => res.json({ accepted }));
   app.post("/_workspace/chat/conversations", (_req, res) => {
@@ -225,6 +239,24 @@ test("remote account keeps one workspace across desktop client shutdown; ticket,
   const local = new RemoteWorkspaces(directory, directory, ssh);
   t.after(() => local.close());
   const first = new URL((await local.open(host, undefined, false)).url);
+  const signedRead = (id: string) =>
+    local.chat(
+      host,
+      undefined,
+      "host-" + "a".repeat(32),
+      "GET",
+      "/conversations/" + id + "/usage",
+      undefined,
+      undefined,
+      () => {},
+    );
+  assert.equal(
+    (await signedRead("00000000-0000-4000-a000-000000000001")).unsupportedUsage,
+    true,
+  );
+  const denied = await signedRead("00000000-0000-4000-a000-000000000002");
+  assert.equal(denied.status, 403);
+  assert.equal(denied.unsupportedUsage, undefined);
   const http = (
     url: URL,
     path: string,

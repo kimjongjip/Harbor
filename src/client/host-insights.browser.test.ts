@@ -66,6 +66,8 @@ test(
         ],
       }),
     );
+    app.get("/api/hosts/fixture/antigravity-quota",(_req,res)=>res.json({provider:"antigravity",updatedAt:Date.now(),windows:[
+      {label:"Gemini · 7일",remaining:85.67},{label:"Gemini · 5시간",remaining:95.1},{label:"Claude · GPT · 7일",remaining:100},{label:"Claude · GPT · 5시간",remaining:100}]}));
     app.get("/api/hosts/fixture/codex-context", (_req, res) =>
       res.json(context),
     );
@@ -139,6 +141,8 @@ test(
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
       const panel = page.locator(".account-usage-panel");
+      await panel.getByText("Antigravity",{exact:true}).waitFor();
+      await panel.getByText("85.67% 남음",{exact:true}).waitFor();
       assert.equal(
         Math.round((await panel.boundingBox())!.width),
         290,
@@ -162,7 +166,7 @@ test(
       await panel.getByText("미제공", { exact: true }).waitFor();
       assert.equal(
         await panel.locator("progress").count(),
-        2,
+        6,
         "missing Fable must never show an invented percentage",
       );
       assert.match(

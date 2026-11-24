@@ -38,6 +38,14 @@
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
+.account-quota[data-provider="antigravity"] {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  column-gap:12px;
+}
+.account-quota[data-provider="antigravity"] > header,
+.account-quota[data-provider="antigravity"] > p { grid-column:1/-1; }
+.account-quota[data-provider="antigravity"] .quota-window > div { display:grid; gap:0; }
 .quota-account-heading strong {
   min-width: 0;
   overflow: hidden;

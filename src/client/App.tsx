@@ -90,6 +90,11 @@ const RemoteConnectButton = lazy(() =>
 const noSessions: string[] = [];
 const popoutId = new URLSearchParams(location.search).get("terminal");
 const initialFocusId = new URLSearchParams(location.search).get("focus");
+const windowQuery = new URLSearchParams(location.search);
+const requestedChatKey=windowQuery.get("chatWindow") || "";
+const requestedChatHost=windowQuery.get("chatHost") || "";
+const initialChatWindow = !popoutId && !initialFocusId && /^[a-f0-9-]{36}$/i.test(requestedChatKey) &&
+  /^[A-Za-z0-9_-]{1,128}$/.test(requestedChatHost);
 const nativeWindowKey = window.harborDesktop?.workspaceTabs
   ? new URLSearchParams(location.search).get("workspace") || "main"
   : null;
@@ -124,8 +129,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<
     "terminal" | "ide" | "chat"
-  >("terminal");
-  const [chatOpened, setChatOpened] = useState(false);
+  >(initialChatWindow ? "chat" : "terminal");
+  const [chatOpened, setChatOpened] = useState(initialChatWindow);
   const [ideLoaded, setIdeLoaded] = useState(false);
   const [ideHeight, setIdeHeight] = useState(72);
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
@@ -140,6 +145,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     "terminals",
   );
   const [activeId, setActiveId] = useState(() => {
+    if(initialChatWindow)return "";
     if (popoutId || initialFocusId) return popoutId || initialFocusId || "";
     try {
       return (
@@ -159,7 +165,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const focusRequest = useRef(0);
   const hostTerminals = useRef(new Map<string, string>());
   const pendingSelection = useRef<string | null>(null);
-  const [hostId, setHostId] = useState("");
+  const [hostId, setHostId] = useState(initialChatWindow ? requestedChatHost : "");
   const [sidebar, setSidebar] = useState<
     "servers" | "files" | "activity" | "research"
   >("servers");
@@ -239,7 +245,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   useDesktopWorkspace(
     ready,
     { activeId, page, workspaceView, sidebar, sidebarVisible },
-    !!popoutId || placement?.key !== placement?.home,
+    !!popoutId || initialChatWindow || placement?.key !== placement?.home,
   );
   const workspaceApplied = useRef(false);
   useEffect(() => {
@@ -247,6 +253,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
       !ready ||
       !remoteDesktop ||
       workspaceApplied.current ||
+      initialChatWindow ||
       popoutId ||
       initialFocusId
     )
@@ -262,7 +269,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   useEffect(() => {
     if (!ready || startupDone.current) return;
     startupDone.current = true;
-    if (popoutId) return;
+    if (popoutId || initialChatWindow) return;
     if (remoteDesktop && workspace?.workspaceView === "chat" && !initialFocusId)
       return;
     const available = state.terminals.filter(
@@ -325,7 +332,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   }, [state.terminals]);
   const host =
     state.hosts.find((item) => item.id === (hostId || active?.hostId)) ||
-    state.hosts[0];
+    (initialChatWindow && hostId ? undefined : state.hosts[0]);
   const messages = state.mailbox || [];
   const seenMessages = useRef(new Set<string>());
   const initializedMessages = useRef(false);
@@ -1130,7 +1137,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     <span>
                       {page === "hosts"
                         ? "내 서버"
-                        : (page === "terminals"
+                        : (page === "terminals" && workspaceView !== "chat"
                             ? state.hosts.find((h) => h.id === active?.hostId)
                                 ?.name
                             : host?.name) ||
@@ -1199,6 +1206,14 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   className="terminal-control-slot"
                   ref={setTerminalControlTarget}
                 />
+              )}
+              {page==="terminals" && workspaceView==="chat" && !popoutId && host && (
+                <button type="button" className="button secondary small" onClick={()=>{
+                  const url=new URL(remoteDesktop ? "/desktop/" : "/",location.origin);
+                  url.searchParams.set("chatWindow",crypto.randomUUID());
+                  url.searchParams.set("chatHost",host.id);
+                  window.open(url.href,"_blank","popup,noopener,noreferrer");
+                }}>새 AI 창</button>
               )}
               {ideMode && (
                 <div
@@ -1370,7 +1385,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         <ManagedChat
                           presentation="terminal"
                           serverWorkspace={host?.serverWorkspace}
-                          rememberScope={nativeWindowKey || "desktop"}
+                          rememberScope={initialChatWindow ? "chat-window."+requestedChatKey : nativeWindowKey || "desktop"}
                           hostId={host?.id}
                           hostName={host?.name}
                           antigravityIntegration={antigravityIntegration}

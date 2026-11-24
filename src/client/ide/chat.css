@@ -1,3 +1,12 @@
+.managed-chat-tabbar { display:flex; align-items:center; gap:4px; min-height:34px; padding:0 6px; background:var(--panel); border-bottom:1px solid var(--border); }
+.managed-chat-tabs { display:flex; align-items:center; gap:5px; overflow-x:auto; min-width:0; }
+.managed-chat-tab { display:flex; align-items:center; flex-shrink:0; min-width:0; max-width:260px; border:1px solid transparent; border-radius:5px; cursor:grab; }
+.managed-chat-tab[data-current="true"] { color:var(--text); background:var(--accent-soft); border-color:var(--accent); }
+.managed-chat-tab > button[role="tab"] { min-width:0; border-radius:0; padding:6px 4px 6px 8px; }
+.managed-chat-tab > button[role="tab"] span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.managed-chat-tab .managed-chat-tab-close { padding:5px; color:var(--muted); }
+.managed-chat-surface { display:flex; flex:1 1 0; min-width:0; min-height:0; overflow:hidden; }
+.managed-chat-surface > .ide-chat { min-width:0; }
 .managed-chat-workspace:not([hidden]),
 .mobile-managed-chat:not([hidden]) {
   display: flex;

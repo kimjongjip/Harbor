@@ -4,7 +4,9 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
 import { TerminalPanelResize } from "./TerminalPanelResize";
 import { TerminalCrew } from "./TerminalCrew";
-import { TerminalWorkList, CodexSessionContext } from "./HostInsights";
+import type { TerminalWorkSnapshot } from "../shared/host-insights";
+import type { SessionStatus } from "../shared/types";
+import { TerminalWorkList, TerminalWorkDisplay, CodexSessionContext } from "./HostInsights";
 import {
   claudeUsageSnapshot,
   mergeClaudeUsage,
@@ -14,7 +16,11 @@ import {
 } from "../shared/terminal-usage";
 
 interface Props {
-  terminalId: string;
+  terminalId?: string;
+  managedId?: string;
+  managedRequest?: (path: string, init?: RequestInit) => Promise<Response>;
+  managedModel?: string;
+  managedStatus?: SessionStatus;
   hostId?: string;
   provider: import("../shared/agent-provider").AgentProvider;
   sessionId?: string;
@@ -27,6 +33,10 @@ interface Props {
 /** Own state only: a usage tick never invalidates TerminalPane or its transcript. */
 export const TerminalUsageBar = memo(function TerminalUsageBar({
   terminalId,
+  managedId,
+  managedRequest,
+  managedModel,
+  managedStatus,
   hostId,
   provider,
   sessionId,
@@ -48,15 +58,17 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   const [collapsed, setCollapsed] = useState(false);
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
-  const scope = `${terminalId}:${provider}:${sessionId || ""}`;
+  const scope = JSON.stringify([hostId,terminalId,managedId,provider,sessionId]);
+  const collect = active && (!managedRequest || !collapsed);
   const [snapshot, setSnapshot] = useState<{
     scope: string;
     usage: TerminalUsage | null;
+    work?: TerminalWorkSnapshot;
     unavailable?: boolean;
   }>();
   const current = snapshot?.scope === scope ? snapshot : undefined;
   useEffect(() => {
-    if (!active || !sessionId) return;
+    if (!collect || !sessionId || (!terminalId && !managedId)) return;
     let disposed = false,
       timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -68,12 +80,16 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
       const timeout = setTimeout(() => controller?.abort(), 15000);
       let delay = working ? 2000 : 5000;
       try {
-        const result = await api<TerminalUsageResponse>(
-          `/terminals/${encodeURIComponent(terminalId)}/usage?sessionId=${encodeURIComponent(sessionId)}`,
-          undefined,
-          "GET",
-          controller.signal,
-        );
+        let result: TerminalUsageResponse & {work?: TerminalWorkSnapshot | null};
+        if(managedRequest && managedId) {
+          const response = await managedRequest(`/conversations/${encodeURIComponent(managedId)}/usage`,{signal:controller.signal});
+          if(!response.ok) throw new ApiError("사용량 연결 확인 중",response.status);
+          result=await response.json();
+        } else {
+          result=await api<TerminalUsageResponse>(
+            `/terminals/${encodeURIComponent(terminalId!)}/usage?sessionId=${encodeURIComponent(sessionId)}`,undefined,"GET",controller.signal,
+          );
+        }
         if (!result || !("usage" in result)) {
           unsupported = true;
           if (!disposed) setSnapshot({ scope, usage: null, unavailable: true });
@@ -88,7 +104,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
         // Older running servers cannot receive /claude/usage. Their existing,
         // authenticated file reader can read the tiny native snapshot instead.
         if (
-          provider === "claude" &&
+          !managedRequest && provider === "claude" &&
           hostId &&
           (!usage ||
             usage.contextWindow === null ||
@@ -120,9 +136,10 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
           }
         }
         if (disposed) return;
+        const work=managedRequest && (!result.usage || usage) ? result.work || undefined : undefined;
         setSnapshot((previous) => {
           if (
-            previous?.scope === scope &&
+            !managedRequest && previous?.scope === scope &&
             previous.usage?.source === "native" &&
             previous.usage.contextWindow !== null &&
             (!usage || usage.contextWindow === null)
@@ -130,9 +147,9 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             return { ...previous, unavailable: true };
           return previous?.scope === scope &&
             !previous.unavailable &&
-            JSON.stringify(previous.usage) === JSON.stringify(usage)
+            JSON.stringify(previous.usage) === JSON.stringify(usage) && JSON.stringify(previous.work) === JSON.stringify(work)
             ? previous
-            : { scope, usage };
+            : { scope, usage, work };
         });
       } catch (error) {
         if (disposed || controller.signal.aborted) return;
@@ -164,7 +181,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
       controller?.abort();
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [scope, terminalId, hostId, provider, sessionId, active, working]);
+  }, [scope,terminalId,managedId,managedRequest,hostId,provider,sessionId,collect,working]);
   // Keep cached usage/collapse state while releasing the panel's space, resize
   // observer and Crew animations. The terminal DOM and socket stay mounted.
   if (!shown) return null;
@@ -230,16 +247,21 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
         <span className="terminal-usage-compact" title={title}>
           {percent === null ? "상태" : `${Math.round(percent)}%`}
         </span>
+      ) : managedRequest && !sessionId ? (
+        <div className="terminal-usage-scroll">
+          <div className="terminal-usage-session"><strong>{providerName}</strong></div>
+          <p className="terminal-usage-note">대화를 시작하면 표시됩니다.</p>
+        </div>
       ) : (
         <div className="terminal-usage-scroll">
           <div className="terminal-usage-session">
             <strong>{providerName}</strong>
             <span className={working ? "working" : ""}>
-              {waiting ? "입력 대기" : working ? "작업 중" : "대기"}
+              {managedStatus==="error" ? "오류" : managedStatus==="offline" ? "연결 끊김" : waiting ? "입력 대기" : working ? "작업 중" : "대기"}
             </span>
           </div>
-          {usage?.model && (
-            <div className="terminal-usage-model">{usage.model}</div>
+          {(usage?.model || managedModel) && (
+            <div className="terminal-usage-model">{usage?.model || managedModel}</div>
           )}
           <section className="terminal-usage-context" title={title}>
             <div className="terminal-usage-heading">
@@ -255,7 +277,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
               </span>
               <strong className="terminal-usage-percent">
                 {percent === null
-                  ? usage
+                  ? usage || (managedRequest && current)
                     ? "미수집"
                     : "대기"
                   : `약 ${Math.round(percent)}%`}
@@ -294,7 +316,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 !sessionId ? (
                   "대화 확인 중"
                 ) : (
-                  "사용량 확인 중"
+                  managedRequest && current ? "사용량 미수집" : "사용량 확인 중"
                 )
               ) : (
                 <>
@@ -329,7 +351,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 </strong>
               </div>
             )}
-            {provider === "codex" && hostId && (
+            {provider === "codex" && hostId && (!managedRequest || !!usage?.model) && (
               <CodexSessionContext
                 hostId={hostId}
                 model={usage?.model}
@@ -345,13 +367,17 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
                 ? "모델별 누적 토큰을 공식 API 표준 단가로 환산합니다. 캐시 쓰기는 기본 30분 단가를 적용합니다. 구독 청구액·잔여 사용량과 별개이며 빠른 처리·도구 요금·계약 할인은 포함하지 않습니다."
                 : provider === "antigravity"
                   ? "Antigravity가 ACP로 보고한 세션 비용(USD)입니다."
-                  : "Claude /cost와 같은 세션 누적 예상 비용(USD)입니다. 실제 청구액과 다를 수 있습니다."
+                  : usage?.costSource === "api-estimate"
+                    ? "Claude Agent SDK가 최근 응답에서 보고한 예상 비용(USD)입니다."
+                    : "Claude /cost와 같은 세션 누적 예상 비용(USD)입니다. 실제 청구액과 다를 수 있습니다."
             }
           >
             <span>
               {provider === "codex"
                 ? "API 환산 비용"
-                : `세션 누적 비용${usage?.metadataUpdatedAt ? " · 이전값" : ""}`}
+                : provider === "claude" && usage?.costSource === "api-estimate"
+                  ? "SDK 보고 비용"
+                  : `세션 누적 비용${usage?.metadataUpdatedAt ? " · 이전값" : ""}`}
               {usage?.costStatus === "loading" ||
               usage?.costStatus === "partial"
                 ? " · 소계"
@@ -370,15 +396,15 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
           <TerminalCrew
             key={scope}
             provider={provider}
-            state={waiting ? "waiting" : working ? "working" : "idle"}
+            state={managedStatus==="error" ? "failed" : managedStatus==="offline" ? "unknown" : waiting ? "waiting" : working ? "working" : "idle"}
             active={active}
             crew={usage?.crew}
             unavailable={current?.unavailable}
           />
-          <TerminalWorkList
+          {managedRequest ? (current?.work && <TerminalWorkDisplay data={current.work}/>) : terminalId && <TerminalWorkList
             terminalId={terminalId}
             active={active && !collapsed}
-          />
+          />}
           {current?.unavailable && (
             <p className="terminal-usage-note" role="status">
               사용량 연결 확인 중

@@ -193,7 +193,7 @@ export class RemoteWorkspaces {
     body: unknown,
     terminal: string | undefined,
     guard: () => void,
-    lease?: { client?: string; token?: string },
+    lease?: { client?: string; token?: string; revision?: string },
   ) {
     if (!this.enabled(host))
       throw Error("이 서버에서 세션 유지를 먼저 설정하세요.");
@@ -201,62 +201,98 @@ export class RemoteWorkspaces {
     guard();
     const signedPath = "/_workspace/chat" + path;
     const text = body === undefined ? undefined : JSON.stringify(body);
-    return new Promise<{ status: number; value: any }>((done, fail) => {
-      const q = request(
-        {
-          hostname: "127.0.0.1",
-          port: Number(t.host.split(":")[1]),
-          agent: t.agent,
-          method,
-          path: signedPath,
-          signal: AbortSignal.timeout(60000),
-          headers: {
-            host: t.host,
-            "content-type": "application/json",
-            "x-harbor-actor": actor,
-            "x-harbor-relay": workspaceRelayToken(
-              t.key,
-              actor,
-              method,
-              signedPath,
-              Date.now() + t.clockOffset,
-            ),
-            ...(terminal ? { "x-harbor-terminal": terminal } : {}),
-            ...(lease?.client ? { "x-harbor-client": lease.client } : {}),
-            ...(lease?.token ? { "x-harbor-control": lease.token } : {}),
-            ...(text === undefined
-              ? {}
-              : { "content-length": Buffer.byteLength(text) }),
+    return new Promise<{ status: number; value: any; unsupportedUsage?: true }>(
+      (done, fail) => {
+        const q = request(
+          {
+            hostname: "127.0.0.1",
+            port: Number(t.host.split(":")[1]),
+            agent: t.agent,
+            method,
+            path: signedPath,
+            signal: AbortSignal.timeout(60000),
+            headers: {
+              host: t.host,
+              "content-type": "application/json",
+              "x-harbor-actor": actor,
+              "x-harbor-relay": workspaceRelayToken(
+                t.key,
+                actor,
+                method,
+                signedPath,
+                Date.now() + t.clockOffset,
+              ),
+              ...(terminal ? { "x-harbor-terminal": terminal } : {}),
+              ...(lease?.client ? { "x-harbor-client": lease.client } : {}),
+              ...(lease?.token ? { "x-harbor-control": lease.token } : {}),
+              ...(lease?.revision
+                ? { "x-harbor-chat-revision": lease.revision }
+                : {}),
+              ...(text === undefined
+                ? {}
+                : { "content-length": Buffer.byteLength(text) }),
+            },
           },
-        },
-        (r) => {
-          const chunks: Buffer[] = [];
-          let bytes = 0;
-          r.on("data", (data: Buffer) => {
-            bytes += data.length;
-            if (bytes > 12 * 1024 * 1024) {
-              r.destroy(Error("대화 응답이 너무 큽니다."));
-              return;
-            }
-            chunks.push(data);
-          });
-          r.on("error", fail);
-          r.on("end", () => {
-            try {
-              guard();
-              done({
-                status: r.statusCode || 500,
-                value: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-              });
-            } catch (e) {
-              fail(e);
-            }
-          });
-        },
-      );
-      q.on("error", fail);
-      q.end(text);
-    });
+          (r) => {
+            const chunks: Buffer[] = [];
+            let bytes = 0;
+            r.on("data", (data: Buffer) => {
+              bytes += data.length;
+              if (bytes > 12 * 1024 * 1024) {
+                r.destroy(Error("대화 응답이 너무 큽니다."));
+                return;
+              }
+              chunks.push(data);
+            });
+            r.on("error", fail);
+            r.on("end", () => {
+              try {
+                guard();
+                const status = r.statusCode || 500,
+                  payload = Buffer.concat(chunks).toString("utf8");
+                if (
+                  method === "GET" &&
+                  /^\/conversations\/[a-f0-9-]{36}\/usage$/i.test(path) &&
+                  /^text\/html\b/i.test(String(r.headers["content-type"])) &&
+                  ((status === 200 &&
+                    /<!doctype html>/i.test(payload) &&
+                    payload.includes('id="root"') &&
+                    payload.includes("/assets/")) ||
+                    (status === 404 &&
+                      payload.includes("Cannot GET " + signedPath)))
+                ) {
+                  done({
+                    status: 404,
+                    value: {
+                      error: "서버가 대화 사용량 조회를 지원하지 않습니다.",
+                    },
+                    unsupportedUsage: true,
+                  });
+                  return;
+                }
+                if (
+                  status >= 400 &&
+                  !String(r.headers["content-type"])
+                    .toLowerCase()
+                    .includes("json")
+                ) {
+                  done({
+                    status,
+                    value: { error: "서버 요청을 처리할 수 없습니다." },
+                  });
+                  return;
+                }
+                done({ status, value: JSON.parse(payload) });
+              } catch (e) {
+                fail(e);
+              }
+            });
+          },
+        );
+        q.on("error", fail);
+        q.end(text);
+      },
+    );
   }
   async open(host: HostConfig, password: string | undefined, install: boolean) {
     const t = await this.tunnel(host, password, install);

@@ -1,4 +1,5 @@
 import express from "express";
+import {claudeUsageControl} from "./claude-account-usage.js";
 import { MobileAccess } from "./mobile-access.js";
 import { MobileGateway } from "./mobile-gateway.js";
 import { DesktopAccess } from "./desktop-access.js";
@@ -97,7 +98,7 @@ import { passwordConnection } from "./ssh-connect.js";
 import { Files, MAX_UPLOAD_BYTES } from "./files.js";
 import { SkillLibrary, createSkillRouter } from "./skill-library.js";
 import { HostInsights, createInsightsRouter } from "./host-insights.js";
-import { TerminalWorkMonitor } from "./terminal-work.js";
+import { claudeWorkId, codexWorkId, TerminalWorkMonitor } from "./terminal-work.js";
 import { sendMediaFile } from "./file-media.js";
 import { HtmlPreviews } from "./html-preview.js";
 import { UPLOAD_ENTRY_LIMIT } from "../shared/upload-tree.js";
@@ -124,6 +125,11 @@ const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
     (id) => hub.host(id),
     passwordFor,
     authorize,
+    async (host,b)=>{
+      const usage=await readSessionUsage(host,b.provider,b.nativeId,b.cwd,"legacy-workspace:"+host.id+":"+b.nativeId);
+      const work=b.provider==="codex" ? await workMonitor.read(host,b.nativeId,codexWorkId(b.nativeId),undefined,"codex") : null;
+      return {usage,work};
+    },
   );
 const runtimeDiagnostics = startRuntimeDiagnostics(store.directory);
 const hub = new Hub(store);
@@ -454,7 +460,7 @@ const bridge = new AgentBridge(mailbox, {
   onUsage: (id, usage) => {
     terminalUsage.put(id, usage);
     const terminal = terminals.list().find((t) => t.id === id);
-    if (terminal) hostInsights?.observe(terminal.hostId, usage);
+    if (terminal) hostInsights?.observe(hub.host(terminal.hostId), usage);
   },
 });
 terminals.on("peer-runtime-restored", (id, runtime) =>
@@ -550,7 +556,7 @@ bridge.peers.on("change", () => {
 });
 const files = new Files((id) => hub.passwords.get(id));
 const workMonitor = new TerminalWorkMonitor(files);
-hostInsights = new HostInsights(files, history, passwordFor);
+hostInsights = new HostInsights(files, history, passwordFor,store.directory,claudeUsageControl);
 const htmlPreviews = new HtmlPreviews(files, (id) => hub.host(id));
 hub.on("host-closed", (id) => files.close(id));
 const app = express();
@@ -725,6 +731,25 @@ managedPeers = new ManagedPeers({
 hub.managedPeerCall = (hostId, nativeId, name, args) =>
   managedPeers!.call({ hostId, nativeId, provider: "codex" }, name, args);
 const ideChats = new IdeChats({
+  sessionUsage: async (v, terminalId) => {
+    const host=hub.host(v.hostId);
+    const matches = () => !terminalId || terminals.list().some(t=>t.id===terminalId && !t.exited &&
+      t.hostId===v.hostId && t.agentKind===v.provider && (t.agentSessionId || t.resumeThreadId)===v.nativeId);
+    if (!matches()) return {usage:null,work:null};
+    const [usage,work] = await Promise.all([
+      readSessionUsage(host,v.provider,v.nativeId,v.cwd,terminalId || "managed:"+v.id).catch(()=>null),
+      terminalId ? workMonitor.read(host,terminalId+":"+v.nativeId,bridge.processScope(terminalId),terminals.monitorPid(terminalId))
+        : v.provider === "codex" && (host.kind === "ssh" || process.platform === "linux")
+          ? workMonitor.read(host,v.nativeId,codexWorkId(v.nativeId),undefined,"codex") : null,
+    ]);
+    return matches() ? {usage,work} : {usage:null,work:null};
+  },
+  managedClaudeWork: async (hostId, nativeId, processId) => {
+    const host = hub.host(hostId);
+    if (host.kind === "local" && process.platform !== "linux" && !(process.platform === "win32" && processId)) return null;
+    if (host.kind === "ssh") await passwordFor(hostId);
+    return workMonitor.read(host, nativeId, claudeWorkId(nativeId), processId, "claude");
+  },
   reservationDirectory: store.directory,
   reservationQuota:(id,provider,model,fresh)=>hostInsights.reservationQuota(hub.host(id),provider,model,fresh),
   gitAction: async (id, cwd, input, guard) => {
@@ -1498,7 +1523,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.2" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.3" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -2526,23 +2551,25 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
     return;
   }
   const host = hub.host(terminal.hostId);
-  if (terminal.agentKind === "antigravity") {
-    res.json({ usage: await antigravityHistory.usage(host, sessionId) });
-    return;
+  res.json({usage:await readSessionUsage(host,terminal.agentKind,sessionId,terminal.cwd,terminal.id)});
+});
+async function readSessionUsage(host:import("../shared/types.js").HostConfig,provider:import("../shared/agent-provider.js").AgentProvider,sessionId:string,cwd:string,cacheKey:string){
+  if (provider === "antigravity") {
+    return antigravityHistory.usage(host, sessionId);
   }
   const usage = await terminalUsage.read(
-    terminal.id,
-    terminal.agentKind,
+    cacheKey,
+    provider,
     sessionId,
     async () => {
       const password = await passwordFor(host.id);
-      if (terminal.agentKind === "claude") {
+      if (provider === "claude") {
         const native = await files
           .usageSnapshot(host, `~/.cache/harbor/usage/claude-${sessionId}.json`)
           .then((text) => claudeUsageSnapshot(text, sessionId))
           .catch(() => null);
         const saved = await claudeHistory
-          .usage(host, password, sessionId, terminal.cwd)
+          .usage(host, password, sessionId, cwd)
           .catch((error) => {
             if (native) return null;
             throw error;
@@ -2575,8 +2602,9 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
           ),
         }
       : usage;
-  res.json({ usage: enriched });
-});
+  return enriched;
+}
+
 app.get("/api/terminals/:id/rich", (req, res) => {
   res.json({
     enabled: richTerminals.enabled(String(req.params.id)),

@@ -101,6 +101,7 @@ test("SSH SDK transport keeps final stdout after exit-status and uses a non-PTY 
       signal: new AbortController().signal,
     } as SpawnOptions,
     async () => connection,
+    "test-conversation-a",
   );
   const received: string[] = [];
   process.stdout.on("data", (data) => received.push(data.toString()));
@@ -123,6 +124,8 @@ test("SSH SDK transport keeps final stdout after exit-status and uses a non-PTY 
   assert.equal(process.exitCode, 0);
   assert.match(command, /claude/);
   assert.match(command, /stream-json/);
+  assert.match(command, /export HARBOR_CLAUDE_WORK_ID=[0-9a-f]{64};/);
+  assert.ok(!command.includes("test-conversation-a"));
   assert.ok(!command.includes("not-in-argv"));
   assert.ok(!command.includes("DO_NOT_FORWARD"));
 });
@@ -154,6 +157,25 @@ test("SDK parser ignores child session frames without rebinding the conversation
   assert.equal(items[0].text, "Top-level answer");
 });
 
+test("SDK usage combines one main message's fresh/cache tokens with its confirmed model window and cost",()=>{
+  const snapshots:import("../shared/terminal-usage").TerminalUsage[]=[];
+  const nativeId=randomUUID();
+  const p=new ClaudeChatMessages({...events(),usage:u=>snapshots.push(u)},"turn",nativeId);
+  const event=(m:Record<string,unknown>)=>p.consume({session_id:nativeId,...m});
+  event({type:"assistant",message:{id:"a",model:"model-a",content:[],usage:{input_tokens:8,cache_creation_input_tokens:12,cache_read_input_tokens:100}}});
+  event({type:"system",subtype:"task_started",task_id:"child-a",task_type:"local_agent",subagent_type:"reviewer",description:"Read the tests"});
+  event({type:"system",subtype:"task_started",task_id:"background-shell",task_type:"local_bash",description:"shell"});
+  event({type:"result",subtype:"success",total_cost_usd:0.4,usage:{input_tokens:7000},modelUsage:{"model-a":{contextWindow:1000},"other":{contextWindow:8000}}});
+  const u=snapshots.at(-1)!;
+  assert.equal(u.usedTokens,120);assert.equal(u.contextWindow,1000);assert.equal(u.usedPercent,12);
+  assert.equal(u.costUsd,0.4);assert.equal(u.costSource,"api-estimate");
+  assert.deepEqual(u.crew?.agents.map(x=>x.id),["child-a"]);
+  const count=snapshots.length;
+  event({type:"result",subtype:"success",session_id:randomUUID(),total_cost_usd:50});
+  event({type:"result",subtype:"success",parent_tool_use_id:"child",total_cost_usd:80});
+  assert.equal(snapshots.length,count);
+});
+
 test("custom local SDK spawn has hidden window, drains stderr, and maps structured questions", async () => {
   let spawned: any;
   const child = new EventEmitter() as any;
@@ -162,6 +184,7 @@ test("custom local SDK spawn has hidden window, drains stderr, and maps structur
   child.stderr = new PassThrough();
   child.kill = () => true;
   child.killed = false;
+  child.pid = 31234;
   child.exitCode = null;
   let permission: any;
   let requested: any;
@@ -216,6 +239,10 @@ test("custom local SDK spawn has hidden window, drains stderr, and maps structur
   });
   await run.done;
   assert.equal(spawned.options.windowsHide, true);
+  assert.match(spawned.options.env.HARBOR_CLAUDE_WORK_ID, /^[0-9a-f]{64}$/);
+  assert.equal(run.processId, child.pid);
+  child.emit("exit", 0);
+  assert.equal(run.processId, undefined);
   assert.equal(spawned.options.shell, undefined);
   assert.equal(child.stderr.listenerCount("data"), 1);
   assert.equal(requested.kind, "question");

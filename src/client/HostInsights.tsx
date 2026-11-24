@@ -13,6 +13,7 @@ function usePoll<T>(
   path: string | undefined,
   interval: number,
   forceRefresh = false,
+  nextCheck?: (value:T)=>number | undefined,
 ) {
   const [value, setValue] = useState<{ path: string; data: T }>();
   const [error, setError] = useState("");
@@ -33,6 +34,7 @@ function usePoll<T>(
     let controller: AbortController | undefined;
     const read = async (manual = false) => {
       if (disposed) return;
+      let delay=interval;
       if (document.visibilityState !== "hidden") {
         controller = new AbortController();
         const timeout = setTimeout(() => controller?.abort(), 30000);
@@ -40,6 +42,8 @@ function usePoll<T>(
           const url = manual && forceRefresh ? `${path}?refresh=1` : path;
           const data = await api<T>(url, undefined, "GET", controller.signal);
           if (!disposed) {
+            const when=nextCheck?.(data);
+            if(when!==undefined)delay=Math.max(1000,Math.min(interval,when-Date.now()+250));
             setValue({ path, data });
             setError("");
           }
@@ -52,7 +56,7 @@ function usePoll<T>(
           clearTimeout(timeout);
         }
       }
-      if (!disposed) timer = setTimeout(() => void read(), interval);
+      if (!disposed) timer = setTimeout(() => void read(), delay);
     };
     void read(refresh > 0);
     return () => {
@@ -60,7 +64,7 @@ function usePoll<T>(
       clearTimeout(timer);
       controller?.abort();
     };
-  }, [path, interval, refresh, forceRefresh]);
+  }, [path, interval, refresh, forceRefresh,nextCheck]);
   return {
     data: value && value.path === path ? value.data : undefined,
     error,
@@ -84,6 +88,10 @@ function displayedWindows(account: AccountQuota) {
       },
   );
 }
+function nextQuotaCheck(account:AccountQuota){
+  const times=account.windows?.map(w=>w.resetsAt).filter((t):t is number=>!!t && t>Date.now());
+  return times?.length ? Math.min(...times) : undefined;
+}
 export const AccountUsagePanel = memo(function AccountUsagePanel({
   hostId,
   hostName,
@@ -99,6 +107,8 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
     120000,
     true,
   );
+  const agy=usePoll<AccountQuota>(hostId && open?`/hosts/${encodeURIComponent(hostId)}/antigravity-quota`:undefined,600000,true,nextQuotaCheck);
+  const accounts=[...(Array.isArray(data?.accounts)?data.accounts:[]),...(!agy.error && agy.data?.provider==="antigravity"?[agy.data]:[])];
   if (!hostId || (data && !Array.isArray(data.accounts))) return null;
   return (
     <section className="account-usage-panel" aria-label="AI 구독 한도">
@@ -113,7 +123,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
         <button
           className="icon-button"
           title="사용 한도 새로고침 (최소 15초 간격, 요청 제한 시 대기)"
-          onClick={refresh}
+          onClick={()=>{refresh();agy.refresh();}}
         >
           <RefreshCw size={13} />
         </button>
@@ -125,14 +135,14 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
           </small>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
-          {data?.accounts.map((account) => (
-            <article key={account.provider} className="account-quota">
+          {accounts.map((account) => (
+            <article key={account.provider} className="account-quota" data-provider={account.provider}>
               <header
                 className="quota-account-heading"
                 title={`${account.account || "CLI 로그인 계정"} · ${new Date(account.updatedAt).toLocaleString("ko-KR")} 확인`}
               >
                 <strong>
-                  {account.provider === "codex" ? "Codex" : "Claude"}{" "}
+                  {account.provider === "codex" ? "Codex" : account.provider==="antigravity"?"Antigravity":"Claude"}{" "}
                   <small>{account.plan}</small>
                 </strong>
                 <small>
@@ -161,7 +171,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
                         ? account.error
                           ? "확인 불가"
                           : "미제공"
-                        : `${Math.round(w.remaining)}% 남음`}
+                        : `${account.provider==="antigravity"?Number(w.remaining.toFixed(2)):Math.round(w.remaining)}% 남음`}
                     </b>
                   </div>
                   {w.remaining !== null && (
@@ -199,10 +209,12 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
                     ? "이전 수치 · "
                     : ""}
                   {account.error}
+                  {account.retryAt && <> · {new Date(account.retryAt).toLocaleString("ko-KR",{hour:"2-digit",minute:"2-digit",month:"numeric",day:"numeric"})} 이후 다시 확인</>}
                 </p>
               )}
             </article>
           ))}
+          {(agy.error || agy.data?.provider!=="antigravity") && <article className="account-quota"><header className="quota-account-heading"><strong>Antigravity</strong><small>{agy.error || agy.data ? "확인 불가" : "확인 중"}</small></header></article>}
         </>
       )}
     </section>
@@ -344,6 +356,10 @@ export const TerminalWorkList = memo(function TerminalWorkList({
     active ? `/terminals/${encodeURIComponent(terminalId)}/work` : undefined,
     10000,
   );
+  return <TerminalWorkDisplay data={data} error={error}/>;
+});
+
+export function TerminalWorkDisplay({data,error}:{data?:TerminalWorkSnapshot;error?:string}) {
   const labels = {
     gpu: "GPU 작업",
     simulator: "시뮬레이터",
@@ -385,4 +401,4 @@ export const TerminalWorkList = memo(function TerminalWorkList({
       {!data && !error && <p>작업 확인 중…</p>}
     </section>
   );
-});
+}

@@ -4,7 +4,8 @@ export interface QuotaWindow {
   resetsAt?: number;
 }
 export interface AccountQuota {
-  provider: "codex" | "claude";
+  retryAt?: number;
+  provider: "codex" | "claude" | "antigravity";
   account?: string;
   plan?: string;
   windows: QuotaWindow[];

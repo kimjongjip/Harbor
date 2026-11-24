@@ -43,12 +43,16 @@ import { workspaceRequest } from "./workspace-request";
 import { remoteDesktop } from "../desktop-session";
 import { WorkspaceControl } from "./WorkspaceControl";
 import { displayMessage } from "./display-message";
+import { TerminalUsageBar } from "../TerminalUsageBar";
+import {readManagedTabDraft,writeManagedTabDraft} from "./managed-tab-drafts";
+import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
 import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
 import { WorktreeReview } from "./WorktreeReview";
 import { readDraft, saveDraft } from "../mobile/draft-storage";
+import {ManagedChatTabs} from "./ManagedChatTabs";
 import "./chat.css";
 import {
   ImageAttachments,
@@ -78,6 +82,11 @@ type RenderChatMarkdown = (
   location: { hostId: string; cwd: string },
 ) => ReactNode;
 interface ChatDraft {
+  area?: string;
+  restoreId?: string;
+  restoreNative?: string;
+  restoreTitle?: string;
+  migrateLegacy?: boolean;
   images?: AttachedImage[];
   readingImages?: boolean;
   key: string;
@@ -335,8 +344,8 @@ export default function IdeChatPanel({
     [useWorkspace, hostId, mobileWorkspace, suppliedRequest],
   );
   const remembered = () => (useWorkspace ? localStorage : sessionStorage);
-  const [provider, setProvider] = useState<IdeChatProvider>(() => {
-      if (rememberScope)
+  const [chosenProvider, setChosenProvider] = useState<IdeChatProvider>(() => {
+      if (rememberScope && !rememberScope.startsWith("chat-window."))
         try {
           const saved = remembered().getItem(
             "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
@@ -352,17 +361,56 @@ export default function IdeChatPanel({
     selectedByScope = useRef(new Map<string, string>()),
     mounted = useRef(true);
   const scopeHost = `${useWorkspace ? "durable" : "direct"}:${hostId}`;
+  const multiTabs = presentation === "terminal" && !mobileWorkspace;
+  const selectedByHost = useRef(new Map<string,string>());
+  const loadedTabs = useRef(new Set<string>());
+  const writtenTabs = useRef(new Map<string,string>());
+  const dirtyTabAreas=useRef(new Set<string>());
+  const tabStoreKey=(area:string)=>JSON.stringify([rememberScope,area]);
+  if(multiTabs && rememberScope && hostId && !loadedTabs.current.has(scopeHost)){
+    loadedTabs.current.add(scopeHost);
+    const saved=readManagedTabs(tabStoreKey(scopeHost));
+    if(saved){
+      for(const t of saved.tabs){
+        const legacy=JSON.stringify(["chat",scopeHost,t.provider,t.nativeId || "tab:"+t.key]);
+        const persisted=readManagedTabDraft(tabStoreKey(scopeHost),t.key);
+        const fallback=persisted===undefined ? readDraft(rememberScope,legacy) : "";
+        if(fallback && writeManagedTabDraft(tabStoreKey(scopeHost),t.key,fallback)) saveDraft(rememberScope,legacy,undefined,"");
+        const target:ChatDraft={key:t.key,area:scopeHost,hostId,provider:t.provider,createRequestId:crypto.randomUUID(),sending:false,
+          cwd:"",model:"",draft:persisted ?? fallback,
+          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort};
+        entries.current.set(t.key,target);
+        selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
+      }
+      selectedByHost.current.set(scopeHost,saved.selected);
+      const current=entries.current.get(saved.selected);if(current)selectedByScope.current.set(scopeHost+":"+current.provider,current.key);
+    }
+  }
+  const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
+  const provider=currentTab ? currentTab.provider : chosenProvider;
   const scope = `${scopeHost}:${provider}`;
+  function setProvider(next:IdeChatProvider) {
+    if(multiTabs){
+      dirtyTabAreas.current.add(scopeHost);
+      const remembered=entries.current.get(selectedByScope.current.get(scopeHost+":"+next)||"");
+      if(!remembered && !canOpenTab())return;
+      selectedByHost.current.set(scopeHost,remembered?.area===scopeHost ? remembered.key : fresh(next).key);
+    }
+    setChosenProvider(next);
+    repaint();
+  }
   useEffect(() => {
     if (provider === "antigravity" && !hasGemini) setProvider("codex");
   }, [provider, hasGemini]);
-  function draftKey(p: IdeChatProvider, nativeId?: string) {
-    return JSON.stringify(["chat", scopeHost, p, nativeId || "new"]);
+  function draftKey(p: IdeChatProvider, nativeId?: string, tabKey?:string) {
+    return JSON.stringify(["chat", scopeHost, p, nativeId || (multiTabs && tabKey ? "tab:"+tabKey : "new")]);
   }
   function fresh(destination = provider, restoreDraft = false): ChatDraft {
     const key = crypto.randomUUID();
     const value: ChatDraft = {
       key,
+      area:scopeHost,
+      migrateLegacy:restoreDraft && !rememberScope?.startsWith("chat-window."),
       hostId,
       provider: destination,
       draft:
@@ -374,11 +422,15 @@ export default function IdeChatPanel({
       createRequestId: crypto.randomUUID(),
       sending: false,
     };
+    if (multiTabs && rememberScope && restoreDraft && value.draft) {
+      if(writeManagedTabDraft(tabStoreKey(scopeHost),key,value.draft))saveDraft(rememberScope,draftKey(destination),undefined,"");
+    }
     entries.current.set(key, value);
     selectedByScope.current.set(`${scopeHost}:${destination}`, key);
+    if(multiTabs){selectedByHost.current.set(scopeHost,key);dirtyTabAreas.current.add(scopeHost);}
     return value;
   }
-  const view =
+  const view = currentTab ||
     entries.current.get(selectedByScope.current.get(scope) || "") ||
     fresh(provider, true);
   const selected = useRef(view.key);
@@ -428,9 +480,47 @@ export default function IdeChatPanel({
   const scroll = useRef<HTMLDivElement>(null),
     following = useRef(true),
     prepend = useRef<{ height: number; top: number } | undefined>(undefined);
+  const tabs=[...entries.current.values()].filter(t=>t.area===scopeHost);
+  function canOpenTab(){
+    if(!multiTabs || [...entries.current.values()].filter(t=>t.area===scopeHost).length<maxManagedTabs)return true;
+    view.notice="열린 AI 대화가 "+maxManagedTabs+"개입니다. 탭을 닫은 뒤 새 대화를 여세요.";repaint();return false;
+  }
+  function storeText(t:ChatDraft,text:string) {
+    if(!rememberScope)return;
+    if(multiTabs)writeManagedTabDraft(tabStoreKey(t.area || scopeHost),t.key,text);
+    else saveDraft(rememberScope,draftKey(t.provider,t.conversation?.nativeId),undefined,text);
+  }
   const restored = useRef(new Set<string>());
+  useEffect(()=>{
+    if(!multiTabs || !rememberScope || !dirtyTabAreas.current.size)return;
+    for(const area of dirtyTabAreas.current){
+      if(!loadedTabs.current.has(area))continue;
+      const open=[...entries.current.values()].filter(t=>t.area===area);
+      const data={selected:selectedByHost.current.get(area)||open[0]?.key||"",tabs:open.map((t):SavedManagedTab=>({
+        key:t.key,provider:t.provider,title:t.conversation?.title?.trim().slice(0,160)||t.restoreTitle,conversationId:t.conversation?.id||t.restoreId,nativeId:t.conversation?.nativeId||t.restoreNative,
+        parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort}))};
+      const signature=JSON.stringify(data);
+      if(writtenTabs.current.get(area)!==signature){writtenTabs.current.set(area,signature);writeManagedTabs(tabStoreKey(area),data);}
+    }
+    dirtyTabAreas.current.clear();
+  });
+  useEffect(()=>{
+    if(!active || !multiTabs || !view.restoreId || view.conversation || view.historyPaused)return;
+    const target=view, expectedId=view.restoreId, expectedNative=view.restoreNative, controller=new AbortController();
+    void call<IdeChatConversation>("/conversations/"+encodeURIComponent(expectedId),undefined,controller.signal).then(c=>{
+      if(controller.signal.aborted || !entries.current.has(target.key))return;
+      if(c.id!==expectedId || (expectedNative && c.nativeId!==expectedNative))throw Error("복원할 대화 ID가 달라졌습니다.");
+      accept(target,c);
+    }).catch(()=>{
+      if(controller.signal.aborted || !entries.current.has(target.key))return;
+      target.historyRetryId=expectedNative; target.historyPaused=true;
+      target.notice="연결을 복원하려면 기록 다시 불러오기를 누르세요.";
+      repaint();
+    });
+    return ()=>controller.abort();
+  },[active,multiTabs,view.key,view.restoreId,view.historyPaused,request]);
   useEffect(() => {
-    if (!rememberScope || !hostId || !active) return;
+    if (!rememberScope || !hostId || !active || (multiTabs && !view.migrateLegacy)) return;
     const target = view;
     const key = [
       "harbor.chat",
@@ -439,11 +529,12 @@ export default function IdeChatPanel({
       provider,
     ].join(".");
     try {
-      remembered().setItem(
+      if (!multiTabs) remembered().setItem(
         "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
         provider,
       );
       if (target.conversation) {
+        if (multiTabs) return;
         remembered().setItem(key, target.conversation.id);
         remembered().setItem(key + ".native", target.conversation.nativeId);
         return;
@@ -591,10 +682,12 @@ export default function IdeChatPanel({
       };
     }
     if (rememberScope && !target.conversation && !target.draft)
-      target.draft = readDraft(
-        rememberScope,
-        draftKey(conversation.provider, conversation.nativeId),
-      );
+      target.draft = (multiTabs ? readManagedTabDraft(tabStoreKey(target.area||scopeHost),target.key) : undefined)
+        ?? readDraft(rememberScope,draftKey(conversation.provider, conversation.nativeId));
+    if(multiTabs && rememberScope && !target.conversation && target.draft)storeText(target,target.draft);
+    if(multiTabs && target.area && (target.conversation?.id!==conversation.id || target.conversation?.title!==conversation.title || target.conversation?.nativeId!==conversation.nativeId))dirtyTabAreas.current.add(target.area);
+    target.restoreId=undefined;
+    target.restoreNative=undefined;
     target.conversation = conversation;
     target.connectionError = undefined;
     repaint();
@@ -723,6 +816,11 @@ export default function IdeChatPanel({
     automatic = false,
   ) {
     if (resuming) return;
+    if(multiTabs && !automatic){
+      const open=tabs.find(t=>(t.conversation?.nativeId===thread.id || (t.restoreNative===thread.id && !t.historyPaused)) && t.provider===provider);
+      if(open){activateTab(open);return;}
+      if(!tabs.some(t=>t.restoreNative===thread.id && t.provider===provider) && !canOpenTab())return;
+    }
     const capturedScope = scope,
       key = `${scope}:${thread.id}`,
       ticket = historyGeneration.current;
@@ -739,13 +837,16 @@ export default function IdeChatPanel({
       } satisfies IdeChatCreate);
       let target = [...entries.current.values()].find(
         (item) =>
-          item.conversation?.id === conversation.id &&
+          (item.conversation?.id === conversation.id || (multiTabs && item.restoreNative===thread.id && !item.conversation)) &&
+          (!multiTabs || item.area===scopeHost) &&
           item.hostId === hostId &&
           item.provider === provider,
       );
       if (!target) {
+        if(!canOpenTab())return;
         target = {
           key: crypto.randomUUID(),
+          area:scopeHost,
           hostId,
           provider,
           draft: "",
@@ -768,6 +869,8 @@ export default function IdeChatPanel({
             !view.attachment &&
             selected.current === view.key))
       ) {
+        target.historyPaused=false;target.historyRetryId=undefined;target.notice=undefined;
+        if(multiTabs){selectedByHost.current.set(scopeHost,target.key);dirtyTabAreas.current.add(scopeHost);}
         selectedByScope.current.set(capturedScope, target.key);
         setHistoryOpen(false);
         following.current = true;
@@ -932,6 +1035,7 @@ export default function IdeChatPanel({
     const target = view;
     if (
       !hostId ||
+      (!target.conversation && !!target.restoreId) ||
       !hasContent ||
       target.readingImages ||
       target.sending ||
@@ -1019,7 +1123,8 @@ export default function IdeChatPanel({
           "전송 확인이 지연되고 있습니다. 대화 갱신을 기다려주세요. 같은 내용의 재시도는 중복 전송되지 않습니다.";
       else {
         if (target.draft === draft) {
-          if (rememberScope) {
+          if(multiTabs && rememberScope) storeText(target,"");
+          else if (rememberScope) {
             saveDraft(
               rememberScope,
               draftKey(target.provider, conversation.nativeId),
@@ -1029,7 +1134,7 @@ export default function IdeChatPanel({
             if (target.createAttempt)
               saveDraft(
                 rememberScope,
-                draftKey(target.provider),
+                draftKey(target.provider,undefined,target.key),
                 undefined,
                 "",
               );
@@ -1138,6 +1243,44 @@ export default function IdeChatPanel({
     text: string;
     sessionId: string;
   } | null>(null);
+  function tabTitle(t:ChatDraft,index:number){
+    const actual=t.conversation?.title?.trim() || t.restoreTitle;
+    return agentLabel(t.provider)+" · "+(actual && actual!=="새 대화"?actual:(t.conversation?.items.find(typedPrompt)?.text.trim().split("\n",1)[0]?.slice(0,56) || (t.restoreId ? "저장된 대화 " : "새 대화 ")+(index+1)));
+  }
+  function activateTab(t:ChatDraft){
+    if(t.area!==scopeHost || !entries.current.has(t.key))return;
+    historyGeneration.current++;
+    setTerminalIntent(undefined);
+    setResuming("");
+    setHistoryOpen(false);setHandoffOpen(false);setLabQuote(null);setFolderOpen(false);
+    dirtyTabAreas.current.add(scopeHost);
+    selectedByHost.current.set(scopeHost,t.key);
+    selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
+    setChosenProvider(t.provider);
+    repaint();
+  }
+  function closeTab(t:ChatDraft){
+    if(t.sending || t.readingImages)return;
+    if((t.draft || t.images?.length || t.attachment) &&
+       !window.confirm("작성 중인 초안과 첨부를 지우고 이 탭을 닫을까요?"))return;
+    if(rememberScope)storeText(t,"");
+    const index=tabs.findIndex(entry=>entry.key===t.key);
+    entries.current.delete(t.key);
+    dirtyTabAreas.current.add(scopeHost);
+    const others=tabs.filter(entry=>entry!==t);
+    for(const child of others){
+      if(child.parentKey===t.key)child.parentKey=undefined;
+      if(child.displacedKey===t.key)child.displacedKey=undefined;
+    }
+    const group=scopeHost+":"+t.provider;
+    if(selectedByScope.current.get(group)===t.key){
+      const fallback=others.filter(o=>o.provider===t.provider).at(-1);
+      if(fallback)selectedByScope.current.set(group,fallback.key);
+      else selectedByScope.current.delete(group);
+    }
+    if(t.key===view.key)activateTab(others[Math.min(index,others.length-1)] || fresh(provider));
+    else repaint();
+  }
   function selectedPassage() {
     const selection = scroll.current?.ownerDocument.getSelection();
     return selection?.anchorNode &&
@@ -1169,6 +1312,7 @@ export default function IdeChatPanel({
     const displaced = selectedByScope.current.get(
       scopeHost + ":" + destination,
     );
+    if(!canOpenTab())return;
     const child = fresh(destination);
     child.displacedKey = displaced;
     child.cwd = conversation.cwd;
@@ -1182,6 +1326,7 @@ export default function IdeChatPanel({
       conversation.nativeId +
       "]\n" +
       context.slice(0, 20000);
+    if (multiTabs && rememberScope)storeText(child,child.draft);
     freshScopes.current.add(scopeHost + ":" + destination);
     setProvider(destination);
     setHandoffOpen(false);
@@ -1202,6 +1347,7 @@ export default function IdeChatPanel({
         view.displacedKey,
       );
     selectedByScope.current.set(scopeHost + ":" + parent.provider, parent.key);
+    if (rememberScope && result) storeText(parent,parent.draft);
     setProvider(parent.provider);
     setHandoffOpen(false);
     repaint();
@@ -1235,7 +1381,61 @@ export default function IdeChatPanel({
     onShowTerminal?.();
     onFocusTerminal?.(live.terminalId);
   }
-  return (
+  function addChat() {
+            if(!canOpenTab())return;
+            historyGeneration.current++;
+            setTerminalIntent(undefined);
+            setResuming("");
+            freshScopes.current.add(scope);
+            if (currentTerminal)
+              freshScopes.current.add(
+                `${scopeHost}:${currentTerminal.agentKind}`,
+              );
+            fresh();
+            if (rememberScope && !multiTabs)
+              try {
+                remembered().removeItem(
+                  [
+                    "harbor.chat",
+                    useWorkspace ? "server" : rememberScope,
+                    hostId,
+                    provider,
+                  ].join("."),
+                );
+              } catch {}
+            setHistoryOpen(false);
+            following.current = true;
+            repaint();
+  }
+  function moveTab(id:string,toIndex:number) {
+    const index=tabs.findIndex(t=>t.key===id);
+    if(index<0 || toIndex===index || toIndex<0 || toIndex>=tabs.length) return;
+    const ordered=tabs.slice();
+    ordered.splice(toIndex,0,...ordered.splice(index,1));
+    for(const entry of ordered) entries.current.delete(entry.key);
+    for(const entry of ordered) entries.current.set(entry.key,entry);
+    dirtyTabAreas.current.add(scopeHost);
+    repaint();
+  }
+  function chooseProvider(next: IdeChatProvider) {
+    if (multiTabs && !view.conversation && !view.restoreId && !view.restoreNative &&
+        !view.createAttempt && !view.sending && !view.parentKey && !view.draft &&
+        !view.images?.length && !view.attachment) {
+      const oldGroup = scopeHost + ":" + view.provider;
+      if (selectedByScope.current.get(oldGroup) === view.key) {
+        const previous = tabs.filter(t => t.key !== view.key && t.provider === view.provider).at(-1);
+        if (previous) selectedByScope.current.set(oldGroup, previous.key);
+        else selectedByScope.current.delete(oldGroup);
+      }
+      view.provider = next;
+      view.model = "";
+      view.effort = undefined;
+      activateTab(view);
+      return;
+    }
+    setProvider(next);
+  }
+  const chat = (
     <section className="ide-chat" data-presentation={presentation} aria-label="IDE AI 대화">
       {active &&
         useWorkspace &&
@@ -1247,12 +1447,15 @@ export default function IdeChatPanel({
             mobile={mobileWorkspace}
           />
         )}
+      {multiTabs && !!hostId && <ManagedChatTabs tabs={tabs.map((t,i)=>({id:t.key,title:tabTitle(t,i),closeDisabled:!!t.sending || !!t.readingImages}))} selected={view.key} create={addChat} move={moveTab}
+        activate={id=>{const t=entries.current.get(id);if(t)activateTab(t);}}
+        close={id=>{const t=entries.current.get(id);if(t)closeTab(t);}}/>}
       <header>
         <select
           aria-label="AI 제공자"
           value={provider}
           onChange={(event) =>
-            setProvider(event.target.value as IdeChatProvider)
+            chooseProvider(event.target.value as IdeChatProvider)
           }
         >
           <option value="codex">Codex</option>
@@ -1274,38 +1477,9 @@ export default function IdeChatPanel({
           <History size={16} />
           <span>기록</span>
         </button>
-        <button
-          aria-label="새 대화"
-          title="새 대화"
-          onClick={() => {
-            historyGeneration.current++;
-            setTerminalIntent(undefined);
-            setResuming("");
-            freshScopes.current.add(scope);
-            if (currentTerminal)
-              freshScopes.current.add(
-                `${scopeHost}:${currentTerminal.agentKind}`,
-              );
-            fresh();
-            if (rememberScope)
-              try {
-                remembered().removeItem(
-                  [
-                    "harbor.chat",
-                    useWorkspace ? "server" : rememberScope,
-                    hostId,
-                    provider,
-                  ].join("."),
-                );
-              } catch {}
-            setHistoryOpen(false);
-            following.current = true;
-            repaint();
-          }}
-        >
-          <Plus size={17} />
-        </button>
+        {!multiTabs && <button aria-label="새 대화" title="새 대화" onClick={addChat}><Plus size={17}/></button>}
       </header>
+
       {(conversation || view.parentKey) && (
         <div className="chat-actions">
           {view.parentKey && (
@@ -1547,6 +1721,7 @@ export default function IdeChatPanel({
           setBottom(following.current);
         }}
       >
+        {!!view.restoreId && !view.historyPaused && !conversation && <p role="status">대화에 다시 연결 중…</p>}
         {!conversation && (presentation === "terminal" ? (
           <div className="managed-chat-empty"><strong>{label}</strong><span>{hostName || hostId} · {view.cwd || "서버 홈"}</span></div>
         ) : (
@@ -1751,13 +1926,7 @@ export default function IdeChatPanel({
           disabled={!hostId || live?.canSend === false}
           onChange={(event) => {
             view.draft = event.target.value;
-            if (rememberScope)
-              saveDraft(
-                rememberScope,
-                draftKey(provider, conversation?.nativeId),
-                undefined,
-                view.draft,
-              );
+            storeText(view,view.draft);
             view.historyIndex = undefined;
             if (!following.current && scroll.current) {
               following.current = true;
@@ -1787,6 +1956,7 @@ export default function IdeChatPanel({
                 event.preventDefault();
                 view.historyIndex = index < 0 ? undefined : index;
                 view.draft = prompts[index] || "";
+                if(multiTabs && rememberScope)storeText(view,view.draft);
                 repaint();
               }
               return;
@@ -1897,6 +2067,7 @@ export default function IdeChatPanel({
               disabled={
                 !hostId ||
                 !hasContent ||
+                (!!view.restoreId && !view.conversation) ||
                 view.readingImages ||
                 view.sending ||
                 live?.canSend === false
@@ -1920,7 +2091,8 @@ export default function IdeChatPanel({
                   value={conversation?.effort || view.effort || ""}
                   disabled={!!conversation || view.sending}
                   onChange={(e) => {
-                    view.effort =
+                    if(multiTabs)dirtyTabAreas.current.add(scopeHost);
+                  view.effort =
                       (e.target.value as IdeChatCreate["effort"]) || undefined;
                     repaint();
                   }}
@@ -1963,4 +2135,11 @@ export default function IdeChatPanel({
       </form>
     </section>
   );
+  return presentation==="terminal" && !mobileWorkspace ? <div className="managed-chat-surface">
+    {chat}
+    <TerminalUsageBar managedId={conversation?.id}
+      managedRequest={request} hostId={hostId} provider={conversation?.provider || provider}
+      sessionId={conversation?.nativeId} active={active} working={!!running}
+      waiting={conversation?.status==="waiting"} managedStatus={conversation?.status} managedModel={conversation?.model}/>
+  </div> : chat;
 }

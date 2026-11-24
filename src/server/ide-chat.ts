@@ -1,4 +1,8 @@
 import { validateImages } from "./images.js";
+import type { TerminalUsage } from "../shared/terminal-usage.js";
+import { mergeClaudeUsage } from "../shared/terminal-usage.js";
+import { TerminalAgentRoster } from "./terminal-agent-roster.js";
+import type { IdeChatUsage } from "../shared/ide-chat.js";
 import {
   ReservationJournal,
   type ReservationReceipt,
@@ -47,6 +51,8 @@ type IdeHub = Pick<
 > &
   Partial<Pick<Hub, "on" | "off" | "rename">>;
 export interface IdeChatDependencies {
+  managedClaudeWork?(hostId:string,nativeId:string,processId?:number):Promise<import("../shared/host-insights.js").TerminalWorkSnapshot|null>;
+  sessionUsage?(target: Pick<IdeChatConversation,"id"|"hostId"|"provider"|"nativeId"|"cwd">, terminalId?:string):Promise<IdeChatUsage>;
   managedPeers?: ManagedPeers;
   reservationDirectory?: string;
   reservationQuota?(hostId:string, provider:"codex"|"claude", model:string, fresh?:boolean): Promise<{accountKey:string;notBefore?:number}|null>;
@@ -94,6 +100,8 @@ interface QueuedInput extends SavedReservation {
   error?: string;
 }
 interface Managed {
+  roster?:TerminalAgentRoster;
+  nativeUsage?: TerminalUsage;
   queue?: QueuedInput[];
   reservationReceipts?: ReservationReceipt[];
   draining?: boolean;
@@ -251,6 +259,23 @@ export class IdeChats {
   >();
   private readonly creatingNative = new Map<string, Promise<string>>();
   private readonly claude: ClaudeChatFactory;
+  private readonly onCodexUsage = (session:SessionView, usage:TerminalUsage) => {
+    const id=this.native.get(this.nativeKey(session.hostId,"codex",session.threadId));
+    const m=id && this.conversations.get(id);
+    if(m && m.hubId===session.id && m.view.nativeId===usage.sessionId && m.hostKey===hostKey(this.dependencies.host(session.hostId))) m.nativeUsage=usage;
+  };
+  private readonly onRosterItem = (s:SessionView,item:unknown) => {
+    const id=this.native.get(this.nativeKey(s.hostId,"codex",s.threadId));
+    const m=id && this.conversations.get(id);
+    if(m && m.hubId===s.id && !m.liveBinding)(m.roster??=new TerminalAgentRoster()).observe(item);
+  };
+  private readonly onCompact = (session:SessionView) => {
+    const id=this.native.get(this.nativeKey(session.hostId,"codex",session.threadId));
+    const managed=id && this.conversations.get(id);
+    if(managed && managed.hubId===session.id && managed.nativeUsage){
+      managed.nativeUsage={...managed.nativeUsage,usedTokens:null,usedPercent:null,updatedAt:Date.now()};
+    }
+  };
   private readonly onSession = (session: SessionView) => {
     const id = this.native.get(
       this.nativeKey(session.hostId, "codex", session.threadId),
@@ -266,6 +291,9 @@ export class IdeChats {
     if (dependencies.reservationDirectory)
       this.journal = new ReservationJournal(dependencies.reservationDirectory);
     dependencies.hub.on?.("session", this.onSession);
+    dependencies.hub.on?.("session-usage",this.onCodexUsage);
+    dependencies.hub.on?.("session-compacted",this.onCompact);
+    dependencies.hub.on?.("session-roster-item",this.onRosterItem);
   }
   private nativeKey(
     hostId: string,
@@ -288,6 +316,38 @@ export class IdeChats {
   }
   terminalFor(id: string) {
     return this.managed(id).liveBinding?.terminalId;
+  }
+  async usage(id:string,guard:Guard):Promise<IdeChatUsage>{
+    const m=this.managed(id);
+    await guard();
+    this.binding(m,this.dependencies.runtimeId);
+    const {hostId,nativeId,provider,cwd}=m.view;
+    const v={id,hostId,nativeId,provider,cwd};
+    const terminalId=m.liveBinding?.terminalId;
+    const stillBound=()=>m.view.nativeId===nativeId && m.view.hostId===hostId && m.view.provider===provider &&
+      m.liveBinding?.terminalId===terminalId && (!terminalId || this.dependencies.live?.find(hostId,provider,nativeId)?.terminalId===terminalId);
+    if(!stillBound())return {usage:null,work:null};
+    const processId = m.run?.processId;
+    const [snapshot, managedWork]=await Promise.all([
+      this.dependencies.sessionUsage?.(v,terminalId),
+      v.provider==="claude" && !terminalId ? this.dependencies.managedClaudeWork?.(v.hostId,v.nativeId,processId) : null,
+    ]);
+    await guard();
+    this.binding(m,this.dependencies.runtimeId);
+    if(!stillBound())return {usage:null,work:null};
+    const matches=(u:TerminalUsage|null|undefined)=>u?.provider===v.provider && u.sessionId===v.nativeId ? u : null;
+    const saved=matches(snapshot?.usage),native=matches(m.nativeUsage);
+    let usage=v.provider==="claude" ? mergeClaudeUsage(saved,native) :
+      !native || saved && saved.updatedAt>native.updatedAt ? saved :
+      {...saved,...native,model:native.model??saved?.model,costUsd:native.costUsd??saved?.costUsd??null};
+    const crew=m.roster?.snapshot("native");
+    if(crew && (!usage?.crew || crew.updatedAt>=usage.crew.updatedAt)){
+      usage={...(usage||{provider:v.provider,sessionId:v.nativeId,usedTokens:null,contextWindow:null,
+        usedPercent:null,costUsd:null,updatedAt:crew.updatedAt,source:"native" as const}),crew};
+    }
+    const sameProcess = processId === undefined || m.run?.processId === processId;
+    const work = terminalId || v.provider==="codex" ? snapshot?.work : sameProcess ? managedWork : null;
+    return {usage,work:work??null};
   }
   private binding(managed: Managed, runtimeId: string) {
     if (
@@ -1355,6 +1415,7 @@ export class IdeChats {
       requestId: input.requestId,
       beforeDispatch,
       events: {
+        usage: (u) => { if(u.provider==="claude" && u.sessionId===view.nativeId && !managed.liveBinding) managed.nativeUsage=u; },
         item: (item) => {
           const index = view.items.findIndex((old) => old.id === item.id);
           if (index < 0) view.items.push(item);
@@ -1541,6 +1602,9 @@ export class IdeChats {
   close() {
     this.closed = true;
     this.dependencies.hub.off?.("session", this.onSession);
+    this.dependencies.hub.off?.("session-usage",this.onCodexUsage);
+    this.dependencies.hub.off?.("session-compacted",this.onCompact);
+    this.dependencies.hub.off?.("session-roster-item",this.onRosterItem);
     for (const managed of this.conversations.values()) {
       if (managed.alarm)clearTimeout(managed.alarm.timer);
       if (managed.view.peerEnabled)
@@ -1674,6 +1738,7 @@ export function createIdeChatRouter(
       return chats.read(id, readGuard);
     }),
   );
+  router.get("/conversations/:id/usage",route(async req=>{const id=idSchema.parse(req.params.id);return chats.usage(id,guard(req,chats.hostFor(id),false,id));}));
   router.get("/conversations/:id/rate-reset",route(async req=>{const id=idSchema.parse(req.params.id);return chats.resetWindow(id,guard(req,chats.hostFor(id),false,id));}));
   router.post(
     "/conversations/:id/messages",

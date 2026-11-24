@@ -1,5 +1,6 @@
 import { managedClaudeServer, type ManagedPeerCall } from "./managed-peers.js";
 import { spawn } from "node:child_process";
+import { claudeWorkId } from "./terminal-work.js";
 import { EventEmitter } from "node:events";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
@@ -17,10 +18,13 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Client, ClientChannel } from "ssh2";
 import type { Approval, HostConfig, MessageItem } from "../shared/types.js";
+import { claudeUsage, type TerminalUsage } from "../shared/terminal-usage.js";
+import { terminalAgents,type TerminalAgent } from "../shared/terminal-agents.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { remoteCodexCommand } from "./ssh.js";
 
 export interface ClaudeChatEvents {
+  usage?(value:TerminalUsage):void;
   item(item: MessageItem): void;
   approval(
     value: Approval,
@@ -45,6 +49,7 @@ export interface ClaudeChatTurn {
   beforeDispatch?: () => void | Promise<void>;
 }
 export interface ClaudeChatRun {
+  readonly processId?: number;
   done: Promise<void>;
   interrupt(): Promise<void>;
   close(): void;
@@ -107,6 +112,7 @@ export class ClaudeSshProcess extends EventEmitter implements SpawnedProcess {
     password: string | undefined,
     options: SpawnOptions,
     connect: typeof passwordConnection = passwordConnection,
+    nativeId?: string,
   ) {
     super();
     this.stdin.on("error", () => {});
@@ -141,7 +147,8 @@ export class ClaudeSshProcess extends EventEmitter implements SpawnedProcess {
           options.args,
           options.cwd,
         );
-        connection.exec(command, (error, channel) => {
+        const scoped = nativeId ? `export HARBOR_CLAUDE_WORK_ID=${claudeWorkId(nativeId)}; ${command}` : command;
+        connection.exec(scoped, (error, channel) => {
           if (error) {
             this.fail(error);
             return;
@@ -216,17 +223,46 @@ function detail(value: unknown) {
 
 /** Consume SDK messages, not screen output; each tool/text block has a stable ID. */
 export class ClaudeChatMessages {
+  private model?: string;
+  private lastInput?: unknown;
+  private crew:TerminalAgent[]=[];
   private currentMessage = "";
   private blocks = new Map<string, string>();
   private hasAnswer = false;
   constructor(
     private readonly events: ClaudeChatEvents,
     private readonly requestId: string,
+    private readonly nativeSession?:string,
   ) {}
+  private observeUsage(m:any) {
+    const model=string(m.model || m.message?.model);
+    if(model && model!==this.model){this.model=model;this.lastInput=undefined;}
+    const result=m.type==="result" && m.subtype==="success" && !m.is_error;
+    const assistant=m.type==="assistant" && !m.error && !!m.message?.usage;
+    const prev=this.crew.find(a=>a.id===m.task_id);
+    const task=m.type==="system" && ["task_started","task_progress","task_notification"].includes(m.subtype) &&
+      (m.task_type==="local_agent" || m.subagent_type || prev);
+    if(!result && !assistant && !task)return;
+    if(assistant)this.lastInput=m.message.usage;
+    if(task){
+      const entry={...prev,id:m.task_id,name:m.subagent_type||prev?.name||"Claude",task:m.description||prev?.task,
+        activity:m.last_tool_name || m.summary || prev?.activity,
+        tokens:m.usage?.total_tokens!==undefined?{scope:"observed",total:m.usage.total_tokens}:prev?.tokens,
+        state:m.subtype==="task_notification"?m.status:"working"};
+      this.crew=terminalAgents([entry,...this.crew.filter(a=>a.id!==m.task_id)])||[];
+    }
+    const snapshot=claudeUsage({session_id:m.session_id,model:{id:this.model},
+      context_window:{current_usage:this.lastInput,context_window_size:result && this.model ? m.modelUsage?.[this.model]?.contextWindow:undefined},
+      cost:{total_cost_usd:result ? m.total_cost_usd:undefined},
+      ...(this.crew.length ? {harbor_agents:this.crew,harbor_agent_details:1}:{}),
+    });
+    if(snapshot)this.events.usage?.({...snapshot,...(snapshot.costUsd!==null?{costSource:"api-estimate" as const}:{})});
+  }
   consume(raw: unknown) {
     const m = raw as any;
     if (!m || typeof m !== "object") return;
     if (m.parent_tool_use_id) return;
+    if (this.events.usage && typeof m.session_id==="string" && m.session_id===this.nativeSession) this.observeUsage(m);
     if (m.session_id)
       this.events.native(
         string(m.session_id),
@@ -328,6 +364,7 @@ export function createClaudeChatFactory(
   return (turn) => {
     const abortController = new AbortController();
     let running: ReturnType<ClaudeQuery> | undefined;
+    let processId: number | undefined;
     let releaseInput!: () => void;
     const inputDone = new Promise<void>((resolve) => {
       releaseInput = resolve;
@@ -449,7 +486,7 @@ export function createClaudeChatFactory(
         };
         await inputDone;
       };
-      const parser = new ClaudeChatMessages(turn.events, turn.requestId);
+      const parser = new ClaudeChatMessages(turn.events, turn.requestId,turn.nativeId);
       running = (dependencies.query || query)({
         prompt: input(),
         options: {
@@ -485,20 +522,24 @@ export function createClaudeChatFactory(
                 turn.password,
                 options,
                 dependencies.connect,
+                turn.nativeId,
               );
             const child = (dependencies.spawn || spawn)(
               options.command,
               options.args,
               {
                 cwd: options.cwd,
-                env: options.env,
+                env: { ...options.env, HARBOR_CLAUDE_WORK_ID: claudeWorkId(turn.nativeId) },
                 signal: options.signal,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
               },
             );
-            // The SDK does not install its default stderr consumer for a custom
-            // spawner. Always drain this pipe or verbose CLI logs can block it.
+            processId = child.pid;
+            const clearPid = () => { if (processId === child.pid) processId = undefined; };
+            child.once("exit", clearPid);
+            child.once("error", clearPid);
+            // The SDK does not drain stderr for a custom spawner.
             child.stderr?.on("data", () => {});
             return child as unknown as SpawnedProcess;
           },
@@ -525,6 +566,7 @@ export function createClaudeChatFactory(
     })();
     return {
       done,
+      get processId() { return processId; },
       async interrupt() {
         if (running) await running.interrupt();
         else abortController.abort();

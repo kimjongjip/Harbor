@@ -21,6 +21,7 @@ import { Store } from "./store.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { validateImages } from "./images.js";
+import { codexUsage } from "./terminal-usage.js";
 import {
   appendDelta,
   normalizeItem,
@@ -663,6 +664,14 @@ export class Hub extends EventEmitter {
     const s = this.sessions.get(sessionKey(hostId, threadId));
     if (!s) return;
     switch (method) {
+      case "thread/tokenUsage/updated": {
+        const usage=codexUsage(threadId,p.tokenUsage);
+        if(usage)this.emit("session-usage",s,usage);
+        return;
+      }
+      case "thread/compacted":
+        this.emit("session-compacted",s);
+        return;
       case "thread/status/changed":
         s.status = statusOf(p.status);
         this.changed();
@@ -697,6 +706,9 @@ export class Hub extends EventEmitter {
         break;
       case "item/started":
       case "item/completed": {
+        if(typeof p.item?.type==="string" && p.item.type.startsWith("collab"))
+          this.emit("session-roster-item",s,p.item);
+        if(method==="item/completed" && p.item?.type==="contextCompaction")this.emit("session-compacted",s);
         const item = normalizeItem(p.item, p.turnId);
         if (item) upsertItem(s, item);
         break;

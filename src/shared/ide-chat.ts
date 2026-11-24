@@ -11,6 +11,10 @@ export interface IdeChatLive {
   reason?: string;
 }
 export type ChatEffort = "low" | "medium" | "high" | "xhigh";
+export interface IdeChatUsage {
+  usage: import("./terminal-usage").TerminalUsage | null;
+  work: import("./host-insights").TerminalWorkSnapshot | null;
+}
 export interface ChatReservation {
   notBefore?:number;
   needsAuthorization?: boolean;

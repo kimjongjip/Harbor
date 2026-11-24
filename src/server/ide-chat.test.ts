@@ -24,6 +24,23 @@ import {
 } from "./ide-chat-claude.js";
 
 const guard = () => {};
+test("managed telemetry follows its own host, native thread and parent-agent roster", async t=>{
+  const {chats,hub}=harness({sessionUsage:async v=>({
+    usage: {sessionId:"another-thread",provider:v.provider,usedTokens:99,costUsd:45,contextWindow:null,usedPercent:null,updatedAt:1,source:"history"},work:null
+  })});
+  t.after(()=>chats.close());
+  const a=await create(chats),b=await create(chats);
+  assert.equal((await chats.usage(a.id,guard)).usage,null);
+  const emit=(method:string,params:unknown)=>(hub as any).notification(a.hostId,{method,params});
+  emit("thread/tokenUsage/updated",{threadId:a.nativeId,tokenUsage:{last:{totalTokens:210},total:{totalTokens:8500},modelContextWindow:840}});
+  emit("item/completed",{threadId:a.nativeId,item:{id:"tool-id",type:"collabAgentToolCall",tool:"spawnAgent",
+    status:"completed",receiverThreadIds:["child"],prompt:"Review tests"}});
+  const current=(await chats.usage(a.id,guard)).usage!;
+  assert.equal(current.usedTokens,210);assert.equal(current.usedPercent,25);assert.equal(current.costUsd,null);
+  assert.ok(current.crew?.agents.some(x=>x.id==="child"));assert.equal((await chats.usage(b.id,guard)).usage,null);
+  emit("thread/compacted",{threadId:a.nativeId});assert.equal((await chats.usage(a.id,guard)).usage?.usedTokens,null);
+  let checks=0;await assert.rejects(chats.usage(a.id,()=>{if(++checks===2)throw Error("revoked during read");}),/revoked/);
+});
 const imageFixture =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfgAAAABJRU5ErkJggg==";
 

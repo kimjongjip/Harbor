@@ -201,6 +201,18 @@ test(
       );
       assert.deepEqual(errors, []);
       assert.deepEqual(policy, []);
+      await page.getByRole("group",{name:"작업 보기"}).getByRole("button",{name:"AI 대화",exact:true}).click();
+      const opening=browser.waitForEvent("window");
+      await page.getByRole("button",{name:"새 AI 창",exact:true}).click();
+      const other=await opening;
+      await other.getByRole("button",{name:"AI 대화",exact:true,pressed:true}).waitFor();
+      assert.equal(new URL(other.url()).pathname,"/desktop/");
+      assert.equal(new URL(other.url()).origin,new URL(page.url()).origin);
+      assert.equal(await other.evaluate(()=>window.opener===null),true);
+      const box=other.locator(".managed-chat-workspace").getByLabel("AI에게 보낼 메시지");
+      await box.fill("paired window draft");
+      assert.equal(await page.locator(".managed-chat-workspace").getByLabel("AI에게 보낼 메시지").inputValue(),"");
+      await other.close();
       f.gateway.revoke(f.access.view().devices[0].id);
       await page
         .getByRole("heading", { name: "이 PC 연결", exact: true })

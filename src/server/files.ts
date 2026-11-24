@@ -542,6 +542,28 @@ export class Files {
     }
     return { path: file, bytes: Buffer.concat(chunks) };
   }
+  /** Private SSH PTY for the installed CLI's built-in quota panel. */
+  async antigravityQuotaConsole(host:HostConfig,cols:number,rows:number):Promise<import("./antigravity-quota.js").QuotaConsole>{
+    const verify=[
+      'umask 077','cd "$HOME" || exit 1','home=$(pwd -P)','d="$home/.cache/harbor/agy-quota-view"',
+      'for p in "$home/.cache" "$home/.cache/harbor" "$d"; do [ ! -L "$p" ] && { [ -d "$p" ] || mkdir -m 700 "$p"; } && [ -O "$p" ] || exit 1; done',
+      'cd "$d" && [ "$(pwd -P)" = "$d" ] && [ -z "$(ls -A)" ] || exit 1',
+    ].join("; ");
+    const ownedPath=()=>this.researchCommand(host,verify+'; printf "%s" "$d"');
+    const cwd=(await ownedPath()).trim();
+    if(!path.posix.isAbsolute(cwd) || !cwd.endsWith("/.cache/harbor/agy-quota-view") || /[\r\n\0]/.test(cwd))throw Error("한도 조회용 폴더를 확인하세요.");
+    const connection=this.connections.get(host.id)?.connection;if(!connection)throw Error("SSH 연결이 종료되었습니다.");
+    const launch=verify+'; export PATH="$HOME/.local/bin:$HOME/.agy/bin:$PATH"; exec agy --sandbox';
+    return new Promise((resolve,reject)=>{
+      connection.exec("exec bash -lc "+shellQuote(launch),{pty:{term:"xterm-256color",cols,rows,width:0,height:0}},(error,channel)=>{
+        if(error){reject(error);return;}
+        channel.setEncoding("utf8");
+        const cleanup=()=>{channel.close();};
+        channel.on("error",()=>{});
+        resolve({cwd,ownedEmpty:async()=>(await ownedPath()).trim()===cwd,write:s=>channel.write(s),close:cleanup,onData:f=>{channel.on("data",f);},onExit:f=>{channel.once("close",f);channel.once("error",f);}});
+      });
+    });
+  }
   async researchCommand(host: HostConfig, command: string): Promise<string> {
     if (host.kind !== "ssh") throw new Error("SSH 서버를 선택하세요.");
     await this.sftp(host);
