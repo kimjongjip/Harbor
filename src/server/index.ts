@@ -39,6 +39,7 @@ import { resolve, join, posix } from "node:path";
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
+import { claudeApprovalTargets, codexChanges, safeApprovalTargets } from "./managed-auto-accept.js";
 import { AutoApproval } from "./auto-approval.js";
 import { Store } from "./store.js";
 import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
@@ -172,6 +173,20 @@ const autoApproval = new AutoApproval(
   requests,
   (id) => terminals.list().find((terminal) => terminal.id === id),
   () => broadcastState(),
+  async (terminal, request) => {
+    const p = request.permission;
+    if (!p || p.command || !p.detail || p.cwd !== terminal.cwd) return false;
+    const input = JSON.parse(p.detail);
+    if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+    const typedPatch = terminal.agentKind === "codex" &&
+      ["fileChange", "apply_patch", "applyPatch"].includes(p.toolName);
+    if (typedPatch && Object.keys(input).some(key => key !== "changes")) return false;
+    const targets = typedPatch ? codexChanges(input.changes) : claudeApprovalTargets(p.toolName, input);
+    if (!targets?.length) return false;
+    const host = hub.host(terminal.hostId);
+    if (host.kind === "ssh") await passwordFor(host.id);
+    return safeApprovalTargets(host, terminal.cwd, targets, files);
+  },
 );
 let managedPeers: ManagedPeers | undefined;
 const mailbox = new Mailbox(store.directory, {
@@ -732,7 +747,18 @@ managedPeers = new ManagedPeers({
 hub.managedPeerCall = (hostId, nativeId, name, args) =>
   managedPeers!.call({ hostId, nativeId, provider: "codex" }, name, args);
 const chatModels = new ChatModels(history, files, passwordFor);
+function connectedApprovalTerminal(terminalId: string, nativeId: string) {
+  return terminals.list().find(
+    (terminal) => terminal.id === terminalId && !terminal.exited && terminal.agentConnected &&
+      terminal.integration === "ready" && terminal.agentSessionId === nativeId,
+  );
+}
 const ideChats = new IdeChats({
+  historyModel: async(hostId,provider,nativeId,cwd)=>{
+    const u=await readSessionUsage(hub.host(hostId),provider,nativeId,cwd,"settings:"+hostId+":"+nativeId).catch(()=>null);
+    return u?.provider===provider && u.sessionId===nativeId ? u.model : undefined;
+  },
+  approveWorkspaceTargets:(id,cwd,paths)=>safeApprovalTargets(hub.host(id),cwd,paths,files),
   models:(hostId,provider)=>chatModels.list(hub.host(hostId),provider),
   sessionUsage: async (v, terminalId) => {
     const host=hub.host(v.hostId);
@@ -778,11 +804,23 @@ const ideChats = new IdeChats({
   hub,
   live: liveIdeChats,
   antigravityModel:async(hostId,id)=>(await antigravityHistory.usage(hub.host(hostId),id))?.model,
+  nativeAutoAccept: (terminalId, nativeId) => {
+    if (!connectedApprovalTerminal(terminalId, nativeId)) return;
+    const policy = autoApproval.state(terminalId);
+    return policy.enabled && policy.sessionId === nativeId;
+  },
+  setNativeAutoAccept: (terminalId, nativeId, enabled) => {
+    const terminal = connectedApprovalTerminal(terminalId, nativeId);
+    if (!terminal)
+      throw new IdeChatError("연결된 터미널과 현재 AI 대화를 다시 확인하세요.", 409);
+    autoApproval.set(terminalId, enabled, terminal.agentKind !== "antigravity");
+  },
   antigravityAutoAccept:(terminalId,nativeId)=>{
     const policy=autoApproval.state(terminalId);
     return policy.enabled && policy.sessionId===nativeId;
   },
   canConfigureAntigravity:(terminalId,nativeId)=>bridge.acpSettings.registered(terminalId,nativeId),
+  antigravitySettings:(terminalId,nativeId)=>bridge.acpSettings.observed(terminalId,nativeId),
   configureAntigravity:(terminalId,nativeId,config,guard)=>bridge.acpSettings.configure(terminalId,nativeId,config,guard),
   setAntigravityAutoAccept:(terminalId,nativeId,enabled)=>{
     const current=terminals.list().find(t=>t.id===terminalId);
@@ -1543,7 +1581,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.5" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.6" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

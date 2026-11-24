@@ -32,6 +32,12 @@ export interface ChatReservation {
   error?: string;
 }
 export interface IdeChatConversation {
+  /** Harbor answers eligible workspace-only pending tool approvals in this conversation. */
+  autoAccept?: boolean;
+  /** Supports scoped settings updates without replacing other selected fields. */
+  supportsPartialSettings?: boolean;
+  observedEffort?: ChatEffort;
+  observedModel?: string;
   configuredModel?:string;
   canConfigureNative?:boolean;
   permission?: ChatPermission;
@@ -61,6 +67,7 @@ export interface IdeChatConversation {
   live?: IdeChatLive;
 }
 export interface IdeChatCreate {
+  autoAccept?: boolean;
   permission?: ChatPermission;
   reviewOnly?: boolean;
   effort?: ChatEffort;

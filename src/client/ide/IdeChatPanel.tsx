@@ -99,6 +99,7 @@ type RenderChatMarkdown = (
   location: { hostId: string; cwd: string },
 ) => ReactNode;
 interface ChatDraft {
+  autoAccept?: boolean;
   sideChat?:SideChatState;
   area?: string;
   restoreId?: string;
@@ -300,7 +301,7 @@ export default function IdeChatPanel({
         if(fallback && writeManagedTabDraft(tabStoreKey(scopeHost),t.key,fallback)) saveDraft(rememberScope,legacy,undefined,"");
         const target:ChatDraft={key:t.key,area:scopeHost,hostId,provider:t.provider,createRequestId:crypto.randomUUID(),sending:false,
           cwd:t.nativeId||t.conversationId ? "" : readDraftFolder(tabStoreKey(scopeHost),t.key),model:t.model||"",draft:persisted ?? fallback,
-          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission};
+          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,autoAccept:t.autoAccept};
         entries.current.set(t.key,target);
         selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
       }
@@ -310,7 +311,7 @@ export default function IdeChatPanel({
   }
   const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
   const provider=currentTab ? currentTab.provider : chosenProvider;
-  const catalog=useChatModels(hostId,provider,suppliedRequest,active,scopeHost);
+  const catalog=useChatModels(hostId,provider,request,active,scopeHost,useWorkspace?suppliedRequest:undefined);
   const scope = `${scopeHost}:${provider}`;
   function setProvider(next:IdeChatProvider) {
     if(multiTabs){
@@ -443,7 +444,7 @@ export default function IdeChatPanel({
       const data={selected:selectedByHost.current.get(area)||open[0]?.key||"",tabs:open.map((t):SavedManagedTab=>({
         key:t.key,provider:t.provider,title:t.conversation?.title?.trim().slice(0,160)||t.restoreTitle,conversationId:t.conversation?.id||t.restoreId,nativeId:t.conversation?.nativeId||t.restoreNative,
         parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,
-        ...(!t.conversation&&!t.restoreId ? {model:t.model} : {})}))};
+        ...(!t.conversation&&!t.restoreId ? {model:t.model,...(!t.createAttempt && !t.sending && t.autoAccept ? {autoAccept:true as const} : {})} : {})}))};
       const signature=JSON.stringify(data);
       if(writtenTabs.current.get(area)!==signature){writtenTabs.current.set(area,signature);writeManagedTabs(tabStoreKey(area),data);}
     }
@@ -990,6 +991,10 @@ export default function IdeChatPanel({
         ["running", "waiting"].includes(target.conversation?.status || ""))
     )
       return;
+    if (!target.conversation && target.autoAccept && catalog.supportsAutoAccept!==true){
+      target.error=catalog.supportsAutoAccept===false?"이 초안은 Harbor 자동 수락을 요청했습니다. 서버를 업데이트하거나 대화 설정에서 예약을 해제하세요.":"이 초안의 Harbor 자동 수락 지원 여부를 확인한 뒤 다시 보내세요.";
+      repaint();return;
+    }
     const draft = target.draft,
       selection = target.attachment,
       text = selectionPrompt(draft, selection),
@@ -1008,6 +1013,12 @@ export default function IdeChatPanel({
       repaint();
       return;
     }
+    if(multiTabs && rememberScope && target.autoAccept && !target.conversation){
+      const key=tabStoreKey(target.area || scopeHost),saved=readManagedTabs(key);
+      if(saved?.tabs.some(t=>t.key===target.key&&t.autoAccept))
+        writeManagedTabs(key,{...saved,tabs:saved.tabs.map(t=>t.key===target.key?{...t,autoAccept:undefined}:t)});
+      dirtyTabAreas.current.add(target.area || scopeHost);
+    }
     target.sending = true;
     target.error = undefined;
     target.notice = undefined;
@@ -1020,7 +1031,7 @@ export default function IdeChatPanel({
           target.createAttempt &&
           (target.createAttempt.cwd !== cwd ||
             target.createAttempt.model !== model ||
-            target.createAttempt.effort !== target.effort || target.createAttempt.permission !== (target.permission==="default" ? undefined : target.permission))
+            target.createAttempt.effort !== target.effort || target.createAttempt.autoAccept !== (target.autoAccept && catalog.supportsAutoAccept && !target.reviewOnly && target.permission!=="read-only" ? true : undefined) || target.createAttempt.permission !== (target.permission==="default" ? undefined : target.permission))
         )
           target.createRequestId = crypto.randomUUID();
         target.createAttempt = {
@@ -1031,6 +1042,7 @@ export default function IdeChatPanel({
           ...(model ? { model } : {}),
           ...(target.effort ? { effort: target.effort } : {}),
           ...(target.permission && target.permission!=="default" && !target.reviewOnly ? { permission: target.permission } : {}),
+          ...(target.autoAccept && catalog.supportsAutoAccept && !target.reviewOnly && target.permission!=="read-only" ? {autoAccept:true} : {}),
           ...(target.reviewOnly ? { reviewOnly: true } : {}),
         };
         accept(
@@ -1371,9 +1383,10 @@ export default function IdeChatPanel({
     repaint();
   }
   function chooseProvider(next: IdeChatProvider) {
+    if(next===provider)return;
     if (multiTabs && !view.conversation && !view.restoreId && !view.restoreNative &&
         !view.createAttempt && !view.sending && !view.parentKey && !view.draft &&
-        !view.images?.length && !view.attachment) {
+        !view.images?.length && !view.attachment && !view.model && !view.effort && !view.permission && !view.cwd) {
       const oldGroup = scopeHost + ":" + view.provider;
       if (selectedByScope.current.get(oldGroup) === view.key) {
         const previous = tabs.filter(t => t.key !== view.key && t.provider === view.provider).at(-1);
@@ -1384,31 +1397,62 @@ export default function IdeChatPanel({
       view.model = "";
       view.effort = undefined;
       view.permission = undefined;
+      view.autoAccept=undefined;
       activateTab(view);
       return;
     }
     setProvider(next);
   }
-  const configuredModel = conversation ? conversation.live ? conversation.model : conversation.configuredModel || "" : view.model;
-  const modelSetting=configuredModel || conversation?.model || "";
+  const [observed,setObserved]=useState<{id:string;native:string;model?:string;effort?:ChatSettingsValue["effort"]}>();
+  useEffect(()=>{
+    if(!folderOpen || !active || !conversation || (conversation.observedModel && conversation.observedEffort))return;
+    const target=conversation,controller=new AbortController();
+    void request("/conversations/"+encodeURIComponent(target.id)+"/usage",{signal:controller.signal})
+      .then(async r=>r.ok?(await r.json()).usage:undefined).then(u=>{
+        if(!controller.signal.aborted && u?.provider===target.provider && u.sessionId===target.nativeId)
+          setObserved({id:target.id,native:target.nativeId,model:u.model,effort:u.effort});
+      }).catch(()=>{});
+    return ()=>controller.abort();
+  },[folderOpen,active,request,conversation?.id,conversation?.nativeId,conversation?.model,conversation?.effort,conversation?.observedEffort]);
+  const measurement=conversation && observed?.id===conversation.id && observed.native===conversation.nativeId ? observed : undefined;
+  const actualModel=conversation?.observedModel||measurement?.model||conversation?.model||"";
+  const configuredModel = conversation
+    ? conversation.live ? actualModel : conversation.configuredModel ?? actualModel
+    : view.model;
+  const modelSetting=configuredModel || "";
   const exactModel=modelSetting ? chatModelOption(catalog.models,modelSetting) : undefined;
   const variant=provider==="antigravity" && modelSetting && !exactModel ? catalog.models.find(m=>m.efforts?.some(e=>m.id+"-"+e===modelSetting)) : undefined;
   const selectedModel=exactModel || variant || (!modelSetting ? catalog.models.find(m=>m.isDefault) : undefined);
   const variantEffort=variant?.efforts?.find(e=>e!=="default" && variant.id+"-"+e===modelSetting);
-  const effortSetting=(conversation ? conversation.effort : view.effort) || (variantEffort && variantEffort!=="default"?variantEffort:undefined);
+  const knownDefaultEffort=!!conversation && !conversation.live && conversation.configuredModel !== undefined && !conversation.effort;
+  const measuredEffort=conversation?.observedEffort || (!measurement?.model || measurement.model===actualModel ? measurement?.effort : undefined);
+  const effortSetting=(conversation ? conversation.effort ?? (!knownDefaultEffort ? measuredEffort : undefined) : view.effort) || (variantEffort && variantEffort!=="default"?variantEffort:undefined);
   const editModel = variant?.id || configuredModel;
   const permissionSetting=conversation?.permission || (conversation?.reviewOnly||view.reviewOnly?"read-only":view.permission||"default");
-  async function saveSettings(settings:ChatSettingsValue,engineChanged:boolean){
+  const unknown={model:!!conversation && !actualModel && conversation.configuredModel===undefined,
+    effort:!!conversation && !effortSetting && !knownDefaultEffort,
+    permission:!!conversation && !conversation.permission && !conversation.reviewOnly};
+  async function saveSettings(settings:ChatSettingsValue,engineChanged:boolean,fields?:("model"|"effort"|"permission")[]){
     const target=view;
     if(target.conversation){
       const c=target.conversation;
       const changeNativeEngine=!!c.canConfigureNative && c.status==="idle" && engineChanged;
       if(c.live && engineChanged && !changeNativeEngine)throw Error("현재 상태에서 모델이나 추론 강도를 바꿀 수 없습니다. 설정을 다시 열어 주세요.");
-      const v=await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id)+"/settings",
-        {runtimeId:c.runtimeId,permission:settings.permission,...(!c.live||changeNativeEngine?{model:settings.model||undefined,effort:settings.effort}:{})},undefined,c.live?.terminalId);
+      if(fields && !fields.length)return;
+      if(!c.supportsPartialSettings && !c.live && fields && (["model","effort","permission"] as const)
+          .some(k=>unknown[k] && !fields.includes(k)))
+        throw Error("서버에서 현재 설정을 확인할 수 없습니다. 각 값을 선택하거나 서버 작업 공간을 업데이트하세요.");
+      const changed=(key:"model"|"effort"|"permission")=>!fields || fields.includes(key);
+      const patch=!!fields && !!c.supportsPartialSettings;
+      const data={runtimeId:c.runtimeId,...(patch?{changedFields:fields}:{}),
+        ...((!patch||changed("permission"))?{permission:settings.permission}:{}),
+        ...((!c.live||changeNativeEngine)&&(!patch||changed("model"))?{model:settings.model||undefined}:{}),
+        ...((!c.live||changeNativeEngine)&&(!patch||changed("effort"))?{effort:settings.effort}:{})};
+      const v=await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id)+"/settings",data,undefined,c.live?.terminalId);
       accept(target,v);
     }else{
       target.model=settings.model;target.effort=settings.effort;target.permission=settings.permission;
+      if(target.permission==="read-only")target.autoAccept=undefined;
       if(multiTabs)dirtyTabAreas.current.add(scopeHost);
     }
     repaint();
@@ -1441,7 +1485,7 @@ export default function IdeChatPanel({
           {hasGemini && <option value="antigravity">Antigravity</option>}
         </select>
         <button type="button" className="chat-working-dir" disabled={!hostId || !!conversation || view.sending || !!view.restoreId} aria-label={conversation?"현재 작업 폴더":"작업 폴더 선택"} title={[hostName||hostId,chosenPath||"기본 경로 확인 필요"].filter(Boolean).join(" · ")} onClick={()=>setPickingFolder(view.key)}><FolderOpen size={14}/><span>{hostName||"서버 선택"}</span><span><bdi dir="ltr">{chosenPath || (defaultDirectory?.scope===scopeHost?"기본 경로 확인 필요":"폴더 확인 중…")}</bdi></span></button>
-        <button type="button" className="chat-settings-button" aria-label="모델·추론 강도·권한 설정" title={[selectedModel?.name||modelSetting||"기본 모델",effortSetting||selectedModel?.defaultEffort||"기본 노력",permissionLabels[permissionSetting]].join(" · ")} aria-expanded={folderOpen} disabled={!hostId || view.sending || !!view.restoreId && !conversation} onClick={()=>setFolderOpen(true)}><SlidersHorizontal size={14}/><span>{selectedModel?.name||modelSetting||"기본 모델"}</span><small>{effortSetting||selectedModel?.defaultEffort||"기본 노력"} · {permissionLabels[permissionSetting]}</small></button>
+        <button type="button" className="chat-settings-button" aria-label="모델·추론 강도·권한 설정" title={[unknown.model?"모델 미확인":selectedModel?.name||modelSetting||"기본 모델",unknown.effort?"강도 미확인":effortSetting||selectedModel?.defaultEffort||"기본 노력",unknown.permission?"권한 미확인":permissionLabels[permissionSetting]].join(" · ")} aria-expanded={folderOpen} disabled={!hostId || view.sending || !!view.restoreId && !conversation} onClick={()=>setFolderOpen(true)}><SlidersHorizontal size={14}/><span>{unknown.model?"모델 미확인":selectedModel?.name||modelSetting||"기본 모델"}</span><small>{unknown.effort?"강도 미확인":effortSetting||selectedModel?.defaultEffort||"기본 노력"} · {unknown.permission?"권한 미확인":permissionLabels[permissionSetting]}</small></button>
         <button
           aria-label="대화 기록"
           title="대화 기록"
@@ -1547,7 +1591,20 @@ export default function IdeChatPanel({
         </details>}
       </header>
 
-      {folderOpen && <ChatSettings key={view.key} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} onClose={()=>setFolderOpen(false)}/>}
+      {folderOpen && <ChatSettings key={view.key} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={!conversation && !catalog.at ? "확인 중…" : catalog.supportsAutoAccept===false ? "서버 업데이트 필요" : "상태 미제공"} onAutoAccept={async(enabled)=>{
+        const target=view,c=target.conversation;
+        if(!c){if((!enabled || catalog.supportsAutoAccept) && !target.reviewOnly && target.permission!=="read-only"){target.autoAccept=enabled;if(multiTabs)dirtyTabAreas.current.add(target.area||scopeHost);}repaint();return;}
+        if(c.autoAccept===undefined || c.reviewOnly)throw Error("이 대화의 자동 수락 상태를 확인할 수 없습니다.");
+        const path="/conversations/"+encodeURIComponent(c.id);
+        try{
+          const result=await call<IdeChatConversation>(path+"/auto-accept",{runtimeId:c.runtimeId,enabled},undefined,c.live?.terminalId);
+          accept(target,result);
+          if(result.autoAccept!==enabled)throw Error("자동 수락 변경 결과를 확인할 수 없습니다.");
+        }catch(error){
+          try{accept(target,await call<IdeChatConversation>(path));}catch{}
+          throw error;
+        }
+      }} onClose={()=>setFolderOpen(false)}/>}
       {pickingFolder===view.key && !conversation && <ChatFolderPicker key={scopeHost+view.key} hostId={hostId} hostName={hostName||hostId} initialPath={chosenPath} request={folderRequest} onClose={()=>setPickingFolder(undefined)} onSelect={path=>{view.cwd=path;if(multiTabs && rememberScope)writeDraftFolder(tabStoreKey(scopeHost),view.key,path);dirtyTabAreas.current.add(scopeHost);setPickingFolder(undefined);repaint();}}/>}
           {conversation && labQuote?.sessionId === conversation.id && (
             <Modal

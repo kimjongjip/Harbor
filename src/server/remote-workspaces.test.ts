@@ -449,7 +449,14 @@ test("staged update waits for a detached process in the service cgroup", async (
 });
 
 test("chat relay keeps requested host and approved routes separate from administrative APIs", () => {
+  const policyPath = "/conversations/12345678-1234-4321-a123-123456789abc/auto-accept";
+  const policy = { runtimeId: "fixture-runtime", enabled: true };
+  assert.deepEqual(
+    relayChatRequest(host.id, { method: "POST", path: policyPath, query: {}, body: policy }),
+    { path: policyPath, body: policy },
+  );
   for (const path of [
+    policyPath,
     "/api/bootstrap",
     "/conversations/../../bootstrap",
     "/hosts/other/history",

@@ -35,6 +35,9 @@ export interface HostView extends HostConfig {
   terminalConnected?: boolean;
 }
 export interface SessionMeta {
+  /** Effective Codex effort returned for this thread by app-server. */
+  observedEffort?: import("./ide-chat").ChatEffort;
+  observedModel?: string;
   /** Harbor registered its peer dynamic tools when this native thread was created. */
   peerTools?: boolean;
   id: string;
@@ -156,6 +159,7 @@ export type TerminalConnectionIssue =
   | "backend-stop";
 export interface TerminalInfo {
   autoApproval?: {
+    workspaceOnly?: boolean;
     enabled: boolean;
     accepted: number;
     sessionId?: string;

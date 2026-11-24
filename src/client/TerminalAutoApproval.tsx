@@ -65,7 +65,7 @@ export default function TerminalAutoApproval({
               Harbor가 ‘이번만 허용’을 자동으로 선택합니다. 지금 받은함에서 대기
               중인 실행 승인도 포함합니다.
             </p>
-            {terminal.agentKind === "antigravity" ||
+            {status?.workspaceOnly ? <p>작업 폴더 안에서 확인된 읽기·편집 요청만 이번 한 번 허용합니다. 다른 요청은 직접 확인합니다.</p> : terminal.agentKind === "antigravity" ||
             terminal.program === "antigravity" ? (
               <p>
                 Antigravity는 작업 폴더의 읽기·검색·파일 편집만 자동 수락합니다.

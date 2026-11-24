@@ -1,4 +1,5 @@
 import { managedClaudeServer, type ManagedPeerCall } from "./managed-peers.js";
+import {attachTargets,claudeApprovalTargets} from "./managed-auto-accept.js";
 import { spawn } from "node:child_process";
 import { claudeWorkId } from "./terminal-work.js";
 import { EventEmitter } from "node:events";
@@ -409,6 +410,9 @@ export function createClaudeChatFactory(
         })),
       };
       let abort!: () => void;
+      // Only classify this SDK's actual named tool with its unmodified inputs.
+      if(!turn.reviewOnly&&!turn.readOnly&&!context.agentID&&!context.mcpServer&&!context.matchedAskRule&&!context.defaultToNo&&!context.blockedPath&&!context.decisionReason)
+        attachTargets(approval,claudeApprovalTargets(name,input));
       try {
         const denied = new Promise<{ approved: false }>((resolve) => {
           abort = () => resolve({ approved: false });

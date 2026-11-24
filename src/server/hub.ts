@@ -1,5 +1,6 @@
 import { managedCodexTools, type ManagedPeerCall } from "./managed-peers.js";
 import { EventEmitter } from "node:events";
+import {attachTargets,codexChanges,pendingTargets} from "./managed-auto-accept.js";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
@@ -21,6 +22,7 @@ import { Store } from "./store.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { validateImages } from "./images.js";
+import { chatEfforts, type ChatEffort } from "../shared/ide-chat.js";
 import { codexUsage } from "./terminal-usage.js";
 import {
   appendDelta,
@@ -138,6 +140,8 @@ export class Hub extends EventEmitter {
       pinned,
     } = s;
     this.store.session({
+      ...(s.observedEffort ? {observedEffort:s.observedEffort} : {}),
+      ...(s.observedModel ? {observedModel:s.observedModel} : {}),
       ...(s.peerTools ? { peerTools: true } : {}),
       id,
       hostId,
@@ -385,13 +389,19 @@ export class Hub extends EventEmitter {
     if (!thread) return;
     s.status = statusOf(thread.status);
     if (thread.name) s.title = thread.name;
-    if (thread.model) s.model = thread.model;
+    if (thread.model) {s.model = thread.model;s.observedModel=thread.model;}
     if (thread.cwd) s.cwd = thread.cwd;
     s.preview = thread.preview || s.preview;
     if (thread.updatedAt) s.updatedAt = thread.updatedAt * 1000;
     s.error = undefined;
     const active = thread.turns?.find((t: any) => t.status === "inProgress");
     if (active) s.activeTurnId = active.id;
+  }
+  private hydrateLaunchSettings(s:SessionView,result:any) {
+    const reported=result.model || result.thread?.model;
+    if(typeof reported==="string" && reported){s.model=reported;s.observedModel=reported;}
+    if(chatEfforts.includes(result.reasoningEffort as ChatEffort))s.observedEffort=result.reasoningEffort;
+    if(s.observedModel||s.observedEffort)this.saveSession(s);
   }
   async createSession(
     hostId: string,
@@ -443,6 +453,7 @@ export class Hub extends EventEmitter {
       result = await client.call("thread/start", baseStart);
     }
     const s = this.track(hostId, result.thread, input);
+    this.hydrateLaunchSettings(s,result);
     if (peerTools) {
       s.peerTools = true;
       this.saveSession(s);
@@ -482,6 +493,7 @@ export class Hub extends EventEmitter {
       excludeTurns: true,
     });
     this.hydrateMeta(s, result.thread);
+    this.hydrateLaunchSettings(s,result);
     try {
       const page = await client.call("thread/turns/list", {
         threadId: s.threadId,
@@ -632,6 +644,12 @@ export class Hub extends EventEmitter {
         });
         if (!this.completedTurns.has(`${s.id}:${result.turn.id}`))
           s.activeTurnId = result.turn.id;
+        if(options.model){
+          s.model=options.model;
+          if(s.observedModel!==options.model)s.observedModel=undefined;
+        }
+        if(typeof result.model==="string" && result.model){s.model=result.model;s.observedModel=result.model;}
+        if(options.effort)s.observedEffort=options.effort;
       }
       if (
         !result.turn ||
@@ -712,7 +730,13 @@ export class Hub extends EventEmitter {
           this.emit("session-roster-item",s,p.item);
         if(method==="item/completed" && p.item?.type==="contextCompaction")this.emit("session-compacted",s);
         const item = normalizeItem(p.item, p.turnId);
-        if (item) upsertItem(s, item);
+        if (item){
+          upsertItem(s,item);
+          if(method==="item/started" && p.item?.type==="fileChange"){
+            const actual=s.items.find(i=>i.id===item.id && i.turnId===p.turnId);
+            if(actual)attachTargets(actual,codexChanges(p.item.changes));
+          }
+        }
         break;
       }
       case "item/agentMessage/delta":
@@ -806,6 +830,12 @@ export class Hub extends EventEmitter {
     ) {
       approval.kind = "file";
       approval.title = "파일 변경 승인";
+      if(m.method==="item/fileChange/requestApproval" && !p.grantRoot && !p.grant_root && !p.additionalPermissions && !p.networkApprovalContext && !p.reason && !p.guardianAssessment &&
+        (!p.availableDecisions || Array.isArray(p.availableDecisions) && p.availableDecisions.includes("accept")) &&
+        s.activeTurnId && p.turnId===s.activeTurnId && typeof p.itemId==="string"){
+        const item=s.items.find(i=>i.id===p.itemId && i.turnId===p.turnId && i.kind==="change");
+        if(item)attachTargets(approval,pendingTargets(item));
+      }
       approval.detail =
         [p.reason, p.grantRoot].filter(Boolean).join("\n") ||
         "이 작업의 파일 변경을 승인할까요?";

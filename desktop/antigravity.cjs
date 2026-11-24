@@ -26,6 +26,7 @@ function workspaceTarget(value, cwd, editing) {
       target = path.normalize(value),
       relative = path.relative(root, target);
     if (
+      root === path.parse(root).root ||
       relative === ".." ||
       relative.startsWith(".." + path.sep) ||
       path.isAbsolute(relative) ||
@@ -41,6 +42,8 @@ function workspaceTarget(value, cwd, editing) {
     for (;;) {
       try {
         const entry = lstatSync(existing);
+        if (entry.isSymbolicLink() || (entry.isFile() && entry.nlink !== 1))
+          return false;
         if (editing && existing === target && !entry.isFile()) return false;
         break;
       } catch (e) {
@@ -51,6 +54,7 @@ function workspaceTarget(value, cwd, editing) {
     const actual = realpathSync(existing),
       resolved = path.relative(root, actual);
     return !(
+      path.relative(existing, actual) ||
       resolved === ".." ||
       resolved.startsWith(".." + path.sep) ||
       path.isAbsolute(resolved) ||
@@ -98,13 +102,45 @@ function allowOnce(params, mode, cwd = process.cwd()) {
     targets = [];
   for (const [key, value] of Object.entries(input)) {
     if (
+      tool.kind === "search" &&
+      /^(?:globs?|patterns?|filepatterns?|includes?|excludes?|filters?)$/i.test(
+        key,
+      )
+    ) {
+      const patterns = Array.isArray(value) ? value : [value];
+      if (
+        !patterns.length ||
+        patterns.length > 32 ||
+        patterns.some(
+          (v) =>
+            typeof v !== "string" ||
+            !v ||
+            v.length > 512 ||
+            v.includes("..") ||
+            !v.split("/").every((part) => {
+              const simple = part.replace(
+                /\.\{[\p{L}\p{N}_-]+(?:,[\p{L}\p{N}_-]+)+\}$/u,
+                ".ext",
+              );
+              return (
+                !!simple &&
+                !simple.startsWith(".") &&
+                /^[\p{L}\p{N}_*? .-]+$/u.test(simple)
+              );
+            }),
+        )
+      )
+        return;
+      continue;
+    }
+    if (
       /command|url|uri|mode|permission|executable|shell|delete|move|overwrite.*policy/i.test(
         key,
       )
     )
       return;
     if (
-      /^(targetfile|absolutepath|searchpath|directorypath|file_path|path|file)$/i.test(
+      /^(targetfile|absolutepath|searchpath|searchdirectory|directorypath|file_path|path|file)$/i.test(
         key,
       )
     )
@@ -377,6 +413,22 @@ async function run(
   let requestedVariant,
     permissionMode,
     configuring = false;
+  let reportSettings = false,
+    lastReport = "",
+    reporting = Promise.resolve();
+  function reportConfiguration() {
+    const effort = config("effort")?.currentValue;
+    const value = JSON.stringify([model, effort]);
+    if (!model || lastReport === value) return reporting;
+    lastReport = value;
+    const snapshot = { op: "register", model, effort };
+    reporting = reporting
+      .then(() => configEvent(snapshot))
+      .catch(() => {
+        if (lastReport === value) lastReport = "";
+      });
+    return reporting;
+  }
   function configuration(options) {
     configs = options || [];
     permissionMode = config("mode")?.currentValue ?? permissionMode;
@@ -386,6 +438,7 @@ async function run(
     const thought = config("effort")?.currentValue;
     if (thought && requestedVariant === model + "-" + thought)
       model = requestedVariant;
+    if (reportSettings && !configuring) void reportConfiguration();
   }
   function config(key) {
     return configs.find(
@@ -985,8 +1038,11 @@ async function run(
     await saveUsage();
     status("idle");
     await reported;
-    if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN)
-      await configEvent({ op: "register" }).catch(() => {});
+    if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN) {
+      reportSettings = true;
+      if (model) await reportConfiguration();
+      else await configEvent({ op: "register" }).catch(() => {});
+    }
     out("Antigravity · Harbor\n/exit 종료 · Ctrl+C 작업 중단\n");
     editor = editorInput(process.stdin, line);
     process.stdout.write("\x1b[?2004h");

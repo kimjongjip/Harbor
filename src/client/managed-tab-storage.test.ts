@@ -48,6 +48,10 @@ test("managed tab restoration is scoped and stores only known metadata", () => {
       tabs: [claude],
     });
     assert.equal(readManagedTabs("window-a/compiler")?.selected, "second");
+    const opted={key:"draft",provider:"codex" as const,autoAccept:true as const};
+    writeManagedTabs("window-a/compiler",{selected:"draft",tabs:[opted,{...opted,key:"bound",conversationId:"chat-1"},{...opted,key:"native",nativeId:"q1"},{...opted,key:"review",reviewOnly:true},{...opted,key:"ro",permission:"read-only"}]});
+    assert.deepEqual(readManagedTabs("window-a/compiler")!.tabs.map(t=>t.autoAccept),[true,undefined,undefined,undefined,undefined]);
+    assert.equal(readManagedTabs("window-b/compiler"),undefined);
     writeManagedTabs("window-a/compiler", { selected: "", tabs: [] });
     assert.equal(values.size, 0);
   } finally {

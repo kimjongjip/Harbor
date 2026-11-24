@@ -15,6 +15,7 @@ export interface TerminalUsage {
   updatedAt: number;
   source: "native" | "history";
   model?: string;
+  effort?: import("./ide-chat").ChatEffort;
   contextEstimated?: boolean;
   compactLimit?: number;
   costSource?: "native" | "api-estimate";

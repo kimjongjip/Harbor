@@ -17,7 +17,7 @@ type Pending = {
 };
 const effort = z.enum(chatEfforts);
 export const nativeControlEvent = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("register"), nativeId: z.string().uuid() }),
+  z.object({ op: z.literal("register"), nativeId: z.string().uuid(),model:z.string().min(1).max(180).optional(),effort:effort.optional() }),
   z.object({ op: z.literal("claim"), nativeId: z.string().uuid() }),
   z.object({
     op: z.literal("ack"),
@@ -33,6 +33,7 @@ export const nativeControlEvent = z.discriminatedUnion("op", [
  * The nonprivileged peer poll only carries a wake-up flag. */
 export class AntigravitySettings {
   private adapters = new Map<string, string>();
+  private current=new Map<string,Actual>();
   private jobs = new Map<string, Pending>();
   constructor(
     private state: (
@@ -49,9 +50,11 @@ export class AntigravitySettings {
     return !!p && !p.claimed && p.nativeId === nativeId;
   }
   revoke(id: string) {
+    this.current.delete(id);
     this.adapters.delete(id);
     this.reject(id, new Error("Antigravity 연결이 종료되었습니다."));
   }
+  observed(id:string,nativeId:string){return this.registered(id,nativeId)?this.current.get(id):undefined;}
   private reject(id: string, error: Error) {
     const p = this.jobs.get(id);
     if (!p) return;
@@ -101,6 +104,7 @@ export class AntigravitySettings {
     if (event.op === "register") {
       if (this.adapters.get(id) !== nativeId) this.revoke(id);
       this.adapters.set(id, nativeId);
+      if(event.model)this.current.set(id,{model:event.model,effort:event.effort});
       return {};
     }
     const p = this.jobs.get(id);
@@ -151,6 +155,7 @@ export class AntigravitySettings {
     }
     this.jobs.delete(id);
     clearTimeout(p.timer);
+    this.current.set(id,{model:event.model,effort:event.effort});
     p.ok({
       model: event.model,
       ...(event.effort ? { effort: event.effort } : {}),

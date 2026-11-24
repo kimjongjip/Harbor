@@ -26,7 +26,7 @@ import'/src/client/styles.css';import'/src/client/themes.css';import'/src/client
 window.calls=[];window.snapshots={};window.nextStatus='submitted';window.afterSendStatus='idle';window.created=new Map();window.sequence=0;window.deferSend=false;window.liveSources={};window.terminalActions=[];
 const json=(value,status=200)=>new Response(JSON.stringify(value),{status});
 const items=id=>[{id:id+'-q',kind:'user',text:'기존 질문 '+id},{id:id+'-tool',kind:'command',text:'echo synthetic',detail:'synthetic tool output',status:'completed'},{id:id+'-a',kind:'assistant',text:'# Answer '+id+'\n\n| Check | Value |\n| --- | --- |\n| Native | yes |\n\n~~~ts\nconst answer = 42;\n~~~'.replaceAll('\\n','\n')}];
-function conversation(body){const id=body.resumeId?'resumed-'+body.hostId+'-'+body.provider+'-'+body.resumeId:'created-'+(++window.sequence);return{id,runtimeId:'runtime-fixture',hostId:body.hostId,provider:body.provider,nativeId:body.resumeId||'native-'+id,title:body.resumeId?'이전 대화 이어가기':'새 대화',cwd:body.cwd||'/fixture/home',model:body.model||'default',configuredModel:body.model,permission:body.permission||'default',effort:body.effort,reviewOnly:body.reviewOnly,status:'idle',items:body.resumeId?items(id):[],approvals:[],historyCursor:body.resumeId?'older':null,revision:1,updatedAt:1,...(window.liveSources[body.resumeId]?{live:window.liveSources[body.resumeId]}:{})};}
+function conversation(body){const id=body.resumeId?'resumed-'+body.hostId+'-'+body.provider+'-'+body.resumeId:'created-'+(++window.sequence);return{id,runtimeId:'runtime-fixture',hostId:body.hostId,provider:body.provider,nativeId:body.resumeId||'native-'+id,title:body.resumeId?'이전 대화 이어가기':'새 대화',cwd:body.cwd||'/fixture/home',model:body.model||'default',configuredModel:body.model,permission:body.permission||'default',autoAccept:body.reviewOnly?undefined:!!body.autoAccept,effort:body.effort,reviewOnly:body.reviewOnly,status:'idle',items:body.resumeId?items(id):[],approvals:[],historyCursor:body.resumeId?'older':null,revision:1,updatedAt:1,...(window.liveSources[body.resumeId]?{live:window.liveSources[body.resumeId]}:{})};}
 async function request(path,init){const body=init?.body?JSON.parse(init.body):undefined;window.calls.push({path,body,headers:Object.fromEntries(new Headers(init?.headers))});
  if(path.startsWith('/hosts/')){const url=new URL(path,'http://fixture');
  if(url.pathname.endsWith('/folders')){const chosen=url.searchParams.get('path')||'/fixture/home';return json({path:chosen,parent:'/fixture',folders:chosen==='/fixture/home'?[{name:'work',path:'/fixture/work'}]:[],truncated:false});}
@@ -36,6 +36,7 @@ async function request(path,init){const body=init?.body?JSON.parse(init.body):un
  const [, ,id,action]=path.split('/');const value=window.snapshots[id];if(!value)return json({error:'No such conversation'},404);
  if(!body)return json(value);
  if(action==='messages'){const finish=()=>{if(window.nextStatus==='submitted'){value.items.push({id:body.requestId,kind:'user',text:body.text},{id:body.requestId+'-a',kind:'assistant',text:'# 직접 대화 응답\n\n| 결과 | 값 |\n| --- | --- |\n| 확인 | 성공 |\n\n~~~ts\nconst answer = 42;\n~~~'.replaceAll('\\n','\n')},{id:body.requestId+'-tool',kind:'command',text:'echo synthetic',detail:'synthetic tool output',status:'completed'});value.status=window.afterSendStatus;value.revision++;}return json({ok:true,requestId:body.requestId,status:window.nextStatus});};if(window.deferSend)return new Promise(resolve=>window.resolveSend=()=>{window.deferSend=false;resolve(finish());});return finish();}
+ if(action==='auto-accept'){value.autoAccept=body.enabled;value.revision++;if(window.losePolicyAck){window.losePolicyAck=false;return json({error:'fixture acknowledgement lost'},503);}return json(value);}
  if(action==='settings'){value.configuredModel=body.model;value.model=body.model||'default';value.effort=body.effort;value.permission=body.permission||'default';value.revision++;return json(value);}
  if(action==='history'){value.items.unshift({id:id+'-older',kind:'user',text:'더 오래된 질문'});value.historyCursor=null;value.revision++;return json(value);}
  if(action==='interrupt'){value.status='idle';value.approvals=[];value.revision++;return json({ok:true});}
@@ -167,6 +168,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       );
       assert.equal(first[1].body.text, "Codex draft A");
       await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
+      const policy=page.getByRole("switch",{name:"Harbor 자동 수락"});
+      await page.evaluate(()=>(window as any).losePolicyAck=true);
+      await policy.click();
+      await page.getByRole("dialog").getByRole("alert").waitFor();
+      assert.equal(await policy.getAttribute("aria-checked"),"true","recover the authoritative setting after a lost acknowledgement");
+      assert.equal(await page.getByLabel("AI 권한",{exact:true}).inputValue(),"default");
+      await policy.click();
+      await page.waitForFunction(()=>document.querySelector('[role=switch][aria-label="Harbor 자동 수락"]')?.getAttribute("aria-checked")==="false");
       await page.getByLabel("AI 권한",{exact:true}).selectOption("read-only");
       await page.getByRole("dialog").getByRole("button",{name:"적용"}).click();
       await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).getByText(/읽기 전용/).waitFor();
@@ -174,6 +183,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       assert.equal(change.path,"/conversations/created-1/settings");
       assert.equal(change.body.permission,"read-only");
       assert.equal(change.body.model,"fixture-model");
+      // Saved choices survive another read, including an older worker which
+      // knows the actual model but does not expose a configuredModel override.
+      await page.evaluate(()=>{const c=(window as any).snapshots["created-1"];delete c.configuredModel;c.title="검증용 이전 세션";c.revision++;});
+      await page.locator(".ide-chat-conversation-title").getByText("검증용 이전 세션",{exact:true}).waitFor();
+      await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
+      assert.equal(await page.getByLabel("AI 모델",{exact:true}).inputValue(),"fixture-model");
+      assert.equal(await page.getByLabel("추론 강도",{exact:true}).inputValue(),"high");
+      assert.equal(await page.getByLabel("AI 권한",{exact:true}).inputValue(),"read-only");
+      await page.getByRole("dialog").getByRole("button",{name:"닫기",exact:true}).last().click();
       assert.equal(
         await page.locator(".ide-chat-message.assistant table").count(),
         1,

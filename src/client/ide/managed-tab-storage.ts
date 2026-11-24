@@ -1,6 +1,8 @@
 import type { ChatEffort, IdeChatProvider } from "../../shared/ide-chat";
 
 export interface SavedManagedTab {
+  /** Draft only. A bound conversation reads its policy from its host. */
+  autoAccept?: true;
   permission?: import("../../shared/ide-chat").ChatPermission;
   model?: string;
   key: string;
@@ -53,6 +55,7 @@ function normalize(raw: unknown): SavedTabs | undefined {
       ...(id(tab.nativeId) && { nativeId: tab.nativeId }),
       ...(id(tab.parentKey) && { parentKey: tab.parentKey }),
       ...(tab.reviewOnly === true && { reviewOnly: true }),
+      ...(!tab.conversationId && !tab.nativeId && !tab.reviewOnly && tab.permission!=="read-only" && tab.autoAccept===true && {autoAccept:true as const}),
       ...(["default", "read-only", "accept-edits", "auto-accept"].includes(
         tab.permission,
       ) && { permission: tab.permission }),

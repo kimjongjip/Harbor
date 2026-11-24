@@ -1,4 +1,5 @@
 import {chatEfforts, chatPermissions, type ChatPermission, type ChatEffort} from "../shared/ide-chat.js";
+import {pendingTargets,type ApprovalTarget} from "./managed-auto-accept.js";
 import type {ResearchModel} from "../shared/research.js";
 import { validateImages } from "./images.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
@@ -53,6 +54,9 @@ type IdeHub = Pick<
 > &
   Partial<Pick<Hub, "on" | "off" | "rename">>;
 export interface IdeChatDependencies {
+  approveWorkspaceTargets?(hostId:string,cwd:string,paths:ApprovalTarget[]):Promise<boolean>;
+  nativeAutoAccept?(terminalId:string,nativeId:string):boolean|undefined;
+  setNativeAutoAccept?(terminalId:string,nativeId:string,enabled:boolean):void;
   models?(hostId:string,provider:IdeChatProvider):Promise<ResearchModel[]>;
   antigravityAutoAccept?(terminalId:string,nativeId:string):boolean;
   canConfigureAntigravity?(terminalId:string,nativeId:string):boolean;
@@ -103,12 +107,15 @@ export interface IdeChatDependencies {
     options?:{effort?:ChatEffort;autoAccept?:boolean},
   ): Promise<string>;
   antigravityModel?(hostId:string,nativeId:string):Promise<string|undefined>;
+  historyModel?(hostId:string,provider:IdeChatProvider,nativeId:string,cwd:string):Promise<string|undefined>;
+  antigravitySettings?(terminalId:string,nativeId:string):{model:string;effort?:ChatEffort}|undefined;
 }
 interface QueuedInput extends SavedReservation {
   guard?: Guard;
   error?: string;
 }
 interface Managed {
+  autoPolicy?:{nativeId:string;cwd:string;guard:Guard;checked:WeakSet<Approval>};
   roster?:TerminalAgentRoster;
   nativeUsage?: TerminalUsage;
   queue?: QueuedInput[];
@@ -164,7 +171,7 @@ const settingsFields = {
   effort: z.enum(chatEfforts).optional(),
   permission: z.enum(chatPermissions).optional(),
 };
-const settingsSchema=z.object({runtimeId:idSchema,...settingsFields}).strict();
+const settingsSchema=z.object({runtimeId:idSchema,...settingsFields,changedFields:z.array(z.enum(["model","effort","permission"])).min(1).max(3).optional()}).strict();
 const createSchema = z
   .object({
     hostId: idSchema,
@@ -174,6 +181,7 @@ const createSchema = z
     ...settingsFields,
     resumeId: idSchema.optional(),
     reviewOnly: z.boolean().optional(),
+    autoAccept:z.boolean().optional(),
 
   })
   .strict();
@@ -286,12 +294,19 @@ export class IdeChats {
       managed.nativeUsage={...managed.nativeUsage,usedTokens:null,usedPercent:null,updatedAt:Date.now()};
     }
   };
+  private readonly disableDisconnectedPolicies=(hostId:string)=>{
+    for(const m of this.conversations.values())if(m.view.hostId===hostId && m.autoPolicy){delete m.autoPolicy;this.touch(m);}
+  };
   private readonly onSession = (session: SessionView) => {
     const id = this.native.get(
       this.nativeKey(session.hostId, "codex", session.threadId),
     );
     if (id) {
       const managed = this.managed(id);
+      if(managed.hubId===session.id && managed.autoPolicy){
+        if(session.status==="offline" || session.permission==="read-only")delete managed.autoPolicy;
+        else this.considerApprovals(managed,session.approvals);
+      }
       this.touch(managed);
       this.scheduleQueue(managed);
     }
@@ -301,6 +316,7 @@ export class IdeChats {
     if (dependencies.reservationDirectory)
       this.journal = new ReservationJournal(dependencies.reservationDirectory);
     dependencies.hub.on?.("session", this.onSession);
+    dependencies.hub.on?.("host-closed",this.disableDisconnectedPolicies);
     dependencies.hub.on?.("session-usage",this.onCodexUsage);
     dependencies.hub.on?.("session-compacted",this.onCompact);
     dependencies.hub.on?.("session-roster-item",this.onRosterItem);
@@ -396,11 +412,19 @@ export class IdeChats {
       this.dependencies.managedPeers?.update(managed.view);
   }
   private sync(managed: Managed) {
+    if(managed.view.reviewOnly || managed.view.permission==="read-only" || managed.autoPolicy && managed.autoPolicy.cwd!==managed.view.cwd)delete managed.autoPolicy;
+    managed.view.autoAccept=managed.view.reviewOnly||managed.view.permission==="read-only"||!this.dependencies.approveWorkspaceTargets?undefined:!!managed.autoPolicy;
     if (managed.liveBinding && this.dependencies.live) {
+      delete managed.autoPolicy;
       const current = this.dependencies.live.get(managed.liveBinding);
+      const readPolicy = this.dependencies.nativeAutoAccept ??
+        (managed.view.provider === "antigravity" ? this.dependencies.antigravityAutoAccept : undefined);
+      managed.view.autoAccept = readPolicy?.(managed.liveBinding.terminalId, managed.view.nativeId);
       managed.view.live = current.live;
       if(managed.view.provider === "antigravity"){
-        managed.view.permission=this.dependencies.antigravityAutoAccept?.(managed.liveBinding.terminalId,managed.view.nativeId)?"auto-accept":"default";
+        const observed=this.dependencies.antigravitySettings?.(managed.liveBinding.terminalId,managed.view.nativeId);
+        if(observed){managed.view.model=observed.model;managed.view.observedModel=observed.model;managed.view.observedEffort=observed.effort;managed.view.effort=observed.effort;}
+        managed.view.permission="default";
         managed.view.canConfigureNative=!!this.dependencies.canConfigureAntigravity?.(managed.liveBinding.terminalId,managed.view.nativeId);
       }
       managed.view.status = current.status;
@@ -408,11 +432,17 @@ export class IdeChats {
     }
     if (!managed.hubId) return;
     const session = this.dependencies.hub.session(managed.hubId);
+    if(session.threadId!==managed.view.nativeId || managed.autoPolicy&&session.cwd!==managed.autoPolicy.cwd || session.permission==="read-only" || session.status==="offline"){
+      delete managed.autoPolicy;
+      managed.view.autoAccept=session.permission==="read-only"?undefined:false;
+    }
     Object.assign(managed.view, {
       nativeId: session.threadId,
       title: managed.title || session.title,
       cwd: session.cwd,
-      model: managed.view.configuredModel || session.model,
+      model: session.model || managed.view.model,
+      observedModel:session.observedModel,
+      observedEffort:session.observedEffort,
       status: session.status,
       items: session.items,
       approvals: session.approvals,
@@ -442,7 +472,7 @@ export class IdeChats {
         }),
       );
     // Never return mutable receipt/approval resolver objects or credentials.
-    return structuredClone(managed.view);
+    return structuredClone({...managed.view,supportsPartialSettings:true});
   }
   async unchanged(id: string, version: string | undefined, guard: Guard) {
     if (!version) return false;
@@ -628,7 +658,8 @@ export class IdeChats {
     guard: Guard,
   ): Promise<IdeChatConversation> {
     input = createSchema.parse(input);
-    if(input.resumeId && (input.reviewOnly || input.permission || input.effort || input.model)) throw new IdeChatError("기존 대화의 설정은 연결한 뒤 변경하세요.",409);
+    if(input.resumeId && (input.reviewOnly || input.permission || input.effort || input.model || input.autoAccept)) throw new IdeChatError("기존 대화의 설정은 연결한 뒤 변경하세요.",409);
+    if(input.autoAccept && (input.reviewOnly||input.permission==="read-only"))throw new IdeChatError("읽기 전용 대화에서는 자동 수락할 수 없습니다.",409);
     await guard();
     this.dependencies.host(input.hostId);
     const key = `${actor}:${input.requestId}`;
@@ -769,7 +800,7 @@ export class IdeChats {
         input.resumeId,
         guard,
         input.resumeId ? undefined : input.model,
-        {effort:input.effort,autoAccept:input.permission==="auto-accept"},
+        {effort:input.effort,autoAccept:input.autoAccept??(input.permission==="auto-accept")},
       );
       live = this.dependencies.live.find(hostId, provider, id);
       if (!live)
@@ -876,6 +907,9 @@ export class IdeChats {
       await guard();
     }
     const now = Date.now();
+    const restoredModel=input.resumeId && !session?.model && !input.model
+      ? await this.dependencies.historyModel?.(hostId,provider,input.resumeId,cwd) : undefined;
+    await guard();
     const view: IdeChatConversation = {
       id: randomUUID(),
       runtimeId: this.dependencies.runtimeId,
@@ -893,7 +927,9 @@ export class IdeChats {
       effort: input.effort || (recovered ? recovered.effort : undefined),
       title: session?.title || history?.thread.title || "새 대화",
       cwd: session?.cwd || cwd,
-      model: session?.model || input.model || "",
+      model: session?.model || restoredModel || input.model || (recovered ? recovered.model : "") || "",
+      observedModel:session?.observedModel || restoredModel,
+      observedEffort: session?.observedEffort,
       status: session?.status || "idle",
       items: session?.items || history?.items || [],
       approvals: session?.approvals || [],
@@ -928,6 +964,7 @@ export class IdeChats {
     }
     if (!input.resumeId && (input.reviewOnly || input.permission || input.model || input.effort)) this.saveQueue(managed,[]);
     this.conversations.set(view.id, managed);
+    if(input.autoAccept && !managed.liveBinding)managed.autoPolicy={nativeId:view.nativeId,cwd:view.cwd,guard,checked:new WeakSet()};
     this.native.set(this.nativeKey(hostId, provider, view.nativeId), view.id);
     return view.id;
   }
@@ -935,10 +972,11 @@ export class IdeChats {
     await guard();
     if (!this.dependencies.models) throw new IdeChatError("서버에서 모델 목록을 제공하지 않습니다.", 409);
     const key = hostKey(this.dependencies.host(hostId));
-    const models=await this.dependencies.models(hostId,provider);
+    let models:ResearchModel[]=[],notice:string|undefined;
+    try {models=await this.dependencies.models(hostId,provider);} catch {notice="모델 목록을 가져올 수 없습니다.";}
     await guard();
     if(key!==hostKey(this.dependencies.host(hostId)))throw new IdeChatError("서버 연결 설정이 변경되었습니다.",409);
-    return {models};
+    return {models,...(notice?{notice}:{}),supportsAutoAccept:provider==="antigravity"?!!(this.dependencies.setNativeAutoAccept || this.dependencies.setAntigravityAutoAccept):!!this.dependencies.approveWorkspaceTargets};
   }
 
   private async validateSettings(hostId:string,provider:IdeChatProvider,settings:Pick<IdeChatCreate,"model"|"effort"|"permission">) {
@@ -980,30 +1018,90 @@ export class IdeChats {
         await check();
         const confirmed = await configure(m.liveBinding.terminalId, v.nativeId, {model:input.model,effort:input.effort}, async()=>{await guard();this.binding(m,input.runtimeId);});
         v.model=confirmed.model;
+        v.observedModel=confirmed.model;
         v.configuredModel=input.model || confirmed.model;
         v.effort=confirmed.effort;
         await check();
       }
-      if(input.permission) this.dependencies.setAntigravityAutoAccept!(m.liveBinding.terminalId,v.nativeId,input.permission==="auto-accept");
+      if(input.permission==="auto-accept") this.dependencies.setAntigravityAutoAccept!(m.liveBinding.terminalId,v.nativeId,true);
     } else {
-      await this.validateSettings(v.hostId,v.provider,input);
+      const changed=input.changedFields;
+      const editModel=!changed || changed.includes("model"), editEffort=!changed || changed.includes("effort");
+      const newModel=editModel ? input.model||"" : v.configuredModel;
+      const newEffort=editEffort ? input.effort : v.effort;
+      const prior=[v.configuredModel,v.effort,v.permission];
+      await this.validateSettings(v.hostId,v.provider,{permission:input.permission,
+        ...(editModel || editEffort ? {model:newModel ?? (v.model || undefined),effort:newEffort}:{})});
       await check();
+      if(prior[0]!==v.configuredModel || prior[1]!==v.effort || prior[2]!==v.permission)
+        throw new IdeChatError("다른 창에서 설정을 변경했습니다. 최신 설정을 확인하세요.",409);
       this.checkNative(v.hostId,v.provider,v.nativeId);
-      const permission=input.permission || "default";
+      const permission=(!changed||changed.includes("permission")) ? input.permission || "default" : v.permission || "default";
       const previous={model:v.model,configuredModel:v.configuredModel,effort:v.effort,permission:v.permission};
-      Object.assign(v,{model:input.model||"",configuredModel:input.model||"",effort:input.effort,permission});
+      Object.assign(v,{configuredModel:newModel,effort:newEffort,permission});
       try { this.saveQueue(m,m.queue || []); }
       catch(error) {Object.assign(v,previous);throw error;}
       if(m.hubId){
         const native=this.dependencies.hub.session(m.hubId);
         native.permission=permission==="read-only"?"read-only":"workspace-write";
-        native.model=input.model || "";
+        // This is the last model confirmed by the engine. The next turn
+        // receives the configured override from the conversation journal.
         this.dependencies.hub.saveSession(native);
       }
       if(permission==="read-only" && v.peerEnabled){this.dependencies.managedPeers?.pause(v);v.peerEnabled=false;}
     }
     this.touch(m);
     return this.snapshot(id);
+  }
+  async setAutoAcceptance(id:string,input:{runtimeId:string;enabled:boolean},guard:Guard){
+    await guard();
+    const m=this.managed(id),v=m.view;
+    this.binding(m,input.runtimeId);
+    this.sync(m);
+    if(v.reviewOnly || v.permission==="read-only" || v.autoAccept===undefined)throw new IdeChatError("이 대화에서는 Harbor 자동 수락을 변경할 수 없습니다.",409);
+    if(m.liveBinding){
+      const set=this.dependencies.setNativeAutoAccept || (v.provider==="antigravity"?this.dependencies.setAntigravityAutoAccept:undefined);
+      if(!set)throw new IdeChatError("원래 터미널의 승인 설정을 확인하세요.",409);
+      set(m.liveBinding.terminalId,v.nativeId,input.enabled);
+    }else{
+      this.checkNative(v.hostId,v.provider,v.nativeId);
+      m.autoPolicy=input.enabled?{nativeId:v.nativeId,cwd:v.cwd,guard,checked:new WeakSet()}:undefined;
+      if(m.autoPolicy)this.considerApprovals(m,v.approvals);
+    }
+    this.touch(m);
+    return this.snapshot(id);
+  }
+  private considerApprovals(m:Managed,approvals:Approval[]){
+    const policy=m.autoPolicy, verify=this.dependencies.approveWorkspaceTargets;
+    if(!policy || !verify || m.liveBinding || m.view.reviewOnly || m.view.permission==="read-only")return;
+    for(const approval of approvals){
+      const targets=pendingTargets(approval);
+      if(!targets || policy.checked.has(approval))continue;
+      policy.checked.add(approval);
+      void (async()=>{
+        const v=m.view,cwd=v.cwd;
+        const eligible=()=>{
+          this.binding(m,this.dependencies.runtimeId);
+          this.checkNative(v.hostId,v.provider,v.nativeId);
+          if(m.autoPolicy!==policy || policy.nativeId!==v.nativeId || policy.cwd!==cwd || m.liveBinding || v.reviewOnly || v.permission==="read-only" || v.cwd!==cwd)return false;
+          if(!m.hubId)return m.pending.has(approval.id) && v.approvals.includes(approval);
+          const s=this.dependencies.hub.session(m.hubId);
+          return s.threadId===v.nativeId && s.cwd===cwd && s.permission!=="read-only" && s.approvals.includes(approval);
+        };
+        await policy.guard();
+        if(!eligible() || !await verify(v.hostId,cwd,targets))return;
+        await policy.guard();
+        if(!eligible())return;
+        if(m.hubId)await this.dependencies.hub.answer(m.hubId,approval.id,{approved:true});
+        else {
+          const answer=m.pending.get(approval.id)!;
+          m.pending.delete(approval.id);answer({approved:true});
+        }
+        this.touch(m);
+      })().catch(()=>{
+        if(m.autoPolicy===policy){delete m.autoPolicy;this.touch(m);}
+      });
+    }
   }
   async setCollaboration(
     id: string,
@@ -1505,7 +1603,7 @@ export class IdeChats {
       nativeId: view.nativeId,
       resume: managed.resumed,
       cwd: view.cwd,
-      model: view.configuredModel ?? view.model,
+      model: view.configuredModel || undefined,
       effort: view.effort,
       acceptEdits:view.permission==="accept-edits",
       readOnly:view.permission==="read-only",
@@ -1539,7 +1637,7 @@ export class IdeChats {
               409,
             );
           managed.resumed = true;
-          if (model) view.model = model;
+          if (model){view.model=model;view.observedModel=model;}
           this.touch(managed);
         },
         approval: (approval) =>
@@ -1547,6 +1645,7 @@ export class IdeChats {
             managed.pending.set(approval.id, resolve);
             view.approvals.push(approval);
             view.status = "waiting";
+            this.considerApprovals(managed,[approval]);
             this.touch(managed);
           }),
         removeApproval: (approvalId) => {
@@ -1710,6 +1809,7 @@ export class IdeChats {
   close() {
     this.closed = true;
     this.dependencies.hub.off?.("session", this.onSession);
+    this.dependencies.hub.off?.("host-closed",this.disableDisconnectedPolicies);
     this.dependencies.hub.off?.("session-usage",this.onCodexUsage);
     this.dependencies.hub.off?.("session-compacted",this.onCompact);
     this.dependencies.hub.off?.("session-roster-item",this.onRosterItem);
@@ -1802,6 +1902,11 @@ export function createIdeChatRouter(
   router.post("/conversations/:id/settings",route(async req=>{
     const id=idSchema.parse(req.params.id);
     return chats.settings(id,settingsSchema.parse(req.body),guard(req,chats.hostFor(id),true,id));
+  }));
+  router.post("/conversations/:id/auto-accept",route(async req=>{
+    const id=idSchema.parse(req.params.id);
+    const input=z.object({runtimeId:idSchema,enabled:z.boolean()}).strict().parse(req.body);
+    return chats.setAutoAcceptance(id,input,guard(req,chats.hostFor(id),true,id));
   }));
   router.get(
     "/hosts/:hostId/history",

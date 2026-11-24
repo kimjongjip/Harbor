@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, writeFile, rm,symlink } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  writeFile,
+  rm,
+  symlink,
+  link,
+} from "node:fs/promises";
+import { join, resolve, parse } from "node:path";
 import test from "node:test";
 import { AntigravityHistory, findAntigravity } from "./antigravity";
 import { AgentBridge } from "./agent-bridge";
@@ -11,17 +19,81 @@ import { Mailbox } from "./mailbox";
 import { createBridgeRouter } from "./bridge-router";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
-test("Antigravity approval keeps escaped, linked or hidden workspace paths manual",async t=>{
-  const {allowOnce}=createRequire(import.meta.url)("../../desktop/antigravity.cjs");
-  const base=resolve(".cache/antigravity-test");await mkdir(base,{recursive:true});
-  const fixture=await mkdtemp(join(base,"approve-paths-")),workspace=join(fixture,"project"),outside=join(fixture,"outside");
-  t.after(()=>rm(fixture,{recursive:true,force:true}));
-  await mkdir(workspace);await mkdir(outside);await symlink(outside,join(workspace,"link"),process.platform==="win32"?"junction":"dir");
-  const choice={optionId:"opaque",kind:"allow_once"};
-  const approved=(kind:string,target:string)=>allowOnce({toolCall:{kind,rawInput:{TargetFile:target}},options:[choice]},"default",workspace);
-  assert.equal(approved("read",workspace),choice);assert.equal(approved("edit",join(workspace,"safe.ts")),choice);
-  for(const path of [workspace,join(workspace,".git","config"),join(workspace,"link","outside.ts"),join(outside,"outside.ts"),"relative.ts"])
-    assert.equal(approved("edit",path),undefined);
+test("Antigravity approval keeps escaped, linked or hidden workspace paths manual", async (t) => {
+  const { allowOnce } = createRequire(import.meta.url)(
+    "../../desktop/antigravity.cjs",
+  );
+  const base = resolve(".cache/antigravity-test");
+  await mkdir(base, { recursive: true });
+  const fixture = await mkdtemp(join(base, "approve-paths-")),
+    workspace = join(fixture, "project"),
+    outside = join(fixture, "outside");
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await mkdir(workspace);
+  await mkdir(outside);
+  await symlink(
+    outside,
+    join(workspace, "link"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const choice = { optionId: "opaque", kind: "allow_once" };
+  await writeFile(join(outside, "private.ts"), "fixture");
+  await link(join(outside, "private.ts"), join(workspace, "hard.ts"));
+  const search = (pattern: string, cwd = workspace) =>
+    allowOnce(
+      {
+        toolCall: {
+          kind: "search",
+          rawInput: { SearchDirectory: workspace, FilePattern: pattern },
+        },
+        options: [choice],
+      },
+      "default",
+      cwd,
+    );
+  assert.equal(search("src/**/*.{js,ts}"), choice);
+  for (const pattern of [
+    "/outside*",
+    "C:/windows/*",
+    "../outside/*",
+    "**/.git/config",
+    "*.{ts,.env}",
+  ])
+    assert.equal(search(pattern), undefined);
+  assert.equal(search("*.ts", parse(workspace).root), undefined);
+  assert.equal(
+    allowOnce(
+      {
+        toolCall: {
+          kind: "edit",
+          rawInput: { TargetFile: join(workspace, "hard.ts") },
+        },
+        options: [choice],
+      },
+      "default",
+      workspace,
+    ),
+    undefined,
+  );
+  const approved = (kind: string, target: string) =>
+    allowOnce(
+      {
+        toolCall: { kind, rawInput: { TargetFile: target } },
+        options: [choice],
+      },
+      "default",
+      workspace,
+    );
+  assert.equal(approved("read", workspace), choice);
+  assert.equal(approved("edit", join(workspace, "safe.ts")), choice);
+  for (const path of [
+    workspace,
+    join(workspace, ".git", "config"),
+    join(workspace, "link", "outside.ts"),
+    join(outside, "outside.ts"),
+    "relative.ts",
+  ])
+    assert.equal(approved("edit", path), undefined);
 });
 test("Antigravity can delegate only an unambiguous allow_once for a native tool action", () => {
   const { allowOnce } = createRequire(import.meta.url)(

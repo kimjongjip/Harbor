@@ -124,6 +124,36 @@ test("Antigravity native approval is bound to the private hook, ACP program and 
   assert.equal((await send("replacement")).status, 401);
 });
 
+test("linked AI chat accepts scoped hook requests only while the same policy and native conversation are active", async (t) => {
+  const {requests,auto,terminals}=await fixture(t);
+  auto.dispose();
+  let release: (()=>void) | undefined;
+  const checked:string[]=[];
+  const scoped=new AutoApproval(requests,id=>terminals.find(v=>v.id===id),()=>{},
+    async (_terminal,request)=>{
+      checked.push(request.id);
+      if(request.permission?.toolName!=="Read") return false;
+      await new Promise<void>(resolve=>{release=resolve;});
+      return true;
+    });
+  t.after(()=>scoped.dispose());
+  scoped.set("a",true,true);
+  const unsafe=requests.createPermission("a",permission());
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.result("a",unsafe.id,false).status,"pending");
+  const pending=requests.createPermission("a",permission("native-a","Read"));
+  scoped.set("a",false);
+  release!();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.result("a",pending.id,false).status,"pending");
+  scoped.set("a",true,true);
+  release!();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.result("a",pending.id,false).answeredBy,"automatic");
+  assert.equal(scoped.state("a").accepted,1);
+  assert.equal(scoped.state("a").workspaceOnly,true);
+  assert.equal(checked.filter(id=>id===pending.id).length,2);
+});
 test("live per-session auto acceptance handles pending/future permissions, not another terminal, stale conversation or questions", async (t) => {
   const { auto, requests, terminals } = await fixture(t);
   const pending = requests.createPermission("a", permission());

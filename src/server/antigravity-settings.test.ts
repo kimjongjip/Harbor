@@ -20,7 +20,9 @@ test("scoped native settings are offered once, require a registered idle adapter
   await assert.rejects(() =>
     channel.configure(id, nativeId, { model: "gemini-test" }, guard),
   );
-  await channel.receive(id, { op: "register", nativeId });
+  await channel.receive(id, { op: "register", nativeId, model:"previous-model",effort:"high" });
+  assert.deepEqual(channel.observed(id,nativeId),{model:"previous-model",effort:"high"});
+  assert.equal(channel.observed(id,"unrelated"),undefined);
   const pending = channel.configure(
     id,
     nativeId,

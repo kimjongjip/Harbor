@@ -24,6 +24,73 @@ import {
 } from "./ide-chat-claude.js";
 
 const guard = () => {};
+
+test("managed Claude auto toggle handles only the real pending check and cannot grant after disable or a forced human rule",async t=>{
+  const results:any[]=[];let releaseCheck!:()=>void,checks=0;
+  const slow=new Promise<void>(ok=>{releaseCheck=ok;});
+  const sdk=((invocation:any)=>Object.assign((async function*(){
+    const session_id=invocation.options.sessionId;
+    const signal=new AbortController().signal;
+    yield {type:"system",subtype:"init",session_id};
+    for(const context of [{signal},{signal},{signal,matchedAskRule:{source:"user",toolName:"Read"}},{signal,defaultToNo:true}])
+      results.push(await invocation.options.canUseTool("Read",{file_path:"note.txt"},context));
+    yield {type:"result",subtype:"success",session_id,result:"fixture complete"};
+  })(),{close(){},async interrupt(){}})) as unknown as ClaudeQuery;
+  const {chats}=harness({claude:createClaudeChatFactory({query:sdk}),approveWorkspaceTargets:async()=>{
+    if(++checks===2)await slow;
+    return true;
+  }});
+  t.after(()=>chats.close());
+  const v=await create(chats,"claude");await send(chats,v.id);
+  await until(()=>chats.snapshot(v.id).approvals.length===1);
+  await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:true},guard);
+  await until(()=>checks===2);
+  assert.deepEqual(results.map(r=>r.behavior),["allow"]);
+  assert.equal(results[0].updatedPermissions,undefined);
+  await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:false},guard);releaseCheck();
+  await new Promise<void>(ok=>setImmediate(ok));
+  assert.equal(results.length,1);
+  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
+  await until(()=>results.length===2&&chats.snapshot(v.id).approvals.length===1);
+  await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:true},guard);
+  assert.equal(checks,2);assert.equal(results.length,2);
+  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
+  await until(()=>results.length===3&&chats.snapshot(v.id).approvals.length===1);
+  assert.equal(checks,2,"defaultToNo must always wait for the user");
+  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
+  await until(()=>results.length===4);
+  assert.deepEqual(results.map(r=>r.behavior),["allow","deny","deny","deny"]);
+});
+
+test("managed Codex auto acceptance acts only on matching, bounded native file edits and disables on disconnect",async t=>{
+  const checked:string[]=[];
+  const {chats,hub,client,replies,calls}=harness({approveWorkspaceTargets:async(h,cwd,targets)=>{
+    assert.equal(h,host.id);checked.push(...targets.map(t=>t.file));return targets.every(t=>t.file==="fixture.ts");
+  }});
+  t.after(()=>chats.close());
+  const first=await create(chats,"codex",{autoAccept:true}),second=await create(chats);
+  assert.equal(first.autoAccept,true);assert.equal(second.autoAccept,false);
+  await send(chats,first.id);await send(chats,second.id);
+  const emit=(view:typeof first,id:number,extra:Record<string,unknown>={})=>{
+    const s=hub.state().sessions.find(s=>s.threadId===view.nativeId)!;
+    const meta={threadId:view.nativeId,turnId:s.activeTurnId,itemId:"edit-"+id};
+    (hub as any).notification(host.id,{method:"item/started",params:{...meta,item:{type:"fileChange",id:meta.itemId,changes:[{path:"fixture.ts",kind:{type:"update"},diff:"@@ -1 +1 @@\n-old\n+updated"}]}}});
+    (hub as any).request(host.id,client,{id,method:"item/fileChange/requestApproval",params:{...meta,...extra}});
+    hub.emit("session",hub.session(s.id));
+  };
+  emit(first,231);emit(second,232);emit(first,233,{grantRoot:"/other"});
+  (hub as any).request(host.id,client,{id:234,method:"item/commandExecution/requestApproval",params:{threadId:first.nativeId,command:"fixture"}});
+  await until(()=>replies.some(r=>r.id===231));
+  assert.deepEqual(replies.map(r=>[r.id,r.result]),[[231,{decision:"accept"}]]);
+  assert.deepEqual(checked,["fixture.ts"]);
+  assert.equal(calls.find(c=>c.method==="turn/start")?.params.sandboxPolicy.type,"workspaceWrite");
+  assert.equal(calls.find(c=>c.method==="turn/start")?.params.approvalPolicy,"on-request");
+  await chats.setAutoAcceptance(second.id,{enabled:true,runtimeId:second.runtimeId},guard);
+  await until(()=>replies.some(r=>r.id===232));
+  assert.ok(!replies.some(r=>r.id===233||r.id===234));
+  hub.emit("host-closed",host.id);assert.equal(chats.snapshot(first.id).autoAccept,false);
+  await assert.rejects(()=>create(chats,"claude",{reviewOnly:true,autoAccept:true}),/읽기 전용/);
+});
 test("managed telemetry follows its own host, native thread and parent-agent roster", async t=>{
   const {chats,hub}=harness({sessionUsage:async v=>({
     usage: {sessionId:"another-thread",provider:v.provider,usedTokens:99,costUsd:45,contextWindow:null,usedPercent:null,updatedAt:1,source:"history"},work:null
@@ -399,6 +466,40 @@ test("chat controls validate the selected engine and apply model, effort and rea
   await assert.rejects(chats.settings(review.id,{runtimeId:review.runtimeId,permission:"default"},guard));
   chats.close();
 });
+test("settings preserve untouched fields, survive polling and restore from the same native journal",async t=>{
+  const dir=await mkdtemp(join(tmpdir(),"harbor-chat-settings-"));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const dependency={reservationDirectory:dir,models:async()=>[{id:"test-model",name:"Test",isDefault:true,efforts:["high" as const]}]};
+  const {chats}=harness(dependency);
+  const c=await create(chats,"claude",{model:"test-model",effort:"high"});
+  const patch=await chats.settings(c.id,{runtimeId:c.runtimeId,changedFields:["permission"],permission:"accept-edits"},guard);
+  assert.equal(patch.configuredModel,"test-model");assert.equal(patch.effort,"high");assert.equal(patch.permission,"accept-edits");
+  assert.deepEqual((await chats.read(c.id,guard)).configuredModel,patch.configuredModel);
+  chats.close();
+  const reopened=harness(dependency).chats;t.after(()=>reopened.close());
+  const restored=await create(reopened,"claude",{resumeId:c.nativeId});
+  assert.deepEqual([restored.model,restored.configuredModel,restored.effort,restored.permission],["test-model","test-model","high","accept-edits"]);
+  const inherit=await reopened.settings(restored.id,{runtimeId:restored.runtimeId,changedFields:["effort"]},guard);
+  assert.equal(inherit.effort,undefined);assert.equal(inherit.configuredModel,"test-model");assert.equal(inherit.permission,"accept-edits");
+});
+
+test("native thread start/resume report resolved model and effort even when absent on thread metadata",async t=>{
+  const {hub,client,chats}=harness();
+  t.after(()=>chats.close());
+  const orig=client.call.bind(client);
+  client.call=async(method,params)=>{
+    const result=await orig(method,params);
+    if(method==="thread/start" || method==="thread/resume")Object.assign(result,{model:"fixture-actual",reasoningEffort:"high"});
+    return result;
+  };
+  const c=await create(chats);
+  const updated=await chats.read(c.id,guard);
+  assert.equal(updated.model,"fixture-actual");assert.equal(updated.observedEffort,"high");
+  assert.equal(updated.observedModel,"fixture-actual");
+  assert.equal(updated.configuredModel,undefined);
+  const reset=await chats.settings(c.id,{runtimeId:c.runtimeId,changedFields:["model"]},guard);
+  assert.equal(reset.configuredModel,"");assert.equal(reset.observedModel,"fixture-actual");
+});
+
 test("managed reservations survive client disconnect, allow editing and dispatch once when the active turn finishes", async () => {
   const { chats, hub, calls } = harness();
   const view = await create(chats, "codex", {
