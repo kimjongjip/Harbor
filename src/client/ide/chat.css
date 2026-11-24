@@ -275,6 +275,9 @@
   color: var(--accent, #4563d4);
   background: var(--accent-soft, #eef1ff);
 }
+.workspace-inline-approval { margin: 0 10px; border: 1px solid var(--border); min-width: 0; }
+.workspace-inline-approval > div:first-child { padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 12px; }
+.workspace-approval-terminal { height: clamp(110px, 22vh, 220px); }
 .ide-chat-input-state {
   display: flex;
   flex-wrap: wrap;

@@ -1,6 +1,7 @@
 const {
   app,
   BrowserWindow,
+  WebContentsView,
   Menu,
   shell,
   dialog,
@@ -762,6 +763,65 @@ function setupTerminalWindows() {
     } catch {
       /* Source was closed or navigated. */
     }
+  });
+  const inlineApprovals = new Map();
+  function disposeApproval(win, key) {
+    const slot = inlineApprovals.get(win);
+    if (!slot || slot.key !== key) return;
+    inlineApprovals.delete(win);
+    win.removeListener("closed", slot.close);
+    if (!win.isDestroyed()) {
+      win.contentView.removeChildView(slot.view);
+      win.webContents.removeListener("did-start-navigation", slot.navigation);
+    }
+    if (!slot.view.webContents.isDestroyed()) slot.view.webContents.close();
+  }
+  ipcMain.handle("harbor:inline-approval", async (event, key, bounds, entry) => {
+    const win = trustedWindow(event);
+    if (typeof key !== "string" || !/^[a-f0-9-]{36}$/i.test(key)) throw Error("Invalid view");
+    if (!bounds) { disposeApproval(win, key); return; }
+    const current = inlineApprovals.get(win);
+    if (!entry && current?.key !== key) return;
+    const size = win.getContentBounds();
+    if (!["x","y","width","height"].every(k => Number.isSafeInteger(bounds[k]))) throw Error("Invalid bounds");
+    const zoom = win.webContents.getZoomFactor();
+    const x = Math.max(0, Math.round(bounds.x * zoom)), y = Math.max(0, Math.round(bounds.y * zoom));
+    const rect = { x, y, width: Math.max(0, Math.min(size.width - x, Math.round(bounds.width * zoom))),
+      height: Math.max(0, Math.min(size.height - y, Math.round(bounds.height * zoom))) };
+    if (!entry) { current.view.setBounds(rect); return; }
+    if (!isWorkspaceEntry(entry)) throw Error("Invalid workspace");
+    const url = new URL(entry), terminal = url.searchParams.get("focus");
+    if (!terminal || !/^[\w-]{1,160}$/.test(terminal)) throw Error("Invalid terminal");
+    if (current) disposeApproval(win, current.key);
+    const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false,
+      partition:"harbor-inline-"+key, backgroundThrottling:false}});
+    const wc = view.webContents;
+    const close = () => disposeApproval(win,key);
+    const navigation = (_event, _url, inPlace, main) => { if (main && !inPlace) close(); };
+    inlineApprovals.set(win,{key,view,close,navigation});
+    win.once("closed",close);
+    win.webContents.on("did-start-navigation",navigation);
+    wc.setWindowOpenHandler(() => ({action:"deny"}));
+    const destination = url.origin + "/?terminal=" + encodeURIComponent(terminal);
+    const restrict = (event, next) => { if (next !== destination) event.preventDefault(); };
+    wc.on("will-navigate",restrict);
+    wc.on("will-redirect",restrict);
+    wc.session.setPermissionRequestHandler((_c,_p,cb)=>cb(false));
+    wc.session.setPermissionCheckHandler(()=>false);
+    win.contentView.addChildView(view);
+    view.setBounds(rect);
+    try {
+      const auth = await wc.session.fetch(url.origin + "/_workspace/login", {method:"POST",
+        headers:{"X-Harbor-Link": url.hash.slice(1)},credentials:"include",redirect:"error"});
+      if (!auth.ok) throw Error("서버 인증이 만료되었습니다.");
+      if (wc.isDestroyed()) return;
+      await wc.loadURL(destination);
+      if (wc.isDestroyed()) return;
+      await wc.insertCSS(`body { overflow: hidden !important }
+        .harbor-app {visibility:hidden}
+        [data-terminal-id="${terminal}"] .terminal-card-body {visibility:visible;position:fixed!important;inset:0!important;z-index:10000;background:var(--panel)}
+        .terminal-usage {display:none!important}`);
+    } catch (error) { close(); throw error; }
   });
   ipcMain.handle("harbor:new-workspace", (event) => {
     const source = trustedWindow(event);

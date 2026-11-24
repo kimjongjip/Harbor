@@ -225,6 +225,8 @@ export default function IdeChatPanel({
   terminalInventory,
   active,
   newChatRequest,
+  workspaceRequest: tabRequest,
+  onWorkspaceRequestHandled,
   onNewChatHandled,
   onFolderChange,
   request: suppliedRequest = localRequest,
@@ -245,6 +247,8 @@ export default function IdeChatPanel({
   terminal?: TerminalInfo;
   terminalInventory?: TerminalInfo[];
   active: boolean;
+  workspaceRequest?: import("./managed-tab-storage").WorkspaceChatRequest;
+  onWorkspaceRequestHandled?: () => void;
   newChatRequest?: number;
   onNewChatHandled?: (id:number) => void;
   onFolderChange?: (folder: {hostId: string; cwd: string}) => void;
@@ -313,7 +317,8 @@ export default function IdeChatPanel({
     }
   }
   const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
-  const provider=currentTab ? currentTab.provider : chosenProvider;
+  const requestedProvider = tabRequest && tabRequest.hostId === hostId && "provider" in tabRequest ? tabRequest.provider : undefined;
+  const provider=currentTab ? currentTab.provider : requestedProvider || chosenProvider;
   const [folderOpen, setFolderOpen] = useState(false);
   const updateStatus = useWorkspaceUpdate(hostId, active && useWorkspace && folderOpen, request);
   const catalogScope = scopeHost + (useWorkspace && updateStatus?.phase === "current" ? ":" + updateStatus.runningVersion : "");
@@ -360,9 +365,19 @@ export default function IdeChatPanel({
     if(multiTabs){selectedByHost.current.set(scopeHost,key);dirtyTabAreas.current.add(scopeHost);}
     return value;
   }
+  const handledWorkspace = useRef<typeof tabRequest>(undefined);
+  function initialTab() {
+    if (!tabRequest || tabRequest.hostId !== hostId || !("provider" in tabRequest)) return fresh(provider, true);
+    const tab = fresh(tabRequest.provider);
+    tab.newChat = true;
+    tab.cwd = tabRequest.cwd;
+    if (tab.cwd && rememberScope) writeDraftFolder(tabStoreKey(scopeHost), tab.key, tab.cwd);
+    handledWorkspace.current = tabRequest;
+    return tab;
+  }
   const view = currentTab ||
     entries.current.get(selectedByScope.current.get(scope) || "") ||
-    fresh(provider, true);
+    initialTab();
   const selected = useRef(view.key);
   const [defaultDirectory,setDefaultDirectory]=useState<{scope:string;path:string}>();
   const [pickingFolder,setPickingFolder]=useState<string>();
@@ -1320,6 +1335,8 @@ export default function IdeChatPanel({
   const inputRestriction = !live || live.canSend ? "" : conversation?.status === "offline"
     ? "현재 입력을 받을 수 없어 저장된 대화를 표시합니다."
     : conversation?.status === "waiting" && conversation.approvals.length ? "위 승인 요청에 응답하세요."
+    : conversation?.status === "waiting" && useWorkspace && window.harborDesktop?.inlineApproval
+      ? "실행 승인 대기"
     : conversation?.status === "waiting"
       ? useWorkspace ? "이 서버의 작업 공간에서 승인 또는 질문을 확인하세요." : "승인 또는 답변을 기다리고 있습니다."
       : useWorkspace ? "이 서버의 대화 입력 연결을 사용할 수 없습니다."
@@ -1514,17 +1531,28 @@ export default function IdeChatPanel({
       remembered().removeItem(key + ".native");
     } catch {}
   }
-  function addChat(destination: IdeChatProvider = provider) {
+  function addChat(destination: IdeChatProvider = provider, cwd = chosenPath) {
     if (!canOpenTab()) return;
     keepNewDraft(destination);
     if (currentTerminal) freshScopes.current.add(scopeHost + ":" + currentTerminal.agentKind);
     const next = fresh(destination);
     next.newChat = true;
-    next.cwd = chosenPath;
-    if (multiTabs && rememberScope && chosenPath) writeDraftFolder(tabStoreKey(scopeHost), next.key, chosenPath);
+    next.cwd = cwd;
+    if (multiTabs && rememberScope && cwd) writeDraftFolder(tabStoreKey(scopeHost), next.key, cwd);
     following.current = true;
     activateTab(next);
   }
+  useEffect(() => {
+    if (!tabRequest || !active || tabRequest.hostId !== hostId) return;
+    if (handledWorkspace.current !== tabRequest) {
+      handledWorkspace.current = tabRequest;
+      if ("key" in tabRequest) {
+        const tab = entries.current.get(tabRequest.key);
+        if (tab) activateTab(tab);
+      } else addChat(tabRequest.provider, tabRequest.cwd);
+    }
+    onWorkspaceRequestHandled?.();
+  }, [tabRequest, active, hostId]);
   const handledNewChat = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!newChatRequest || !active || !hostId || handledNewChat.current === newChatRequest) return;
@@ -2066,6 +2094,9 @@ export default function IdeChatPanel({
           ))}
         </ol>
       )}
+      {active && useWorkspace && !mobileWorkspace && !remoteDesktop && window.harborDesktop?.inlineApproval &&
+        conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
+        <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}
       <form
         className="ide-chat-compose"
         onSubmit={(event) => {
@@ -2205,7 +2236,7 @@ export default function IdeChatPanel({
 
           {inputRestriction ? <div className="ide-chat-input-state" role="status">
             <span>{inputRestriction}</span>
-            {active && useWorkspace && !mobileWorkspace && !remoteDesktop && !location.hostname.startsWith("harbor-") &&
+            {active && useWorkspace && !mobileWorkspace && !remoteDesktop && !window.harborDesktop?.inlineApproval && !location.hostname.startsWith("harbor-") &&
               conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
               <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}
             {sourceTerminal && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>

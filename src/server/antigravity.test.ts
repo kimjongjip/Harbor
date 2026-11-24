@@ -177,6 +177,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       registrationNeeded = false,
       configPending = false, finishForUpdate = false;
     let registrations = 0;
+    let manualOffers = 0;
     let inlineAnswer: ((approved:boolean)=>void) | undefined;
     const applied: any[] = [];
     let releaseGrant: undefined | (() => void);
@@ -193,6 +194,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       if (req.url === "/bridge/permission") {
         const event = JSON.parse(body);
         if(event.harbor_acp_manual){
+          if (++manualOffers === 1) { res.writeHead(409).end(); return; }
           assert.equal(event.harbor_acp_manual.session,id);
           assert.match(event.harbor_acp_manual.title,/test tool/);
           inlineAnswer=approved=>res.end(JSON.stringify({approved}));
@@ -327,6 +329,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
             i.detail.includes("fixture-edit.txt")).length === 1;
       });
       await wait(()=>!!inlineAnswer);
+      assert.equal(manualOffers,2,"waiting state registration may arrive after the first approval offer");
       inlineAnswer!(true);
       await wait(() => states.at(-1) === "idle");
       const history = new AntigravityHistory(journal),

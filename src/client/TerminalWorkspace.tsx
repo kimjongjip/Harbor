@@ -52,11 +52,14 @@ export function terminalLabel(info: TerminalInfo, _terminals?: TerminalInfo[]) {
   return info.title;
 }
 
+import type { IdeChatProvider } from "../shared/ide-chat";
+
 export function NewTerminalDialog({
   claudeIntegration = false,
   antigravityIntegration = false,
   hosts,
   initialHostId,
+  onNewChat,
   onClose,
   onCreated,
   credentialStorageAvailable,
@@ -66,6 +69,7 @@ export function NewTerminalDialog({
   hosts: HostView[];
   initialHostId?: string;
   initialCwd?: string;
+  onNewChat?: (host: string, provider: IdeChatProvider, cwd: string) => void;
   onClose: () => void;
   onCreated: (terminal: TerminalInfo) => void;
   credentialStorageAvailable: boolean;
@@ -74,6 +78,9 @@ export function NewTerminalDialog({
   const [hostId, setHostId] = useState(
     initialHostId || hosts[0]?.id || "local",
   );
+  const [chat, setChat] = useState(false);
+  const [provider, setProvider] = useState<IdeChatProvider>("codex");
+  const [cwd, setCwd] = useState("");
   const host = hosts.find((h) => h.id === hostId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -90,13 +97,17 @@ export function NewTerminalDialog({
   return (
     <Modal
       title="새 터미널"
-      subtitle="서버를 고르면 홈 디렉터리(~)에서 터미널을 시작합니다."
       backdropClassName="new-terminal-dialog"
       onClose={onClose}
     >
       <form
         onSubmit={async (event) => {
           event.preventDefault();
+          if (chat && host && onNewChat) {
+            onNewChat(host.id, provider, cwd.trim());
+            onClose();
+            return;
+          }
           setBusy(true);
           setError("");
           try {
@@ -124,7 +135,12 @@ export function NewTerminalDialog({
         }}
       >
         <div className="modal-body">
-          <label className="field">
+          {onNewChat && <label className="field">열기 방식
+            <select value={chat ? "chat" : "terminal"} onChange={e => setChat(e.target.value === "chat")}>
+              <option value="terminal">터미널</option><option value="chat">AI 대화 탭</option>
+            </select>
+          </label>}
+          {!chat && <label className="field">
             세션 이름
             <input
               aria-label="세션 이름"
@@ -134,7 +150,7 @@ export function NewTerminalDialog({
               onChange={(e) => setTitle(e.target.value)}
             />
             <small>다른 Codex에서 이 이름으로 메시지를 보낼 수 있습니다.</small>
-          </label>
+          </label>}
           <label className="field">
             서버
             <select
@@ -143,6 +159,8 @@ export function NewTerminalDialog({
               onChange={(event) => {
                 if (launch.startsWith("antigravity")) setLaunch("shell");
                 setHostId(event.target.value);
+                setCwd("");
+                if (provider === "antigravity") setProvider("codex");
                 setPassword("");
                 setSshSessionMode("tmux");
                 setAutoApprove(false);
@@ -155,6 +173,17 @@ export function NewTerminalDialog({
               ))}
             </select>
           </label>
+          {chat ? <>
+            <label className="field">AI
+              <select value={provider} onChange={e => setProvider(e.target.value as IdeChatProvider)}>
+                <option value="codex">Codex</option><option value="claude">Claude</option>
+                {(host?.serverWorkspace || (host?.id === "local" && antigravityIntegration)) && <option value="antigravity">Antigravity</option>}
+              </select>
+            </label>
+            <label className="field">시작 폴더
+              <input value={cwd} placeholder="서버 기본 폴더" onChange={e => setCwd(e.target.value)} />
+            </label>
+          </> : <>
           {host?.kind === "ssh" && (
             <label className="field">
               SSH 세션 방식
@@ -300,6 +329,7 @@ export function NewTerminalDialog({
               )}
             </div>
           </div>
+          </>}
           {error && (
             <div className="form-error" role="alert">
               {error}
@@ -316,7 +346,7 @@ export function NewTerminalDialog({
             ) : (
               <Terminal size={16} />
             )}
-            {busy ? "연결 중…" : "터미널 열기"}
+            {busy ? "연결 중…" : chat ? "AI 대화 탭 열기" : "터미널 열기"}
           </button>
         </footer>
       </form>

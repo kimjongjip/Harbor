@@ -87,6 +87,11 @@ function normalize(raw: unknown): SavedTabs | undefined {
   return { selected, tabs };
 }
 
+export type WorkspaceChatRequest = { hostId: string; key: string } |
+  { hostId: string; provider: IdeChatProvider; cwd: string };
+
+export const managedTabsChanged = "harbor:managed-tabs-changed";
+
 export function readManagedTabs(scope: string): SavedTabs | undefined {
   try {
     const data = localStorage.getItem(prefix + scope);
@@ -101,6 +106,7 @@ export function writeManagedTabs(scope: string, state: SavedTabs): void {
     const clean = normalize(state);
     if (clean) localStorage.setItem(prefix + scope, JSON.stringify(clean));
     else localStorage.removeItem(prefix + scope);
+    window.dispatchEvent(new Event(managedTabsChanged));
   } catch {
     /* Open tabs still work without persistence. */
   }

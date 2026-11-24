@@ -35,6 +35,8 @@ import { BackendStatus } from "./BackendStatus";
 import { UpdateButton } from "./UpdateButton";
 import { version } from "../../package.json";
 import { api } from "./api";
+import { readManagedTabs, managedTabsChanged, type WorkspaceChatRequest } from "./ide/managed-tab-storage";
+import { providerName } from "../shared/agent-provider";
 import { Pin } from "lucide-react";
 import { discoverSessions, useSessionDiscovery } from "./session-discovery";
 import { remoteDesktop } from "./desktop-session";
@@ -98,6 +100,7 @@ const initialChatWindow = !popoutId && !initialFocusId && /^[a-f0-9-]{36}$/i.tes
 const nativeWindowKey = window.harborDesktop?.workspaceTabs
   ? new URLSearchParams(location.search).get("workspace") || "main"
   : null;
+const chatWindowScope = initialChatWindow ? "chat-window."+requestedChatKey : nativeWindowKey || "desktop";
 type HistoryDrop = {
   provider?: import("../shared/agent-provider").AgentProvider;
   sshSessionMode?: "direct" | "tmux";
@@ -758,6 +761,33 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     sessionQuery,
     discovery,
   );
+  const [workspaceRequest, setWorkspaceRequest] = useState<WorkspaceChatRequest>();
+  const [tabsRevision, setTabsRevision] = useState(0);
+  useEffect(() => {
+    const refresh = () => setTabsRevision(n => n + 1);
+    window.addEventListener(managedTabsChanged, refresh);
+    return () => window.removeEventListener(managedTabsChanged, refresh);
+  }, []);
+  const sidebarChats = useMemo(() => {
+    const query = sessionQuery.trim().toLowerCase();
+    return popoutId || discovery.attention ? [] : orderedHosts.flatMap(h => {
+      const scope = JSON.stringify([chatWindowScope, (h.serverWorkspace ? "durable:" : "direct:") + h.id]);
+      const state = readManagedTabs(scope);
+      return (state?.tabs || []).map((tab, i) => ({
+        hostId: h.id, key: tab.key, selected: tab.key === state?.selected,
+        title: providerName(tab.provider) + " · " + (tab.title || "새 대화 " + (i + 1))
+      })).filter(tab => (h.name + " " + tab.title).toLowerCase().includes(query));
+    });
+  }, [orderedHosts, tabsRevision, sessionQuery, discovery.attention]);
+  function openWorkspaceChat(request: WorkspaceChatRequest) {
+    ++focusRequest.current;
+    pendingSelection.current = null;
+    setHostId(request.hostId);
+    setWorkspaceRequest(request);
+    setChatOpened(true);
+    setPage("terminals");
+    setWorkspaceView("chat");
+  }
   const filteringSessions = !!sessionQuery.trim() || discovery.attention;
   const pending = (id: string) =>
     notices.filter((n) => n.targetId === id && !n.read).length;
@@ -871,7 +901,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     <Plus size={15} />
                   </button>
                 </div>
-                {(state.terminals.length > 0 || filteringSessions) && (
+                {(state.terminals.length > 0 || sidebarChats.length > 0 || filteringSessions) && (
                   <div className="session-discovery-bar">
                     <input
                       aria-label="세션 검색"
@@ -888,7 +918,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     </button>
                   </div>
                 )}
-                {filteringSessions && !discovered.length && (
+                {filteringSessions && !discovered.length && !sidebarChats.length && (
                   <p className="muted">조건에 맞는 세션이 없습니다.</p>
                 )}
                 <div className="harbor-host-tree">
@@ -896,7 +926,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                     .filter(
                       (item) =>
                         !filteringSessions ||
-                        discovered.some((t) => t.hostId === item.id),
+                        discovered.some((t) => t.hostId === item.id) || sidebarChats.some(t => t.hostId === item.id),
                     )
                     .map((item) => (
                       <div key={item.id}>
@@ -914,7 +944,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                           .map((terminal) => (
                             <div
                               key={terminal.id}
-                              className={`harbor-session-item ${activeId === terminal.id && page === "terminals" ? "active" : ""}`}
+                              className={`harbor-session-item ${activeId === terminal.id && page === "terminals" && workspaceView !== "chat" ? "active" : ""}`}
                             >
                               <button
                                 className="harbor-session-row"
@@ -957,6 +987,14 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                               </button>
                             </div>
                           ))}
+                        {sidebarChats.filter(tab => tab.hostId === item.id).map(tab => (
+                          <div key={tab.key} className={`harbor-session-item ${page === "terminals" && workspaceView === "chat" && host?.id === item.id && tab.selected ? "active" : ""}`}>
+                            <button className="harbor-session-row" title={tab.title}
+                              onClick={() => openWorkspaceChat({hostId: item.id, key: tab.key})}>
+                              <MessageSquare size={13}/><span>{tab.title}</span><small>AI 대화</small>
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     ))}
                 </div>
@@ -1439,7 +1477,9 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                           terminalInventory={state.terminals}
                           onFocusTerminal={id => void focus(id, "chat")}
                           serverWorkspace={host?.serverWorkspace}
-                          rememberScope={initialChatWindow ? "chat-window."+requestedChatKey : nativeWindowKey || "desktop"}
+                          rememberScope={chatWindowScope}
+                          workspaceRequest={workspaceRequest}
+                          onWorkspaceRequestHandled={() => setWorkspaceRequest(undefined)}
                           hostId={host?.id}
                           hostName={host?.name}
                           onFolderChange={setChatFolder}
@@ -1749,6 +1789,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
             initialCwd={newTerminal.cwd}
             onClose={() => setNewTerminal(null)}
             onCreated={created}
+            onNewChat={popoutId ? undefined : (hostId, provider, cwd) => openWorkspaceChat({hostId, provider, cwd})}
             credentialStorageAvailable={credentialStorageAvailable}
           />
         )}

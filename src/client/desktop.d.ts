@@ -7,6 +7,7 @@ interface WorkspaceTabPlacement {
 interface Window {
   harborDesktop?: {
     workspaceApprovalWindow?: boolean;
+    inlineApproval?: (key:string,bounds:{x:number;y:number;width:number;height:number}|null,entry?:string)=>Promise<void>;
     readonly platform: string;
     awaitWorkspaceActivation?: () => Promise<boolean>;
     readonly version: string;

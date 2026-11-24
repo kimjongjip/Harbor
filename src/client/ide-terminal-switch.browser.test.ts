@@ -894,6 +894,23 @@ test(
         ).length,
         3,
       );
+      const tree = page.locator(".harbor-host-tree");
+      await page.getByRole("button", {name:"새 터미널",exact:true}).first().click();
+      const create = page.locator(".new-terminal-dialog");
+      await create.getByLabel("열기 방식").selectOption("chat");
+      await create.getByRole("combobox").filter({has:page.getByRole("option",{name:"Claude",exact:true})}).selectOption("claude");
+      await create.getByLabel("시작 폴더").fill("/fixture/project");
+      await create.getByRole("button",{name:"AI 대화 탭 열기"}).click();
+      await managed.getByRole("button",{name:"작업 폴더 선택"}).getByText("/fixture/project").waitFor();
+      assert.equal(await picker.inputValue(),"claude");
+      const draftTab = await tabs.getByRole("tab",{selected:true}).innerText();
+      await tree.getByRole("button",{name:/Synthetic one/}).first().click();
+      await tree.locator(".harbor-session-row").filter({hasText:draftTab.trim()}).click();
+      assert.equal(await picker.inputValue(),"claude");
+      assert.equal(await composer.inputValue(),"");
+      await tree.locator(".harbor-session-row").filter({hasText:"Synthetic background work"}).click();
+      await tabs.getByRole("tab",{name:/Synthetic background work/,selected:true}).waitFor();
+      assert.equal(await composer.inputValue(),"Follow-up draft while the turn is running");
       // The HTTP response can precede the WS inventory. Neither background
       // completion should steal an explicit selection made after startup.
       await page.getByRole("button", {name:"터미널",exact:true}).click();
