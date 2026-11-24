@@ -266,6 +266,8 @@ function editorInput(stdin, warn = () => {}) {
   stdin.once("end", () => input.end());
   return {
     input,
+    hasPendingInput: () =>
+      pasted !== null || buffer.length > 0 || input.readableLength > 0,
     expand: (s) => s.replace(/\[붙여넣기 #\d+\]/g, (k) => pastes.get(k) ?? k),
     dispose: () => {
       stdin.off("data", consume);
@@ -367,6 +369,82 @@ async function run(
     } finally {
       await fs.rm(tmp, { force: true });
     }
+  }
+  function turnRows(tx, state) {
+    const last = tx.items.at(-1);
+    return [
+      { ...tx.user, turnStatus: state },
+      ...tx.items.map((item) => ({
+        ...item,
+        ...(item.kind === "assistant" && {
+          phase:
+            item === last && state === "completed"
+              ? "final_answer"
+              : "commentary",
+        }),
+        turnStatus: state,
+      })),
+    ];
+  }
+  function publishProgress(tx) {
+    tx.dirty = true;
+    if (tx.timer || tx.writing || tx.finalizing) return;
+    tx.timer = setTimeout(async () => {
+      tx.timer = undefined;
+      tx.dirty = false;
+      tx.writing = atomic(tx.file, turnRows(tx, "inProgress")).catch(() => {});
+      await tx.writing;
+      tx.writing = undefined;
+      if (tx.dirty) publishProgress(tx);
+    }, tx.textLength > 96000 ? 700 : 300);
+  }
+  function updateTool(tx, update) {
+    let call = tx.calls.get(update.toolCallId);
+    if (!call) {
+      if (tx.calls.size >= 128 || tx.items.length >= 257) return;
+      const item = {
+        id: randomUUID(),
+        turnId: tx.id,
+        kind: "tool",
+        text: "도구 실행",
+        status: "inProgress",
+      };
+      call = { item, locations: "", output: "" };
+      tx.calls.set(update.toolCallId || item.id, call);
+      tx.items.push(item);
+    }
+    const { item } = call;
+    if (update.title) item.text = clean(update.title).slice(0, 1000);
+    if (update.kind === "execute") item.kind = "command";
+    if (update.kind === "edit") item.kind = "change";
+    if (["completed", "failed"].includes(update.status))
+      item.status = update.status;
+    if (Array.isArray(update.locations)) {
+      call.locations = update.locations
+        .slice(0, 8)
+        .map((loc) =>
+          typeof loc?.path === "string" ? clean(loc.path).slice(0, 512) : "",
+        )
+        .filter(Boolean)
+        .join("\n");
+    }
+    if (Array.isArray(update.content)) {
+      call.output = update.content
+        .slice(0, 16)
+        .map((block) => {
+          if (block?.type === "content" && block.content?.type === "text")
+            return clean(block.content.text).slice(-4096);
+          if (block?.type === "diff" && typeof block.path === "string")
+            return clean(block.path).slice(0, 512);
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n")
+        .slice(-4096);
+    }
+    item.detail = [call.locations, call.output].filter(Boolean).join("\n");
+    publishProgress(tx);
+    return item;
   }
   const meta = () =>
     atomic("session.json", {
@@ -743,7 +821,21 @@ async function run(
       u.content?.type === "text"
     ) {
       const text = clean(u.content.text);
-      turn.answer = (turn.answer + text).slice(0, 512000);
+      if (!text) return;
+      let row = turn.items.at(-1);
+      if (row?.kind !== "assistant") {
+        row = {
+          id: randomUUID(),
+          turnId: turn.id,
+          kind: "assistant",
+          text: "",
+        };
+        turn.items.push(row);
+      }
+      const visible = text.slice(0, Math.max(0, 512000 - turn.textLength));
+      row.text += visible;
+      turn.textLength += visible.length;
+      publishProgress(turn);
       const rows = (
         (turn.outputStarted ? "" : "• ") +
         turn.partial +
@@ -752,15 +844,26 @@ async function run(
       turn.outputStarted = true;
       turn.partial = rows.pop().slice(-512000);
       for (const row of rows) line(row);
-    } else if (u.sessionUpdate === "tool_call" && turn.tools.length < 128) {
-      const text = clean(u.title || u.kind || "도구").slice(0, 1000);
-      turn.tools.push({
-        id: randomUUID(),
-        turnId: turn.id,
-        kind: "tool",
-        text,
-      });
-      line("· " + text);
+    } else if (
+      u.sessionUpdate === "tool_call" ||
+      u.sessionUpdate === "tool_call_update"
+    ) {
+      const item = updateTool(turn, u);
+      if (item && u.sessionUpdate === "tool_call") line("· " + item.text);
+    } else if (u.sessionUpdate === "plan" && Array.isArray(u.entries)) {
+      const text = u.entries
+        .slice(0, 32)
+        .map((e) => clean(e?.content || "").slice(0, 256))
+        .filter(Boolean)
+        .join("\n");
+      if (text && (turn.plan || turn.items.length < 257)) {
+        if (!turn.plan) {
+          turn.plan = { id: randomUUID(), turnId: turn.id, kind: "plan" };
+          turn.items.push(turn.plan);
+        }
+        turn.plan.text = text;
+        publishProgress(turn);
+      }
     }
   }
   const input = readline.createInterface({ input: agent.stdout });
@@ -813,9 +916,10 @@ async function run(
       tx = {
         id,
         receipt: job.receipt,
-        answer: "",
+        textLength: 0,
         partial: "",
-        tools: [],
+        items: [],
+        calls: new Map(),
         capabilities: new Map(),
       };
     turn = tx;
@@ -827,6 +931,8 @@ async function run(
       text: job.text,
       ...(job.peer ? { origin: "channel" } : {}),
     };
+    tx.file = name;
+    tx.user = first;
     let finished = "failed";
     try {
       if (title === "Antigravity" && !job.peer)
@@ -846,24 +952,23 @@ async function run(
       if (job.receipt && !tx.confirmed) void ack(job.receipt);
     } catch (e) {
       line("Antigravity · " + e.message);
+      tx.items.push({
+        id: randomUUID(),
+        turnId: id,
+        kind: "notice",
+        text: clean(e.message || "작업 실패").slice(0, 1200),
+        status: "failed",
+      });
     } finally {
       if (tx.partial) line(tx.partial);
       try {
-        await atomic(name, [
-          { ...first, turnStatus: finished },
-          ...tx.tools,
-          {
-            id: id + "-answer",
-            turnId: id,
-            kind: "assistant",
-            text: tx.answer,
-            phase: "final_answer",
-            turnStatus: finished,
-          },
-        ]);
+        tx.finalizing = true;
+        clearTimeout(tx.timer);
+        await tx.writing;
+        await atomic(name, turnRows(tx, finished));
         await meta();
         await saveUsage();
-        if (finished === "completed" && tx.answer)
+        if (finished === "completed" && tx.textLength)
           void request("/bridge/peers/antigravity-completed", {
             sessionId,
             turnId: id,
@@ -900,6 +1005,25 @@ async function run(
           await reportConfiguration(!!batch.configRegistrationRequired);
         if (batch?.sessionId === sessionId && batch.configPending)
           await handleConfiguration();
+        if (
+          batch?.sessionId === sessionId &&
+          batch.finishForUpdate &&
+          rl &&
+          !closed &&
+          !turn &&
+          !approval &&
+          !configuring &&
+          !queue.length &&
+          !pending.size &&
+          !acknowledging.size &&
+          !batch.messages?.length &&
+          !rl.line &&
+          !editor?.hasPendingInput()
+        ) {
+          // Close the ACP stream only from its own idle loop. The next adapter loads the same native ID.
+          end(Error("Harbor 업데이트로 대화를 다시 연결합니다."));
+          return;
+        }
         if (batch?.sessionId === sessionId)
           for (const m of batch.messages || []) {
             if (queue.length >= 32) break;

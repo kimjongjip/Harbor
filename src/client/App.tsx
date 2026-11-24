@@ -188,6 +188,16 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const [sidebarVisible, setSidebarVisible] = useState(!popoutId);
   const [query, setQuery] = useState("");
   const [editorId, setEditorId] = useState<string | null>(null);
+  const [workspaceSetup, setWorkspaceSetup] = useState<string | null>(null);
+  useEffect(() => {
+    if (!workspaceSetup || page !== "hosts" || workspaceSetup !== editorId) return;
+    const section = document.querySelector<HTMLElement>("[data-workspace-settings]");
+    if (section) {
+      section.focus({preventScroll:true});
+      section.scrollIntoView({block:"center"});
+    }
+    setWorkspaceSetup(null);
+  }, [workspaceSetup, editorId, page]);
   const [newTerminal, setNewTerminal] = useState<{
     hostId?: string;
     cwd?: string;
@@ -759,7 +769,6 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                 <b>Harbor</b>
                 <span>v{version}</span>
               </button>
-              <UpdateButton />
             </div>
             <div className="harbor-side-switch">
               <button
@@ -1161,6 +1170,16 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
               </>
             )}
             <div className="harbor-top-actions">
+              {!remoteDesktop && !location.hostname.startsWith("harbor-") && (
+                <UpdateButton ready={ready} primary={!popoutId && !initialChatWindow && (!placement || placement.key === placement.home)}
+                  sshHosts={orderedHosts.filter(item => item.kind === "ssh")} selectedHostId={host?.id}
+                  onSetup={id => {
+                    if (id) setHostId(id);
+                    setWorkspaceSetup(id || null);
+                    setEditorId(id || "new");
+                    setPage("hosts");
+                  }}/>
+              )}
               {page === "terminals" && (
                 <div
                   className="harbor-view-switch"

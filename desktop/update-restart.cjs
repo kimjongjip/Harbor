@@ -52,12 +52,21 @@ async function handoffUpdate(spec, options = {}) {
     return null;
   });
   const node = await preparedNode(candidate);
+  let profiles = [];
+  try {
+    profiles = JSON.parse(await fs.readFile(path.join(spec.dataDirectory, "server-workspaces.json"), "utf8"));
+    if (!Array.isArray(profiles) || !profiles.every(id => typeof id === "string" && /^[a-f0-9]{64}$/.test(id)))
+      throw new Error("등록된 서버 목록을 확인할 수 없습니다.");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   const next = {
     directory: spec.sha,
     version: spec.version,
     dataDirectory: spec.dataDirectory,
     profileDirectory: spec.profileDirectory,
     runtimeDirectory: path.basename(path.dirname(node)),
+    workspaceUpdate: { requestedAt: Date.now(), profiles },
   };
   const launch =
     options.launch ||

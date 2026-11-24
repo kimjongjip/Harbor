@@ -544,8 +544,24 @@
 }
 .ide-chat-progress {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+.ide-chat-progress > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  font-weight: 550;
+  color: var(--text);
+}
+.ide-chat-progress > pre {
+  flex-basis: 100%;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .ide-chat-older,
 .ide-chat-bottom {

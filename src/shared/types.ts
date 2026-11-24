@@ -13,6 +13,12 @@ export interface WorkspaceUpdateStatus {
   detail?: string;
 }
 
+export interface WorkspaceUpdateOverview {
+  targetVersion: string;
+  handoff?: string;
+  hosts: Array<WorkspaceUpdateStatus & { id: string; name: string }>;
+}
+
 export interface HostConfig {
   /** User-selected default for new terminals, never an instruction from a peer. */
   cliApprovalMode?: CliApprovalMode;

@@ -14,6 +14,15 @@ export function statusOf(status: any): SessionStatus {
 }
 const cap = (value: unknown, size = 48000) =>
   String(value ?? "").slice(0, size);
+export const textBlocks = (value: unknown): string => typeof value === "string" ? value :
+  Array.isArray(value) ? value.flatMap(block => block &&
+    ["text", "inputText", "outputText"].includes(block.type) && typeof block.text === "string" ? [block.text] : []).join("\n") : "";
+export const publicArguments = (value: unknown): string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const input = value as Record<string, unknown>;
+  return ["command", "cmd", "file_path", "path", "pattern", "query", "description", "target", "recipient", "message", "question", "prompt"]
+    .flatMap(key => typeof input[key] === "string" ? [`${key}: ${input[key]}`] : []).join("\n");
+};
 export function normalizeItem(item: any, turnId?: string): MessageItem | null {
   const base = { id: String(item.id), turnId, status: item.status };
   switch (item.type) {
@@ -64,10 +73,17 @@ export function normalizeItem(item: any, turnId?: string): MessageItem | null {
         ...base,
         kind: "tool",
         text: `${item.server} / ${item.tool}`,
-        detail: item.error ? cap(item.error.message) : undefined,
+        detail: cap([publicArguments(item.arguments),textBlocks(item.result?.content),item.error?.message].filter(Boolean).join("\n")),
       };
     case "dynamicToolCall":
-      return { ...base, kind: "tool", text: item.tool };
+      return { ...base, kind: "tool", text:[item.namespace,item.tool].filter(Boolean).join(" / ") || "도구 실행",
+        detail:cap([publicArguments(item.arguments),textBlocks(item.contentItems),textBlocks(item.result?.content),item.error?.message].filter(Boolean).join("\n")) };
+    case "functionCallOutput":
+      return {...base,id:base.id+":output",kind:"tool",text:[item.namespace,item.name].filter(Boolean).join(" / ") || "도구 결과",detail:cap(textBlocks(item.output))};
+    case "subAgentActivity":
+      return {...base,kind:"tool",text:cap(item.agentPath||"에이전트 작업",500),detail:cap(item.kind,100)};
+    case "imageView":
+      return {...base,kind:"tool",text:"이미지 열기",detail:cap(item.path,4000)};
     case "collabAgentToolCall":
       return {
         ...base,
@@ -94,18 +110,27 @@ export function normalizeItem(item: any, turnId?: string): MessageItem | null {
 export function upsertItem(session: SessionView, item: MessageItem) {
   const index = session.items.findIndex((i) => i.id === item.id);
   if (index < 0) session.items.push(item);
-  else session.items[index] = { ...session.items[index], ...item };
+  else {
+    const previous = session.items[index];
+    session.items[index] = {
+      ...previous, ...item,
+      text:item.text || previous.text,
+      detail:item.detail || previous.detail,
+    };
+  }
   if (session.items.length > 600) session.items = session.items.slice(-600);
 }
-export function appendDelta(session: SessionView, params: any, output = false) {
+export function appendDelta(session: SessionView, params: any, output = false, kind: MessageItem["kind"] = output ? "command" : "assistant") {
+  if (typeof params.itemId !== "string" || typeof params.delta !== "string" || !params.delta) return;
   const id = String(params.itemId);
   let item = session.items.find((i) => i.id === id);
   if (!item) {
     item = {
       id,
       turnId: params.turnId,
-      kind: output ? "command" : "assistant",
-      text: "",
+      kind,
+      text: kind === "change" ? "파일 변경" : kind === "tool" ? "도구 실행" : "",
+      status:"inProgress",
     };
     upsertItem(session, item);
   }

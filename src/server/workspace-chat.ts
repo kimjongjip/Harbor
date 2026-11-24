@@ -3,6 +3,8 @@ import { Router, type Request, type Response } from "express";
 import type { HostConfig } from "../shared/types.js";
 import type { RemoteWorkspaces } from "./remote-workspaces.js";
 import type { IdeChatUsage } from "../shared/ide-chat.js";
+import type { HistoryDetail } from "../shared/history.js";
+import { WorkspaceActivity, type ActivityView } from "./workspace-activity.js";
 import { z } from "zod";
 
 const legacyBinding = z.object({
@@ -75,6 +77,11 @@ export function relayChatRequest(
     if (req.body?.hostId !== hostId) deny("다른 서버의 대화 요청입니다.");
     return { path: req.path, body: { ...req.body, hostId: "local" } };
   }
+  const hostPath = "/hosts/" + encodeURIComponent(hostId);
+  if (req.method === "GET" && req.path === hostPath + "/runtime")
+    return {path:"/hosts/local/runtime",body:undefined};
+  if (req.method === "POST" && req.path === hostPath + "/reconnect")
+    return {path:"/hosts/local/reconnect",body:req.body};
   if (/^\/conversations\/[0-9a-f-]{36}\/worktree$/i.test(req.path)) {
     if (req.method === "POST") return { path: req.path, body: req.body };
     if (req.method === "GET")
@@ -119,11 +126,13 @@ export function workspaceChatRouter(
     id: string,
   ) => { kind: "host" | "desktop" | "mobile"; id: string },
   legacyUsage?: LegacyUsage,
+  legacyActivity?: (host:HostConfig,binding:Binding)=>Promise<HistoryDetail>,
 ) {
   const router = Router({ mergeParams: true });
   // Only metadata is retained. Old workers support conditional conversation
   // reads, allowing an authorization/binding check without replaying messages.
   const bindings = new Map<string, LegacyRow>();
+  const activity = new WorkspaceActivity();
   router.use(async (req, res) => {
     const id = String(req.params.hostId),
       destination = { ...host(id) };
@@ -150,7 +159,25 @@ export function workspaceChatRouter(
       res.set("Cache-Control", "no-store").json(workspaces.status(destination));
       return;
     }
-    const { path, body } = relayChatRequest(id, req);
+    const operation = relayChatRequest(id, req);
+    const { path } = operation;
+    const scope = createHash("sha256").update(JSON.stringify([
+      destination.id, destination.address, destination.port, destination.username, destination.identityFile,
+    ])).digest("hex");
+    const conversationId = req.method === "GET" && /^\/conversations\/([a-f0-9-]{36})$/i.exec(path)?.[1];
+    const activityKey = JSON.stringify([scope,actor,conversationId]);
+    const requested = req.get("X-Harbor-Chat-Revision");
+    const sameActor = () => {
+      const current=guard();
+      if(current.kind!==kind || current.id!==device)deny("기기 연결 권한이 변경되었습니다.");
+    };
+    let body = operation.body;
+    if (path === "/hosts/local/reconnect" && body?.reconnectScope !== undefined) {
+      if (body.reconnectScope !== scope) deny("서버 계정이 변경되었습니다.", 409);
+      // The relay validates its SSH account scope. The worker checks its own runtime and native ID.
+      const {reconnectScope, ...rest} = body;
+      body = rest;
+    }
     const pass = await password(id);
     let result = await workspaces.chat(
       destination,
@@ -164,8 +191,33 @@ export function workspaceChatRouter(
       {
         client: req.get("X-Harbor-Client"),
         token: req.get("X-Harbor-Control"),
+        revision: conversationId ? activity.conditional(activityKey, requested) : undefined,
       },
     );
+    if (conversationId && legacyActivity && result.status===200 && !result.value?.unchanged) {
+      const nativeView=(value:any):ActivityView|undefined=>{
+        const binding=legacyBinding.safeParse(value).data;
+        if(!binding || binding.id!==conversationId || binding.provider==="antigravity" ||
+            value.nativeActivityTimeline===true || !Array.isArray(value.items))return;
+        return value;
+      };
+      const view=nativeView(result.value);
+      if(view){
+        const binding=legacyBinding.parse(view);
+        result.value=await activity.enrich(activityKey,destination.id,view,
+          ()=>legacyActivity(destination,binding),
+          async()=>{
+            sameActor();
+            const check=await workspaces.chat(destination,pass,actor,"GET",path,undefined,undefined,sameActor,
+              view.contentRevision===undefined?undefined:{revision:view.runtimeId+":"+view.contentRevision});
+            if(check.status!==200)deny("서버 대화 연결을 다시 확인하세요.",check.status);
+            if(check.value?.unchanged===true && view.contentRevision!==undefined)return;
+            const confirmed=nativeView(check.value);
+            if(!confirmed)deny("서버 대화의 연결 정보를 확인할 수 없습니다.",409);
+            return confirmed;
+          },sameActor,requested);
+      }else activity.clear(activityKey);
+    }else if(conversationId && result.status!==200)activity.clear(activityKey);
     if (result.unsupportedUsage && legacyUsage) {
       const conversationId = path.split("/")[2],
         key = JSON.stringify([
@@ -227,6 +279,8 @@ export function workspaceChatRouter(
         deny("서버 사용량의 대화 ID가 달라졌습니다.", 409);
       result = { status: 200, value };
     }
+    if (result.status === 200 && result.value?.runtimeId && (path === "/hosts/local/runtime" || result.value?.hostId === "local"))
+      result.value.reconnectScope = scope;
     if (result.value?.hostId === "local") result.value.hostId = id;
     if (Array.isArray(result.value?.members))
       for (const m of result.value.members)

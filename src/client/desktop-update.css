@@ -15,24 +15,97 @@
   flex-shrink: 0;
   white-space: nowrap;
   padding: 6px 10px;
-  margin-right: 6px;
-  margin-left: auto;
   background: none;
   border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--muted);
+  color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font: inherit;
+  font-size: max(12px, .90em);
+  min-height: 29px;
 }
 .harbor-update-button:hover {
   color: var(--accent);
 }
 .desktop-update-body {
-  padding: 0 24px 20px;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 14px 20px;
   line-height: 1.6;
 }
-.desktop-update-version {
-  font-weight: 600;
+.desktop-update-dialog .modal {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 490px);
+  overflow: hidden;
+}
+.desktop-update-dialog .modal-footer, .desktop-update-dialog .modal-header {
+  flex: none;
+}
+.desktop-update-heading, .desktop-update-servers li, .desktop-update-pending > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.desktop-update-heading h3, .desktop-update-workspaces h3 {
+  margin: 0;
+  font-size: 1em;
+}
+.desktop-update-heading span, .desktop-update-servers li > div span, .desktop-update-phase {
+  color: var(--muted);
+  font-size: .95em;
+}
+.desktop-update-body p {
+  margin: 4px 0;
+}
+.desktop-update-workspaces {
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 13px;
+}
+.desktop-update-servers {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+}
+.desktop-update-servers li {
+  flex-wrap: wrap;
+  padding: 5px 0;
+}
+.desktop-update-servers li > div {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
+.desktop-update-servers strong {
+  overflow-wrap: anywhere;
+}
+.desktop-update-servers small {
+  width: 100%;
+}
+.desktop-update-phase[data-phase="pending"], .desktop-update-phase[data-phase="error"] {
+  color: var(--accent);
+}
+.desktop-update-pending > div {
+  justify-content: flex-end;
+}
+.desktop-update-pending p {
+  margin-bottom: 8px;
+}
+.desktop-update-setup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-block: 8px 2px;
+}
+.desktop-update-setup select { min-width: 0; max-width: 100%; }
+.desktop-update-changes summary {
+  color: var(--muted);
+  cursor: pointer;
 }
 .desktop-update-body [role="status"] {
   display: flex;
@@ -41,15 +114,14 @@
 }
 .desktop-update-notes {
   padding-left: 20px;
-  max-height: 260px;
+  max-height: 180px;
   overflow: auto;
 }
 .desktop-update-notes li {
   margin: 6px 0;
 }
 .desktop-update-restart {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
+  padding-block: 4px;
   color: var(--muted);
   font-size: 13px;
 }

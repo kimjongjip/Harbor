@@ -10,6 +10,8 @@ export interface SavedManagedTab {
   provider: IdeChatProvider;
   conversationId?: string;
   nativeId?: string;
+  runtimeId?: string;
+  reconnectScope?: string;
   parentKey?: string;
   reviewOnly?: boolean;
   effort?: ChatEffort;
@@ -53,6 +55,8 @@ function normalize(raw: unknown): SavedTabs | undefined {
         /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]{0,159}$/.test(tab.model) && { model: tab.model }),
       ...(id(tab.conversationId) && { conversationId: tab.conversationId }),
       ...(id(tab.nativeId) && { nativeId: tab.nativeId }),
+      ...(id(tab.runtimeId) && { runtimeId: tab.runtimeId }),
+      ...(typeof tab.reconnectScope === "string" && /^[a-f0-9]{64}$/.test(tab.reconnectScope) && { reconnectScope: tab.reconnectScope }),
       ...(id(tab.parentKey) && { parentKey: tab.parentKey }),
       ...(tab.reviewOnly === true && { reviewOnly: true }),
       ...(!tab.conversationId && !tab.nativeId && !tab.reviewOnly && tab.permission!=="read-only" && tab.autoAccept===true && {autoAccept:true as const}),

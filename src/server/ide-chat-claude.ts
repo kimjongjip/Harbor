@@ -1,4 +1,5 @@
 import { managedClaudeServer, type ManagedPeerCall } from "./managed-peers.js";
+import { editResult, toolDescription, toolResult } from "./claude-history-items.js";
 import {attachTargets,claudeApprovalTargets} from "./managed-auto-accept.js";
 import { spawn } from "node:child_process";
 import { claudeWorkId } from "./terminal-work.js";
@@ -231,6 +232,8 @@ export class ClaudeChatMessages {
   private crew:TerminalAgent[]=[];
   private currentMessage = "";
   private blocks = new Map<string, string>();
+  private streamTools = new Map<string, {id:string; name:string; json:string}>();
+  private tools = new Map<string, MessageItem>();
   private hasAnswer = false;
   constructor(
     private readonly events: ClaudeChatEvents,
@@ -261,6 +264,20 @@ export class ClaudeChatMessages {
     });
     if(snapshot)this.events.usage?.({...snapshot,...(snapshot.costUsd!==null?{costSource:"api-estimate" as const}:{})});
   }
+  private tool(id:string, name:string, input?:unknown) {
+    if (!id || !name) return;
+    const fields = input && typeof input === "object" ? input as Record<string,unknown> : {};
+    const change = name === "Edit" ? [typeof fields.old_string === "string" && fields.old_string && "기존 내용\n"+fields.old_string,
+      typeof fields.new_string === "string" && fields.new_string && "변경 내용\n"+fields.new_string] :
+      name === "Write" ? [typeof fields.content === "string" && fields.content] : [];
+    const shown = [toolDescription({input}),...change].filter(Boolean).join("\n").slice(0,24000);
+    const row: MessageItem = {
+      id, toolUseId:id, kind: name === "Bash" || name === "PowerShell" ? "command" : "tool",
+      text:name, status:"started", detail:shown || this.tools.get(id)?.detail,
+    };
+    this.tools.set(id,row);
+    this.events.item(row);
+  }
   consume(raw: unknown) {
     const m = raw as any;
     if (!m || typeof m !== "object") return;
@@ -276,6 +293,27 @@ export class ClaudeChatMessages {
       if (e?.type === "message_start")
         this.currentMessage = string(e.message?.id) || this.requestId;
       const id = `${this.currentMessage || this.requestId}:${Number(e?.index) || 0}`;
+      const tool = this.streamTools.get(id);
+      if (e?.type === "content_block_start" && e.content_block?.type === "tool_use") {
+        const {id:toolId,name,input} = e.content_block;
+        if (typeof toolId === "string" && typeof name === "string") {
+          this.streamTools.set(id,{id:toolId,name,json:""});
+          this.tool(toolId,name,input);
+        }
+        return;
+      }
+      if (tool && e?.type === "content_block_delta" && e.delta?.type === "input_json_delta") {
+        tool.json = (tool.json + string(e.delta.partial_json)).slice(0,64000);
+        return;
+      }
+      if (tool && e?.type === "content_block_stop") {
+        this.streamTools.delete(id);
+        if (tool.json) {
+          try { this.tool(tool.id,tool.name,JSON.parse(tool.json)); }
+          catch { /* The following assistant block contains the complete tool input. */ }
+        }
+        return;
+      }
       if (
         e?.type === "content_block_start" &&
         e.content_block?.type === "text"
@@ -314,29 +352,38 @@ export class ClaudeChatMessages {
             status: "completed",
           });
         } else if (block.type === "tool_use") {
-          this.events.item({
-            id: string(block.id),
-            kind: block.name === "Bash" ? "command" : "tool",
-            text: string(block.name),
-            detail: detail(block.input),
-            status: "inProgress",
-          });
+          this.tool(string(block.id),string(block.name),block.input);
         }
       }
       if (m.error) throw new Error(`Claude: ${string(m.error)}`);
+    } else if (m.type === "tool_progress" && string(m.tool_use_id) && string(m.tool_name)) {
+      if (!this.tools.has(m.tool_use_id)) this.tool(m.tool_use_id,m.tool_name);
+      const row=this.tools.get(m.tool_use_id)!;
+      const elapsed = Number(m.elapsed_time_seconds);
+      if (Number.isFinite(elapsed) && elapsed >= 0)
+        this.events.item({...row,detail:[row.detail,`실행 중 · ${Math.floor(elapsed)}초`].filter(Boolean).join("\n")});
+    } else if (m.type === "system" && ["task_started","task_progress","task_notification"].includes(m.subtype) &&
+               string(m.task_id) && !m.ambient && !m.skip_transcript) {
+      const text=string(m.description) || string(m.summary);
+      if (text) this.events.item({id:"task:"+(string(m.run_id)||m.task_id),kind:"tool",text:text.slice(0,2000),
+        detail:[m.last_tool_name,m.summary !== text && m.summary].filter(v=>typeof v==="string" && v).join("\n").slice(0,24000),
+        status:m.subtype === "task_notification" ? m.status || "completed" : "inProgress"});
+    } else if (m.type === "tool_use_summary" && string(m.summary) && string(m.uuid)) {
+      this.events.item({id:m.uuid,kind:"notice",text:m.summary.slice(0,8000),status:"completed"});
     } else if (m.type === "user" && Array.isArray(m.message?.content)) {
-      for (const block of m.message.content)
-        if (block.type === "tool_result") {
+      const results = m.message.content.filter((block:any) => block?.type === "tool_result");
+      for (const block of results) {
+          if (!string(block.tool_use_id)) continue;
+          const patch = results.length === 1 && !block.is_error ? editResult(m.tool_use_result) : undefined;
           this.events.item({
             id: `${string(block.tool_use_id)}:result`,
-            kind: "tool",
-            text: "도구 결과",
-            detail:
-              typeof block.content === "string"
-                ? block.content
-                : detail(block.content),
+            toolUseId:block.tool_use_id, kind: "tool",
+            text: patch?.text || "도구 결과",
+            detail:(patch?.detail || toolResult(block)).slice(0,24000),
+            ...(patch?.format ? {format:patch.format} : {}),
             status: block.is_error ? "failed" : "completed",
           });
+          this.tools.delete(block.tool_use_id);
         }
     } else if (m.type === "result") {
       if (m.is_error || m.subtype !== "success")

@@ -200,11 +200,13 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         await page.locator(".ide-chat-message.assistant pre").innerText(),
         /const answer = 42/,
       );
-      await page.locator(".ide-chat-tool summary").click();
+      const savedWork=page.locator(".conversation-work");
+      await savedWork.locator(":scope > summary").click();
       assert.match(
-        await page.locator(".ide-chat-tool pre").innerText(),
+        await savedWork.locator(".transcript-output pre").innerText(),
         /synthetic tool output/,
       );
+      await savedWork.getByRole("button", {name:"작업 과정 접기"}).click();
 
       await input.fill("화면 변경 중 작성하던 초안");
       await page.evaluate(() => (window as any).setPresentation("terminal"));
@@ -232,8 +234,30 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       await page.setViewportSize({width:1200,height:800});
       await page.evaluate(()=>{
         const parent=(window as any).snapshots["created-1"];parent.status="running";parent.revision++;
+        parent.items.push(
+          {id:"progress-report",turnId:"live-work",kind:"assistant",phase:"commentary",text:"회귀 테스트를 실행하고 있습니다."},
+          {id:"progress-command",turnId:"live-work",kind:"command",text:"npm test -- parser",detail:"checking parser",status:"inProgress"},
+        );
       });
-      await page.locator(".ide-chat-progress").waitFor();
+      await transcript.getByText("회귀 테스트를 실행하고 있습니다.",{exact:true}).waitFor();
+      const currentWork=transcript.locator("[data-work-item=progress-command]");
+      await currentWork.getByText("checking parser",{exact:true}).waitFor();
+      await page.locator(".ide-chat-progress").getByText(/npm test -- parser/).waitFor();
+      await currentWork.evaluate(node=>{(window as any).currentWorkNode=node;});
+      await page.evaluate(()=>{
+        const parent=(window as any).snapshots["created-1"];
+        parent.items.at(-1).detail+="\nparser suite passed";parent.revision++;
+      });
+      await currentWork.getByText(/parser suite passed/).waitFor();
+      assert.ok(await currentWork.evaluate(node=>node===(window as any).currentWorkNode));
+      await page.screenshot({path:resolve(".cache/208-managed-running-work.png")});
+      await page.evaluate(()=>(window as any).setPresentation(undefined));
+      await page.locator("[data-work-item=progress-command] .transcript-output").getByText(/parser suite passed/).waitFor();
+      await page.evaluate(()=>(window as any).setPresentation("terminal"));
+      await transcript.getByRole("table").waitFor();
+      await page.evaluate(()=>{
+        const c=(window as any).snapshots["created-1"];c.items=c.items.filter((i:any)=>i.turnId!=="live-work");c.revision++;
+      });
       const initialCalls=(await posts()).length;
       await transcript.locator(".history-message.assistant table").evaluate(node=>{
         const range=document.createRange();range.selectNodeContents(node);
@@ -596,7 +620,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         fixture.snapshots["resumed-live-host-codex-live-codex"].revision++;
         fixture.nextStatus = "queued";
       });
-      await page.getByText("Codex가 작업 중입니다.", { exact: true }).waitFor();
+      await page.locator(".ide-chat-progress").getByText("다음 작업 기록 대기 중", { exact: true }).waitFor();
       await input.fill("작업 중인 같은 Codex에 질문합니다.");
       await send.click();
       await page

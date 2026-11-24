@@ -183,7 +183,9 @@ export class IdeLiveChats {
     const now = this.operations.now?.() ?? Date.now();
     const existing = this.cache.get(key);
     if (existing?.pending) return existing.pending;
-    if (existing && now - existing.at < 2000) {
+    const refreshMs = !cursor && binding.provider === "antigravity" &&
+      this.get(binding).status === "running" ? 600 : 2000;
+    if (existing && now - existing.at < refreshMs) {
       if (existing.error) throw existing.error;
       if (existing.value) return structuredClone(existing.value);
     }

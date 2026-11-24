@@ -1,40 +1,5 @@
 import type { MessageItem } from "../shared/types";
-import type { HistoryDetail } from "../shared/history";
-
-/** Older servers send a full timeline; compact responses carry each Q/A only once. */
-export function expandTimeline(
-  detail: Pick<
-    HistoryDetail,
-    "items" | "timeline" | "timelineIds" | "activity"
-  >,
-): MessageItem[] {
-  if (detail.timeline) return detail.timeline;
-  if (!detail.timelineIds) return detail.items;
-  const byId = new Map(
-    [...detail.items, ...(detail.activity || [])].map((item) => [
-      `${item.kind}:${item.id}`,
-      item,
-    ]),
-  );
-  const seen = new Set<string>();
-  const result: MessageItem[] = [];
-  for (const id of detail.timelineIds) {
-    const item = byId.get(id);
-    if (item && !seen.has(id)) {
-      result.push(item);
-      seen.add(id);
-    }
-  }
-  // Keep Q/A readable even if an older/proxy response lacks an order entry.
-  for (const item of detail.items) {
-    const id = `${item.kind}:${item.id}`;
-    if (!seen.has(id)) {
-      result.push(item);
-      seen.add(id);
-    }
-  }
-  return result;
-}
+export { expandTimeline } from "../shared/history";
 
 export interface ConversationTurn {
   id: string;

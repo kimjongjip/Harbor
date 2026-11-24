@@ -736,6 +736,12 @@ export class Hub extends EventEmitter {
         this.changed();
         break;
       case "turn/completed":
+        // Some app-server versions include the final public items only on the turn.
+        if (Array.isArray(p.turn.items)) for (const raw of p.turn.items.slice(-600)) {
+          if (!raw?.id) continue;
+          const row = normalizeItem(raw,p.turn.id);
+          if (row) upsertItem(s,{...row,status:row.status || "completed"});
+        }
         this.completedTurns.add(`${s.id}:${p.turn.id}`);
         if (this.completedTurns.size > 1000)
           this.completedTurns.delete(
@@ -763,6 +769,7 @@ export class Hub extends EventEmitter {
           this.emit("session-compacted", s);
         const item = normalizeItem(p.item, p.turnId);
         if (item) {
+          item.status ||= method === "item/started" ? "inProgress" : "completed";
           upsertItem(s, item);
           if (method === "item/started" && p.item?.type === "fileChange") {
             const actual = s.items.find(
@@ -778,6 +785,22 @@ export class Hub extends EventEmitter {
         break;
       case "item/commandExecution/outputDelta":
         appendDelta(s, p, true);
+        break;
+      case "item/fileChange/outputDelta":
+        appendDelta(s,p,true,"change");
+        break;
+      case "item/fileChange/patchUpdated": {
+        if (!p.itemId || !Array.isArray(p.changes)) return;
+        const row = normalizeItem({id:p.itemId,type:"fileChange",changes:p.changes,status:"inProgress"},p.turnId);
+        if (row) upsertItem(s,row);
+        break;
+      }
+      case "item/mcpToolCall/progress":
+        if (typeof p.message === "string" && p.message)
+          appendDelta(s,{...p,delta:"\n"+p.message},true,"tool");
+        break;
+      case "item/plan/delta":
+        appendDelta(s,p,false,"plan");
         break;
       case "turn/plan/updated":
         upsertItem(s, {
@@ -809,6 +832,8 @@ export class Hub extends EventEmitter {
         if (s.status !== "running") s.status = "idle";
         this.changed();
         break;
+      default:
+        return;
     }
     this.publish(s);
   }

@@ -78,7 +78,7 @@ export function ServerWorkspace({
     }
   }
   return (
-    <section>
+    <section data-workspace-settings tabIndex={-1} aria-label="서버에서 세션 유지">
       <strong>서버에서 세션 유지</strong>
       <p>서버 작업 공간에서 시작한 AI와 실험은 PC 연결을 끊어도 계속됩니다.</p>
       <div className="host-auth-row">

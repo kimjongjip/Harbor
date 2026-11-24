@@ -444,6 +444,56 @@ async function until(predicate: () => boolean) {
   assert.ok(predicate());
 }
 
+test("managed Codex publishes tools, patch updates, command output and commentary before completion", async t => {
+  const {chats, hub} = harness();
+  t.after(()=>chats.close());
+  const c = await create(chats);
+  const emit = (method:string, payload:object) =>
+    (hub as any).notification(host.id,{method,params:{threadId:c.nativeId,turnId:"running",...payload}});
+  emit("turn/started",{turn:{id:"running"}});
+  emit("item/started",{item:{id:"m",type:"mcpToolCall",server:"local",tool:"read",arguments:{path:"src/index.ts"}}});
+  emit("item/mcpToolCall/progress",{itemId:"m",message:"Reading project files"});
+  emit("item/started",{item:{id:"cmd",type:"commandExecution",command:"run tests"}});
+  emit("item/commandExecution/outputDelta",{itemId:"cmd",delta:"one passed"});
+  emit("item/fileChange/patchUpdated",{itemId:"edit",changes:[{path:"example.ts",diff:"+added"}]});
+  emit("item/started",{item:{id:"note",type:"agentMessage",phase:"commentary",text:""}});
+  emit("item/agentMessage/delta",{itemId:"note",delta:"중간 보고"});
+  await until(() => !((chats.snapshot(c.id).contentRevision||0) === (c.contentRevision||0)));
+  assert.equal(await chats.unchanged(c.id,c.runtimeId+":"+c.contentRevision,guard),false);
+  const active = await chats.read(c.id,guard);
+  assert.equal(active.status,"running");
+  assert.match(active.items.find(i=>i.id==="m")!.detail!,/src\/index.ts[\s\S]*Reading/);
+  assert.equal(active.items.find(i=>i.id==="cmd")!.detail,"one passed");
+  assert.match(active.items.find(i=>i.id==="edit")!.detail!,/\+added/);
+  assert.equal(active.items.find(i=>i.id==="note")!.text,"중간 보고");
+  assert.equal(active.items.find(i=>i.id==="note")!.phase,"commentary");
+  emit("item/completed",{item:{id:"m",type:"mcpToolCall",tool:"read",server:"local",result:{content:[{type:"text",text:"done"}]}}});
+  assert.equal((await chats.read(c.id,guard)).items.find(i=>i.id==="m")!.detail,"done");
+});
+
+test("workspace reconnect verifies generation and exact history, preserves review and never dispatches a prompt", async t => {
+  const directory = await mkdtemp(join(tmpdir(),"harbor-reconnect-"));
+  const first = harness({reservationDirectory:directory, runtimeId:"old-runtime"});
+  const next = harness({reservationDirectory:directory, runtimeId:"new-runtime"});
+  t.after(async () => {first.chats.close(); next.chats.close(); await rm(directory,{recursive:true,force:true});});
+  const original = await create(first.chats, "claude", {reviewOnly:true});
+  const input = {runtimeId:"new-runtime",previousRuntimeId:"old-runtime",conversationId:original.id,
+    provider:"claude" as const, nativeId:original.nativeId, reconnectScope:original.reconnectScope, reviewOnly:true, readOnly:true};
+  const recover = (options:typeof input) => next.chats.reconnect(host.id,options,"actor",guard);
+  await assert.rejects(recover({...input,reconnectScope:"c".repeat(64)}), /서버 연결/);
+  await assert.rejects(recover({...input,previousRuntimeId:"new-runtime"}), /찾을 수 없습니다/);
+  await assert.rejects(recover({...input,nativeId:"missing"}), /읽기 전용/);
+  const [a,b] = await Promise.all([recover(input), recover(input)]);
+  assert.equal(a.id,b.id);
+  assert.equal(a.nativeId,original.nativeId);
+  assert.equal(a.reviewOnly,true);
+  assert.equal(a.permission,"read-only");
+  assert.equal(a.runtimeId,"new-runtime");
+  assert.notEqual(a.id,original.id);
+  assert.equal(a.autoAccept,undefined);
+  assert.equal(next.calls.length,0);
+});
+
 test("chat controls validate the selected engine and apply model, effort and read-only policy to the next native turn", async () => {
   const {chats,calls}=harness({models:async()=>[{id:"fixture-codex",name:"Fixture",isDefault:true,efforts:["high","max"]}]});
   const view=await create(chats);

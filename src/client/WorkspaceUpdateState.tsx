@@ -55,7 +55,7 @@ export function WorkspaceUpdateState({status, inSettings = false}: {status:Works
   }[phase];
   return <div className="workspace-update-state" role="status">
     <strong>{label}</strong>{versions && <span>{versions}</span>}
-    {phase === "pending" && <p>{stagedVersion ? stagedVersion + " 설치 완료. " : ""}열린 터미널과 AI 프로세스 등 서버 작업이 종료되면 자동으로 적용됩니다.{inSettings && " 지금 적용하려면 호스트 PC의 서버 관리에서 선택하세요."}</p>}
+    {phase === "pending" && <p>{stagedVersion ? stagedVersion + " 설치 완료. " : ""}열린 작업이 끝나면 적용됩니다.{inSettings && " 지금 적용하려면 호스트 PC 상단의 업데이트를 여세요."}</p>}
     {phase === "error" && <p>{status.detail || "서버 관리에서 SSH 연결을 확인하세요."}</p>}
   </div>;
 }

@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { MessageItem } from "../../shared/types";
 import { providerName } from "../../shared/agent-provider";
 import type { IdeChatConversation } from "../../shared/ide-chat";
@@ -17,10 +17,12 @@ export const ManagedTranscript = memo(function ManagedTranscript({
   cwd,
   nativeId,
   running,
+  waiting = false,
+  renderMessage,
 }: Pick<
   IdeChatConversation,
   "items" | "provider" | "hostId" | "cwd" | "nativeId"
-> & { running: boolean }) {
+> & { running: boolean; waiting?: boolean; renderMessage?: (item: MessageItem) => ReactNode }) {
   const [folds, setFolds] = useState<Record<string, boolean>>({});
   const previous = useRef(new Map<string, MessageItem>());
   // A status update may deliver a fresh full snapshot. Keep unchanged Markdown,
@@ -61,7 +63,7 @@ export const ManagedTranscript = memo(function ManagedTranscript({
     <div className="terminal-conversation-document managed-transcript">
       {data.turns.map((turn, index) => {
         const live =
-          running && index === data.turns.length - 1 && !turn.complete;
+          (running || waiting) && index === data.turns.length - 1 && !turn.complete;
         const state = live ? "live" : "done";
         return (
           <section
@@ -77,7 +79,7 @@ export const ManagedTranscript = memo(function ManagedTranscript({
                     key={section.key}
                     items={section.items}
                     state={state}
-                    busy={live}
+                    busy={live && running}
                     open={folds[key] ?? live}
                     onToggle={(open) =>
                       setFolds((prior) => ({ ...prior, [key]: open }))
@@ -87,6 +89,8 @@ export const ManagedTranscript = memo(function ManagedTranscript({
                 );
               }
               const item = section.items[0];
+              if (renderMessage && (item.kind === "user" || item.kind === "assistant"))
+                return <div key={section.key}>{section.items.map(renderMessage)}</div>;
               const displayed =
                 item.kind === "user" && !item.origin
                   ? displayMessage(item)

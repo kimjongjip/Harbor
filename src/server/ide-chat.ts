@@ -23,8 +23,8 @@ import type {
   IdeChatReceipt,
   IdeChatSend,
 } from "../shared/ide-chat.js";
-import type { HistoryDetail, HistoryPage } from "../shared/history.js";
-import type { Approval, HostConfig, SessionView } from "../shared/types.js";
+import { expandTimeline, type HistoryDetail, type HistoryPage } from "../shared/history.js";
+import type { Approval, HostConfig, MessageItem, SessionView } from "../shared/types.js";
 import type { Hub } from "./hub.js";
 import {
   type IdeLiveBinding,
@@ -205,6 +205,12 @@ const answerSchema = z
   })
   .strict();
 const runtimeSchema = z.object({ runtimeId: idSchema }).strict();
+const reconnectSchema = z.object({
+  conversationId: idSchema, nativeId: idSchema, provider: providerSchema,
+  previousRuntimeId: idSchema.optional(), runtimeId: idSchema,
+  reconnectScope: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  reviewOnly: z.boolean().optional(), readOnly: z.boolean().optional(),
+}).strict();
 const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const hostKey = (host: HostConfig) =>
@@ -472,7 +478,7 @@ export class IdeChats {
         }),
       );
     // Never return mutable receipt/approval resolver objects or credentials.
-    return structuredClone({...managed.view,supportsPartialSettings:true});
+    return structuredClone({...managed.view,reconnectScope:managed.hostKey,supportsPartialSettings:true,nativeActivityTimeline:true});
   }
   async unchanged(id: string, version: string | undefined, guard: Guard) {
     if (!version) return false;
@@ -572,20 +578,19 @@ export class IdeChats {
     const view = managed.view;
     this.reconcileLivePending(managed, page.items);
     const pending = managed.livePending;
-    const items = new Map(
-      view.items
-        .filter((item) => !item.id.startsWith("harbor-live-pending-"))
-        .map((item) => [item.id, item]),
-    );
-    for (const item of page.items) items.set(item.id, item);
+    const latest = expandTimeline(page);
+    const key = (item:MessageItem) => item.kind + ":" + item.id;
+    const covered = new Set(latest.map(key));
+    const items = view.items.filter(item => !covered.has(key(item)) && !item.id.startsWith("harbor-live-pending-"));
+    items.push(...latest);
     for (const [id, submission] of pending || [])
-      items.set(id, {
+      items.push({
         id,
         kind: "user",
         text: submission.text,
         status: "queued",
       });
-    view.items = [...items.values()];
+    view.items = items;
     view.title = page.thread.title || view.title;
     view.cwd = page.thread.cwd || view.cwd;
     // Older loaded messages stay in this view across live polls, so a notice
@@ -693,6 +698,43 @@ export class IdeChats {
         this.creations.delete(key);
       throw error;
     }
+  }
+  async reconnect(hostId: string, input: z.infer<typeof reconnectSchema>, actor: string, guard: Guard) {
+    await guard();
+    const scope = hostKey(this.dependencies.host(hostId));
+    if (input.runtimeId !== this.dependencies.runtimeId || (input.reconnectScope && input.reconnectScope !== scope))
+      throw new IdeChatError("서버 연결이 달라졌습니다. 대화 기록에서 확인하세요.", 409);
+    const match = (view: IdeChatConversation) =>
+      view.hostId === hostId && view.provider === input.provider && view.nativeId === input.nativeId &&
+      (!input.reviewOnly || view.reviewOnly === true) &&
+      (!input.readOnly || view.permission === "read-only" || view.reviewOnly === true);
+    const existing = this.conversations.get(input.conversationId);
+    if (existing) {
+      if (!match(existing.view) || (input.previousRuntimeId && input.previousRuntimeId !== existing.view.runtimeId))
+        throw new IdeChatError("이전 탭의 연결 정보를 확인할 수 없습니다.", 409);
+      return this.read(input.conversationId, guard);
+    }
+    if (input.previousRuntimeId === this.dependencies.runtimeId)
+      throw new IdeChatError("현재 서버에서 대화를 찾을 수 없습니다.", 404);
+    const checked = async () => {
+      await guard();
+      if (hostKey(this.dependencies.host(hostId)) !== scope)
+        throw new IdeChatError("서버 계정이 변경되었습니다.", 409);
+      if (input.reviewOnly || input.readOnly) {
+        const saved = this.journal?.read({hostId,hostKey:scope,provider:input.provider,nativeId:input.nativeId});
+        if (!saved || (input.reviewOnly && !saved.reviewOnly) ||
+          (!saved.reviewOnly && saved.permission !== "read-only") ||
+          this.dependencies.live?.find(hostId,input.provider,input.nativeId))
+          throw new IdeChatError("저장된 읽기 전용 권한을 확인할 수 없습니다.", 409);
+      }
+    };
+    await checked();
+    const view = await this.create({
+      hostId, provider:input.provider, resumeId:input.nativeId,
+      requestId:"restore-" + fingerprint([scope,input.conversationId,input.provider,input.nativeId]),
+    }, actor, checked);
+    if (!match(view)) throw new IdeChatError("원래 대화와 연결 정보가 일치하지 않습니다.", 409);
+    return view;
   }
   private async createManaged(
     input: IdeChatCreate,
@@ -803,7 +845,7 @@ export class IdeChats {
         {effort:input.effort,autoAccept:input.autoAccept??(input.permission==="auto-accept")},
       );
       live = this.dependencies.live.find(hostId, provider, id);
-      if (!live)
+      if (!live || (input.resumeId && live.nativeId !== input.resumeId))
         throw new IdeChatError("Antigravity 세션 연결을 확인하세요.", 409);
     }
     if (live && this.dependencies.live) {
@@ -851,7 +893,7 @@ export class IdeChats {
       await guard();
       if (
         history.thread.id !== input.resumeId ||
-        history.thread.hostId !== hostId
+        history.thread.hostId !== hostId || (history.thread.provider && history.thread.provider !== provider)
       )
         throw new IdeChatError("대화 기록의 서버·ID가 요청과 다릅니다.", 409);
     }
@@ -931,7 +973,7 @@ export class IdeChats {
       observedModel:session?.observedModel || restoredModel,
       observedEffort: session?.observedEffort,
       status: session?.status || "idle",
-      items: session?.items || history?.items || [],
+      items: session?.items.length ? session.items : history ? expandTimeline(history) : [],
       approvals: session?.approvals || [],
       historyCursor: session?.historyCursor || history?.nextCursor || null,
       historyNotice: history?.notice,
@@ -1780,9 +1822,9 @@ export class IdeChats {
             );
       await guard();
       this.binding(managed, runtimeId);
-      const ids = new Set(view.items.map((item) => item.id));
+      const ids = new Set(view.items.map((item) => item.kind+":"+item.id));
       view.items = [
-        ...page.items.filter((item) => !ids.has(item.id)),
+        ...expandTimeline(page).filter((item) => !ids.has(item.kind+":"+item.id)),
         ...view.items,
       ];
       view.historyCursor = page.nextCursor;
@@ -1793,6 +1835,10 @@ export class IdeChats {
     this.touch(managed);
     await guard();
     return this.snapshot(id);
+  }
+  ownsLiveTerminal(terminalId:string, nativeId:string) {
+    return [...this.conversations.values()].some(c => c.liveBinding?.terminalId === terminalId &&
+      c.view.nativeId === nativeId && c.view.provider === "antigravity");
   }
   hasActiveWork() {
     return (
@@ -1805,7 +1851,9 @@ export class IdeChats {
           chat.pending.size ||
           chat.livePending?.size ||
           chat.run ||
-          ["running", "waiting"].includes(chat.view.status),
+          ["running", "waiting"].includes(
+            chat.liveBinding && this.dependencies.live ? this.dependencies.live.get(chat.liveBinding).status : chat.view.status
+          ),
       )
     );
   }
@@ -1882,6 +1930,15 @@ export function createIdeChatRouter(
         ...(terminalId ? { terminalId } : {}),
       });
     };
+  router.get("/hosts/:hostId/runtime", route(async req => {
+    const id = idSchema.parse(req.params.hostId);
+    await guard(req, id, false)();
+    return { runtimeId: chats.dependencies.runtimeId, reconnectScope: hostKey(chats.dependencies.host(id)) };
+  }));
+  router.post("/hosts/:hostId/reconnect", route(async req => {
+    const id = idSchema.parse(req.params.hostId);
+    return chats.reconnect(id, reconnectSchema.parse(req.body), options.actor(req), guard(req,id,true));
+  }));
   router.get("/hosts/:hostId/folders",route(async req=>{
     const hostId=idSchema.parse(req.params.hostId);
     const {path,list}=z.object({path:z.string().max(4096).regex(/^[^\0\r\n]*$/).optional(),list:z.enum(["0","1"]).default("1")}).parse(req.query);

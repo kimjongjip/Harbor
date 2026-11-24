@@ -100,6 +100,9 @@ export class Terminals extends EventEmitter {
     const entry = this.entries.get(id);
     return entry && !entry.info.exited ? entry.process.monitorPid : undefined;
   }
+  detachesOnShutdown(id: string) {
+    return !!this.entries.get(id)?.durable;
+  }
   private historyRoot?: string;
   private opening = 0;
   private sequence = new Map<string, number>();

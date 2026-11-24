@@ -152,7 +152,14 @@ test(
       `
 const rl=require('node:readline').createInterface({input:process.stdin});
 const fs=require('node:fs'),sid=${JSON.stringify(id)};let prompting;
-const send=v=>console.log(JSON.stringify({jsonrpc:'2.0',...v}));
+const send=v=>{
+  if(v.method==='session/request_permission'){
+    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Checking the fixture'}});
+    update({sessionUpdate:'tool_call',toolCallId:'edit-1',kind:'edit',title:'Edit fixture',locations:[{path:'fixture-edit.txt'}]});
+    update({sessionUpdate:'tool_call_update',toolCallId:'edit-1',content:[{type:'content',content:{type:'text',text:'Preparing the replacement'}}]});
+  }
+  console.log(JSON.stringify({jsonrpc:'2.0',...v}));
+};
 const update=u=>send({method:'session/update',params:{sessionId:sid,update:u}});
 function finish(req){update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'## fixture answer'}});update({sessionUpdate:'usage_update',used:250,size:1000,cost:{amount:1.5,currency:'USD'}});send({id:req,result:{stopReason:'end_turn'}})}
 rl.on('line',s=>{const m=JSON.parse(s);if(m.method==='initialize')send({id:m.id,result:{protocolVersion:1}});
@@ -168,7 +175,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
     let nativeApprovals = 0,
       registered = false,
       registrationNeeded = false,
-      configPending = false;
+      configPending = false, finishForUpdate = false;
     let registrations = 0;
     const applied: any[] = [];
     let releaseGrant: undefined | (() => void);
@@ -228,6 +235,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
         res.end(
           JSON.stringify({
             sessionId: id,
+            finishForUpdate,
             configPending,
             configRegistrationRequired: registrationNeeded,
             messages:
@@ -302,13 +310,21 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       assert.equal(states.includes("waiting"), false);
       proc.stdin.write("\r");
       await wait(() => states.at(-1) === "waiting");
+      const openHistory = new AntigravityHistory(journal);
+      await wait(async () => {
+        const {items} = await openHistory.read({id:"local",kind:"local"} as HostConfig, undefined, id);
+        const progress = items.filter(i => i.turnStatus === "inProgress");
+        return progress.some(i => i.text === "Checking the fixture" && i.phase === "commentary") &&
+          progress.filter(i => i.text === "Edit fixture" && i.detail?.includes("Preparing the replacement") &&
+            i.detail.includes("fixture-edit.txt")).length === 1;
+      });
       proc.stdin.write("/approve 1\r");
       await wait(() => states.at(-1) === "idle");
       const history = new AntigravityHistory(journal),
         host = { id: "local", kind: "local" } as HostConfig;
       const detail = await history.read(host, undefined, id);
       assert.equal(
-        detail.items.filter((i) => i.kind === "assistant").length,
+        detail.items.filter((i) => i.kind === "assistant" && i.phase === "final_answer").length,
         2,
       );
       assert.ok(
@@ -327,11 +343,14 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       await wait(() => nativeApprovals === 1 && states.at(-1) === "idle");
       proc.stdin.write("auto-race-approve-fixture\r");
       await wait(() => nativeApprovals === 2 && !!releaseGrant);
+      finishForUpdate = true;
+      await new Promise(r => setTimeout(r, 180));
+      assert.equal(proc.exitCode, null, "an update cannot close a pending approval");
       proc.stdin.write("/deny\r");
       await wait(() => states.at(-1) === "idle");
       releaseGrant!();
-      proc.stdin.write("/exit\r");
       await wait(() => proc.exitCode !== null);
+      finishForUpdate = false;
       states.length = 0;
       proc = start(true);
       proc.stdout.resume();
@@ -375,7 +394,11 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       proc.stdin.write("/exit\r");
       await wait(() => proc.exitCode !== null);
     } finally {
-      proc.kill();
+      if (proc.exitCode === null && proc.signalCode === null) {
+        const stopped = once(proc,"exit");
+        proc.stdin.write("/exit\r");
+        await stopped;
+      }
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
       await rm(dir, { recursive: true, force: true });

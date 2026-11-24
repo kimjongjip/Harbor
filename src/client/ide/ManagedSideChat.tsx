@@ -5,6 +5,8 @@ import type {
 } from "../../shared/ide-chat";
 import { providerName } from "../../shared/agent-provider";
 import { ApprovalCard } from "./ChatApproval";
+import { ManagedActivity } from "./ManagedActivity";
+import { ManagedTranscript } from "./ManagedTranscript";
 import { TerminalUsageBar } from "../TerminalUsageBar";
 import { Markdown } from "../RichMarkdown";
 import { typedPrompt } from "../user-origin";
@@ -18,7 +20,7 @@ import type { IdeChatRequest } from "./IdeChatPanel";
 export interface SideChatState {
   open: boolean;
   storageScope?: string;
-  recover?: { id: string; nativeId: string; provider: "claude" | "codex" };
+  recover?: { id: string; nativeId: string; provider: "claude" | "codex"; runtimeId?: string; reconnectScope?: string };
   provider: "claude" | "codex";
   draft: string;
   quote?: string;
@@ -54,6 +56,12 @@ export function sideStorageKey(
   nativeId: string,
 ) {
   return JSON.stringify(["side", windowScope, area, provider, nativeId]);
+}
+function rememberChild(scope: string | undefined, child: IdeChatConversation) {
+  if (!scope) return;
+  const {id, nativeId, provider, runtimeId, reconnectScope} = child;
+  try { localStorage.setItem("harbor.side.v1."+scope,JSON.stringify({id,nativeId,provider,runtimeId,reconnectScope})); }
+  catch { /* In-memory binding remains available when storage is unavailable. */ }
 }
 function restore(state: SideChatState, scope: string) {
   if (state.storageScope === scope) return;
@@ -185,20 +193,37 @@ function SidePane({
     if (!active || !state.recover || child) return;
     const saved = state.recover,
       controller = new AbortController();
-    void sideRequest<IdeChatConversation>(
+    let rebound = false;
+    const read = sideRequest<IdeChatConversation>(
       request,
       "/conversations/" + encodeURIComponent(saved.id),
       undefined,
       AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-    )
+    );
+    void read.catch(async error => {
+      if (controller.signal.aborted || (error as {status?:number}).status !== 404 ||
+          !parent.reconnectScope || saved.runtimeId === parent.runtimeId ||
+          (saved.reconnectScope && saved.reconnectScope !== parent.reconnectScope)) throw error;
+      const next = await sideRequest<IdeChatConversation>(request,
+        "/hosts/"+encodeURIComponent(parent.hostId)+"/reconnect", {
+          nativeId:saved.nativeId, conversationId:saved.id, provider:saved.provider,
+          previousRuntimeId:saved.runtimeId, runtimeId:parent.runtimeId, reconnectScope:parent.reconnectScope,
+          reviewOnly:true, readOnly:true,
+        }, AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]));
+      if (next.runtimeId !== parent.runtimeId || next.reconnectScope !== parent.reconnectScope)
+        throw Error("옆 대화의 서버 연결이 달라졌습니다.");
+      rebound = true;
+      return next;
+    })
       .then((c) => {
-        if (controller.signal.aborted) return;
-        if (c.id !== saved.id || c.nativeId !== saved.nativeId)
+        if (controller.signal.aborted || state.recover !== saved) return;
+        if ((!rebound && c.id !== saved.id) || c.nativeId !== saved.nativeId)
           throw Error("이전 옆 대화의 ID를 확인할 수 없습니다.");
         validChild(parent, state, c);
         state.recover = undefined;
         state.error = undefined;
         state.readError = undefined;
+        if (rebound) rememberChild(state.storageScope,c);
         repaint();
       })
       .catch(() => {
@@ -239,6 +264,7 @@ function SidePane({
                 id: child.id,
                 nativeId: child.nativeId,
                 provider: state.provider,
+                runtimeId:child.runtimeId, reconnectScope:child.reconnectScope,
               };
               state.child = undefined;
             }
@@ -326,17 +352,7 @@ function SidePane({
           },
         );
         validChild(parent, state, c);
-        if (state.storageScope)
-          try {
-            localStorage.setItem(
-              "harbor.side.v1." + state.storageScope,
-              JSON.stringify({
-                id: c.id,
-                nativeId: c.nativeId,
-                provider: c.provider,
-              }),
-            );
-          } catch {}
+        rememberChild(state.storageScope,c);
         repaint();
       }
       const c = state.child!,
@@ -423,12 +439,10 @@ function SidePane({
             n.scrollHeight - n.scrollTop - n.clientHeight < 36;
         }}
       >
-        {child?.items
-          .filter(
-            (i) =>
-              typedPrompt(i) || i.kind === "assistant" || i.kind === "notice",
-          )
-          .map((i) => (
+        {child && <ManagedTranscript key={child.id} hostId={child.hostId} cwd={child.cwd}
+          nativeId={child.nativeId} provider={child.provider} running={child.status === "running"} waiting={child.status === "waiting"}
+          items={child.items.filter(i => i.kind !== "user" || typedPrompt(i))}
+          renderMessage={(i) => (
             <article key={i.kind + ":" + i.id}>
               <b>
                 {i.kind === "user"
@@ -456,7 +470,7 @@ function SidePane({
                 </p>
               )}
             </article>
-          ))}
+          )}/>}
         {child?.error && <p role="alert">{child.error}</p>}
       </div>
       {child?.approvals.map((approval) => (
@@ -471,9 +485,8 @@ function SidePane({
       ))}
       {running && (
         <div className="side-chat-status">
-          <small role="status">
-            {child?.status === "waiting" ? "확인 대기" : "응답 중…"}
-          </small>
+            {child?.status === "waiting" ? <small role="status">확인 대기</small> :
+              child && <ManagedActivity items={child.items} cwd={child.cwd} preview/>}
           <button
             type="button"
             disabled={state.stopping}

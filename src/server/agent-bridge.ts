@@ -279,6 +279,7 @@ const tools = [
 
 /** Stateless MCP Streamable HTTP, with a distinct capability token per terminal. */
 export class AgentBridge {
+  workspaceHandoff?: (terminalId: string, nativeId: string) => boolean;
   readonly handle: Router;
   readonly permissionHandle: Router;
   readonly claudeHandle: Router;
@@ -453,6 +454,9 @@ export class AgentBridge {
             events.sessionId === query.sessionId && !this.acpSettings.registered(credential.terminalId, query.sessionId);
           res.json({
             ...events,
+            ...(query.sessionId && events.sessionId === query.sessionId && !events.messages.length &&
+              events.runtime?.kind === "antigravity" && events.runtime.state === "idle" &&
+              this.workspaceHandoff?.(credential.terminalId, query.sessionId) && { finishForUpdate: true }),
             ...(this.acpSettings.pending(credential.terminalId,query.sessionId) && {configPending:true}),
             ...(registrationNeeded && {configRegistrationRequired:true}),
           });

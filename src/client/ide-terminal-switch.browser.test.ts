@@ -308,6 +308,16 @@ test(
       delete env.ELECTRON_RUN_AS_NODE;
       desktop = await _electron.launch({ args: [main], env });
       const page = await desktop.firstWindow();
+      const globalUpdate = page.locator(".harbor-topbar").getByRole("button", {name:"Harbor 업데이트"});
+      const checkUpdateLocation = async () => {
+        await globalUpdate.waitFor();
+        assert.equal(await page.getByRole("button", {name:"Harbor 업데이트"}).count(), 1);
+        assert.ok(await globalUpdate.evaluate(button => {
+          const box = button.getBoundingClientRect();
+          return box.left >= 0 && box.right <= innerWidth &&
+            button.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+        }), "visible text update entry is accessible in the top bar");
+      };
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page
@@ -315,6 +325,11 @@ test(
         .getByText(/UNSENT one/)
         .waitFor();
       const pane = page.locator('[data-terminal-id="one"]');
+      await checkUpdateLocation();
+      const sidebarToggle = page.locator(".harbor-topbar .sidebar-toggle");
+      await sidebarToggle.click();
+      await checkUpdateLocation();
+      await sidebarToggle.click();
       await pane.locator(".terminal-usage").waitFor();
       await pane.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("abc");
@@ -438,6 +453,7 @@ test(
           500,
       );
       assert.ok((await explorer.boundingBox())!.width < preferredWidth);
+      await checkUpdateLocation();
       assert.ok(
         (await page.locator(".ide-main").boundingBox())!.width >= 239,
         "Narrow IDE retains usable editor space",
@@ -616,6 +632,7 @@ test(
       );
       await page.getByRole("button", { name: "AI 대화", exact: true }).click();
       const managed = page.locator(".managed-chat-workspace");
+      await checkUpdateLocation();
       const emptyRail = managed.getByRole("complementary", { name: "Codex 컨텍스트 사용량" });
       await emptyRail.getByText("Harbor", { exact: true }).waitFor();
       await emptyRail.getByText("대화를 시작하면 표시됩니다.", { exact: true }).waitFor();
@@ -890,6 +907,15 @@ test(
       await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r()))));
       assert.equal(await managed.isVisible(),true,"delayed socket inventory preserves managed chat");
       assert.equal(await composer.inputValue(),"Keep typing while the startup terminal connects");
+      await page.route("**/api/update/workspaces", route => route.fulfill({json:{targetVersion:"2.0.8",hosts:[]}}));
+      await globalUpdate.click();
+      await page.getByRole("button",{name:"서버 작업 공간 설정",exact:true}).click();
+      const workspaceSettings = page.getByRole("region",{name:"서버에서 세션 유지",exact:true});
+      await workspaceSettings.waitFor();
+      assert.ok(await workspaceSettings.evaluate(section=>{
+        const rect=section.getBoundingClientRect();
+        return document.activeElement === section && rect.top < innerHeight && rect.bottom > 0;
+      }), "setup goes directly to the saved SSH server's visible, focused workspace settings");
       assert.deepEqual(errors, []);
     } finally {
       await desktop

@@ -67,6 +67,29 @@ function events(items: MessageItem[] = []): ClaudeChatEvents {
     native() {},
   };
 }
+test("SDK streams an in-progress tool and its public arguments before the assistant or result frame", () => {
+  const items:MessageItem[] = [];
+  const parser = new ClaudeChatMessages(events(items),"request","native");
+  const stream = (event:unknown) => parser.consume({type:"stream_event",session_id:"native",event});
+  stream({type:"message_start",message:{id:"reply"}});
+  stream({type:"content_block_start",index:0,content_block:{type:"tool_use",id:"read",name:"Read",input:{}}});
+  assert.equal(items[0].text,"Read");
+  assert.equal(items[0].status,"started");
+  stream({type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"file_path":"sample.ts","token":"secret"}'}});
+  stream({type:"content_block_stop",index:0});
+  assert.equal(items[0].detail,"file_path: sample.ts");
+  parser.consume({type:"tool_progress",session_id:"native",tool_use_id:"read",tool_name:"Read",elapsed_time_seconds:12});
+  assert.match(items[0].detail!,/sample.ts[\s\S]*12초/);
+  stream({type:"content_block_start",index:1,content_block:{type:"text",text:""}});
+  stream({type:"content_block_delta",index:1,delta:{type:"text_delta",text:"중간 보고"}});
+  parser.consume({type:"user",session_id:"native",message:{content:[{type:"tool_result",tool_use_id:"read",content:[
+    {type:"text",text:"public result"},{type:"image",data:"binary"},
+  ]}]}});
+  assert.deepEqual(items.map(item=>item.text),["Read","중간 보고","도구 결과"]);
+  assert.equal(items[2].toolUseId,"read");
+  assert.equal(items[2].detail,"public result");
+  assert.equal(items[1].status,"inProgress");
+});
 async function tick() {
   await new Promise((resolve) => setImmediate(resolve));
 }

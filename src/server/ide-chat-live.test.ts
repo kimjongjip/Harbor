@@ -28,6 +28,20 @@ const host: HostConfig = {
   createdAt: 0,
 };
 const noop = () => {};
+test("bound native conversations use the ordered work timeline, including subsequent progress with the same item ID", async t => {
+  const h=harness("claude");
+  t.after(()=>h.chats.close());
+  h.page.activity=[{id:"s",kind:"command",text:"run tests",detail:"starting",toolUseId:"step",status:"started"}];
+  h.page.timelineIds=["user:q1","command:s","assistant:a1"];
+  const initial=await h.open();
+  assert.deepEqual(initial.items.map(x=>x.id),["q1","s","a1"]);
+  h.page.activity[0].detail="two tests passed";
+  h.page.timeline=[h.page.items[0],h.page.activity[0],h.page.items[1]];
+  h.tick();
+  const current=await h.chats.read(initial.id,noop);
+  assert.deepEqual(current.items.map(x=>x.id),["q1","s","a1"]);
+  assert.equal(current.items[1].detail,"two tests passed");
+});
 function harness(provider: "codex" | "claude" | "antigravity" = "codex") {
   const terminal: TerminalInfo = {
     id: "terminal",

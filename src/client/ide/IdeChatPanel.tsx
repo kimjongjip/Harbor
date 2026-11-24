@@ -51,6 +51,7 @@ import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from
 import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
 import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
+import { ManagedActivity } from "./ManagedActivity";
 import {ChatFolderPicker,loadChatFolders} from "./ChatFolderPicker";
 import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSettingsValue} from "./ChatSettings";
 import { Markdown } from "../RichMarkdown";
@@ -106,6 +107,9 @@ interface ChatDraft {
   area?: string;
   restoreId?: string;
   restoreNative?: string;
+  restoreRuntime?: string;
+  reconnectScope?: string;
+  failedRecoveryRuntime?: string;
   restoreTitle?: string;
   migrateLegacy?: boolean;
   images?: AttachedImage[];
@@ -161,24 +165,6 @@ const ChatItem = memo(
         </article>
       );
     const displayed = displayMessage(item);
-    if (item.kind !== "user" && item.kind !== "assistant")
-      return (
-        <details className="ide-chat-tool">
-          <summary>
-            {item.kind === "command"
-              ? "명령 실행"
-              : item.kind === "change"
-                ? "파일 변경"
-                : "작업 기록"}{" "}
-            · {item.text.slice(0, 90)}{" "}
-            {item.status === "inProgress" ? "· 실행 중" : ""}
-          </summary>
-          <pre>
-            {item.text}
-            {item.detail ? `\n${item.detail}` : ""}
-          </pre>
-        </details>
-      );
     return (
       <article className={`ide-chat-message ${item.kind}`}>
         <strong>
@@ -304,7 +290,7 @@ export default function IdeChatPanel({
         if(fallback && writeManagedTabDraft(tabStoreKey(scopeHost),t.key,fallback)) saveDraft(rememberScope,legacy,undefined,"");
         const target:ChatDraft={key:t.key,area:scopeHost,hostId,provider:t.provider,createRequestId:crypto.randomUUID(),sending:false,
           cwd:t.nativeId||t.conversationId ? "" : readDraftFolder(tabStoreKey(scopeHost),t.key),model:t.model||"",draft:persisted ?? fallback,
-          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,autoAccept:t.autoAccept};
+          restoreId:t.conversationId,restoreNative:t.nativeId,restoreRuntime:t.runtimeId,reconnectScope:t.reconnectScope,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,autoAccept:t.autoAccept};
         entries.current.set(t.key,target);
         selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
       }
@@ -448,7 +434,8 @@ export default function IdeChatPanel({
       const open=[...entries.current.values()].filter(t=>t.area===area);
       const data={selected:selectedByHost.current.get(area)||open[0]?.key||"",tabs:open.map((t):SavedManagedTab=>({
         key:t.key,provider:t.provider,title:t.conversation?.title?.trim().slice(0,160)||t.restoreTitle,conversationId:t.conversation?.id||t.restoreId,nativeId:t.conversation?.nativeId||t.restoreNative,
-        parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,
+        runtimeId:t.conversation?.runtimeId||t.restoreRuntime,reconnectScope:t.conversation?.reconnectScope||t.reconnectScope,
+        parentKey:t.parentKey,reviewOnly:t.conversation?.reviewOnly||t.reviewOnly,effort:t.effort,permission:t.conversation?.permission??t.permission,
         ...(!t.conversation&&!t.restoreId ? {model:t.model,...(!t.createAttempt && !t.sending && t.autoAccept ? {autoAccept:true as const} : {})} : {})}))};
       const signature=JSON.stringify(data);
       if(writtenTabs.current.get(area)!==signature){writtenTabs.current.set(area,signature);writeManagedTabs(tabStoreKey(area),data);}
@@ -459,17 +446,105 @@ export default function IdeChatPanel({
     if(!active || !multiTabs || !view.restoreId || view.conversation || view.historyPaused)return;
     const target=view, expectedId=view.restoreId, expectedNative=view.restoreNative, controller=new AbortController();
     void call<IdeChatConversation>("/conversations/"+encodeURIComponent(expectedId),undefined,controller.signal).then(c=>{
-      if(controller.signal.aborted || !entries.current.has(target.key))return;
+      if(controller.signal.aborted || !entries.current.has(target.key) || target.restoreId!==expectedId || target.conversation)return;
       if(c.id!==expectedId || (expectedNative && c.nativeId!==expectedNative))throw Error("복원할 대화 ID가 달라졌습니다.");
+      if ((target.reviewOnly && !c.reviewOnly) || (target.permission === "read-only" && !c.reviewOnly && c.permission !== "read-only") ||
+          (target.reconnectScope && c.reconnectScope !== target.reconnectScope)) throw Error("원래 탭의 권한 또는 서버 연결이 변경되었습니다.");
       accept(target,c);
     }).catch(()=>{
-      if(controller.signal.aborted || !entries.current.has(target.key))return;
+      if(controller.signal.aborted || !entries.current.has(target.key) || target.restoreId!==expectedId || target.conversation)return;
       target.historyRetryId=expectedNative; target.historyPaused=true;
       target.notice="연결을 복원하려면 기록 다시 불러오기를 누르세요.";
       repaint();
     });
     return ()=>controller.abort();
   },[active,multiTabs,view.key,view.restoreId,view.historyPaused,request]);
+  // Reattach handles after a new worker starts. Closed tabs, another host and in-flight
+  // submissions can't adopt a late response. Reconnect never includes drafts or grants.
+  const recoverTabs = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!multiTabs || !active || !hostId) return;
+    const controller = new AbortController();
+    let checking = false;
+    const pollSignal = () => AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
+    const inspect = async () => {
+      if (checking || controller.signal.aborted || document.hidden) return;
+      checking = true;
+      try {
+        const tabs = [...entries.current.values()].filter(t => t.area === scopeHost && (t.conversation || t.restoreNative));
+        if (!tabs.length) return;
+        const route = "/hosts/" + encodeURIComponent(hostId);
+        const runtime = await call<{runtimeId:string;reconnectScope:string}>(route + "/runtime", undefined, pollSignal());
+        if (!/^[\w-]{1,160}$/.test(runtime?.runtimeId || "") || !/^[a-f0-9]{64}$/.test(runtime?.reconnectScope || "")) return;
+        // Prioritize the visible tab, then recover the remaining saved tabs sequentially.
+        tabs.sort((a,b) => Number(b.key === selected.current) - Number(a.key === selected.current));
+        for (const target of tabs) {
+          if (controller.signal.aborted) break;
+          const previous = target.conversation;
+          const oldId = previous?.id || target.restoreId, nativeId = previous?.nativeId || target.restoreNative;
+          const previousRuntimeId = previous?.runtimeId || target.restoreRuntime;
+          const reconnectScope = previous?.reconnectScope || target.reconnectScope;
+          if (!oldId || !nativeId || target.sending || target.stopping || previousRuntimeId === runtime.runtimeId ||
+              target.failedRecoveryRuntime === runtime.runtimeId || (reconnectScope && reconnectScope !== runtime.reconnectScope)) continue;
+          const stillOpen = () => !controller.signal.aborted && entries.current.get(target.key) === target &&
+            (target.conversation?.id || target.restoreId) === oldId && !target.sending && !target.stopping;
+          if (!stillOpen()) continue;
+          const reviewOnly = !!(previous?.reviewOnly || target.reviewOnly);
+          const readOnly = reviewOnly || (previous?.permission ?? target.permission) === "read-only";
+          try {
+            // Older desktops persisted just the handle + native ID. Confirm the old
+            // handle is absent; an authentication or transient failure is not a restart.
+            if (!previousRuntimeId) {
+              try {
+                const old = await call<IdeChatConversation>("/conversations/"+encodeURIComponent(oldId), undefined, pollSignal());
+                if (old.id === oldId && old.nativeId === nativeId && old.provider === target.provider &&
+                    old.hostId === hostId && (!reviewOnly || old.reviewOnly) && (!readOnly || old.permission === "read-only" || old.reviewOnly) && stillOpen()) {
+                  target.historyPaused = false; target.historyRetryId = undefined; target.notice = undefined;
+                  accept(target, old);
+                }
+                continue;
+              } catch (error) {
+                if ((error as {status?:number}).status !== 404 || !stillOpen()) throw error;
+              }
+            }
+            const next = await call<IdeChatConversation>(route+"/reconnect", {
+              conversationId:oldId, nativeId, provider:target.provider, previousRuntimeId,
+              runtimeId:runtime.runtimeId, reconnectScope:runtime.reconnectScope, reviewOnly, readOnly,
+            }, pollSignal());
+            if (!stillOpen()) continue;
+            if (next.hostId !== hostId || next.provider !== target.provider || next.nativeId !== nativeId ||
+                next.runtimeId !== runtime.runtimeId || next.reconnectScope !== runtime.reconnectScope ||
+                (reviewOnly && !next.reviewOnly) || (readOnly && !next.reviewOnly && next.permission !== "read-only"))
+              throw Object.assign(Error("원래 대화의 연결 정보가 다릅니다."),{status:409});
+            target.conversation = undefined;
+            target.historyPaused = false; target.historyRetryId = undefined; target.notice = undefined;
+            target.error = undefined; target.attempt = undefined; target.createAttempt = undefined;
+            accept(target, next);
+          } catch (error) {
+            if (!stillOpen()) continue;
+            const status = (error as {status?:number}).status;
+            if (status && [400,403,404,409].includes(status)) {
+              target.failedRecoveryRuntime = runtime.runtimeId;
+              target.notice = (error as Error).message || "대화 기록에서 이전 연결을 확인하세요.";
+              repaint();
+            }
+          }
+        }
+      } catch { /* Older workers and temporarily disconnected hosts keep their normal recovery path. */ }
+      finally { checking = false; }
+    };
+    recoverTabs.current = inspect;
+    void inspect();
+    const timer = setInterval(inspect, 30000);
+    document.addEventListener("visibilitychange", inspect);
+    window.addEventListener("harbor-workspace-updated", inspect);
+    return () => {
+      recoverTabs.current = () => {};
+      controller.abort(); clearInterval(timer);
+      document.removeEventListener("visibilitychange", inspect);
+      window.removeEventListener("harbor-workspace-updated", inspect);
+    };
+  }, [active,hostId,multiTabs,request,scopeHost]);
   useEffect(() => {
     if (!rememberScope || !hostId || !active || (multiTabs && !view.migrateLegacy)) return;
     const target = view;
@@ -636,9 +711,10 @@ export default function IdeChatPanel({
       target.draft = (multiTabs ? readManagedTabDraft(tabStoreKey(target.area||scopeHost),target.key) : undefined)
         ?? readDraft(rememberScope,draftKey(conversation.provider, conversation.nativeId));
     if(multiTabs && rememberScope && !target.conversation && target.draft)storeText(target,target.draft);
-    if(multiTabs && target.area && (target.conversation?.id!==conversation.id || target.conversation?.title!==conversation.title || target.conversation?.nativeId!==conversation.nativeId))dirtyTabAreas.current.add(target.area);
+    if(multiTabs && target.area && (target.conversation?.id!==conversation.id || target.conversation?.title!==conversation.title || target.conversation?.nativeId!==conversation.nativeId || target.conversation.permission!==conversation.permission || target.conversation.reconnectScope!==conversation.reconnectScope))dirtyTabAreas.current.add(target.area);
     target.restoreId=undefined;
     target.restoreNative=undefined;
+    target.restoreRuntime=undefined;target.failedRecoveryRuntime=undefined;target.reconnectScope=conversation.reconnectScope;
     target.conversation = conversation;
     target.lastTranscript = undefined;
     target.connectionError = undefined;
@@ -660,7 +736,7 @@ export default function IdeChatPanel({
           AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
           undefined,
           cached && cached.contentRevision !== undefined
-            ? cached.runtimeId + ":" + cached.contentRevision
+            ? cached.pollRevision || cached.runtimeId + ":" + cached.contentRevision
             : undefined,
         );
         if (live && !("unchanged" in value)) accept(target, value);
@@ -672,14 +748,16 @@ export default function IdeChatPanel({
             target.lastTranscript = previous;
             target.restoreId = id;
             target.restoreNative = previous.nativeId;
+            target.restoreRuntime = previous.runtimeId;
+            target.reconnectScope = previous.reconnectScope;
+            target.permission = previous.permission;
             target.reviewOnly = target.reviewOnly || previous.reviewOnly;
             target.conversation = undefined;
             target.historyPaused = true;
             target.historyRetryId = previous.nativeId;
             target.connectionError = undefined;
-            target.notice = target.reviewOnly
-              ? "검토 연결이 끝났습니다. 본 대화에서 옆 대화를 다시 여세요."
-              : "서버 연결이 끝났습니다. 저장된 대화를 이 탭에서 다시 열 수 있습니다.";
+            target.notice = target.reviewOnly ? "읽기 전용 대화의 기존 서버 연결이 종료됐습니다." : "저장된 대화의 기존 서버 연결이 종료됐습니다.";
+            void recoverTabs.current();
           } else if (isLegacyClaudeHistoryLimit(error)) {
             target.historyPaused = true;
             target.connectionError = undefined;
@@ -1812,14 +1890,12 @@ export default function IdeChatPanel({
             {view.loadingOlder ? "불러오는 중…" : "이전 메시지 더 보기"}
           </button>
         )}
-        {presentation === "terminal" && transcript ? <ManagedTranscript key={"transcript-"+transcript.id} items={transcript.items} hostId={transcript.hostId} cwd={transcript.cwd} provider={transcript.provider} nativeId={transcript.nativeId} running={!!running}/> : conversation?.items.map((item) => (
-          <ChatItem
-            key={item.id}
-            item={item}
-            conversation={conversation}
-            renderMarkdown={renderMarkdown}
-          />
-        ))}
+        {transcript && <ManagedTranscript key={JSON.stringify([transcript.hostId, transcript.provider, transcript.nativeId])}
+          items={transcript.items} hostId={transcript.hostId} cwd={transcript.cwd} provider={transcript.provider}
+          nativeId={transcript.nativeId} running={!!running} waiting={conversation?.status === "waiting"}
+          renderMessage={presentation !== "terminal" && conversation ? (item) => (
+            <ChatItem key={item.kind + ":" + item.id} item={item} conversation={conversation} renderMarkdown={renderMarkdown} />
+          ) : undefined}/>}
         {conversation && !conversation.reviewOnly && (
           <WorktreeReview
             key={conversation.id}
@@ -1829,12 +1905,7 @@ export default function IdeChatPanel({
             request={request}
           />
         )}
-        {running && (
-          <div className="ide-chat-progress">
-            <LoaderCircle size={14} className="ide-spinner" />
-            {label}가 작업 중입니다.
-          </div>
-        )}
+        {running && conversation && <ManagedActivity items={conversation.items} cwd={conversation.cwd}/>}
         {conversation?.approvals.map((approval) => (
           <ApprovalCard
             key={`${conversation.id}:${approval.id}`}

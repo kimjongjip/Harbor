@@ -16,7 +16,7 @@ import type { Client, ClientChannel } from "ssh2";
 import { RemoteWorkspaces } from "./remote-workspaces.js";
 import { workspaceInstall, workspaceShell, workspaceVersions } from "./workspace-install.js";
 import { WorkspaceAccess, issueWorkspaceLink } from "./workspace-access.js";
-import { workspaceCanSwitch } from "./workspace-update.js";
+import { selectedWorkspaceRelease, workspaceCanSwitch } from "./workspace-update.js";
 import { relayChatRequest } from "./workspace-chat.js";
 import type { HostConfig } from "../shared/types.js";
 import { join as pathJoin, resolve } from "node:path";
@@ -129,6 +129,12 @@ test(
     assert.equal(boot.code, 200);
     const view = JSON.parse(boot.data);
     assert.equal(view.localCwd, fixture);
+    for (const method of ["GET", "POST"]) {
+      const update = await go("/api/update/workspaces", method, {
+        cookie: login.cookie!, "x-harbor-token": view.token,
+      });
+      assert.equal(update.code, 403, "server convergence is a host PC action");
+    }
     const restart = await go("/api/hosts/local/server-workspace/apply", "POST", {
       cookie: login.cookie!, "x-harbor-token": view.token,
     });
@@ -605,6 +611,9 @@ test("staged update waits for a detached process in the service cgroup", async (
 });
 
 test("chat relay keeps requested host and approved routes separate from administrative APIs", () => {
+  assert.throws(() => relayChatRequest(host.id,{
+    method:"POST",path:"/workspace-transition",query:{},body:{version:"2.0.9"},
+  }));
   const policyPath = "/conversations/12345678-1234-4321-a123-123456789abc/auto-accept";
   const policy = { runtimeId: "fixture-runtime", enabled: true };
   assert.deepEqual(
@@ -644,4 +653,37 @@ test("chat relay keeps requested host and approved routes separate from administ
     }),
     { path: "/conversations", body: { hostId: "local", provider: "claude" } },
   );
+});
+
+test("only managed idle ACP process trees may drain for the selected worker update", async (t) => {
+  const root = await mkdtemp(join(tmpdir(),"harbor-drain-"));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const digest = "d".repeat(64);
+  const cwd = join(root,"2.0.8-0123456789abcdef"), target = join(root,"2.0.9-"+digest.slice(0,16));
+  const cgroups = join(root,"groups"), group = join(cgroups,"harbor-workspace.service");
+  const proc = join(root,"proc"), membership=join(root,"membership");
+  const node = join(root,"node"), agy=join(root,"agy");
+  await Promise.all([cwd,target,group,node,agy].map(d => mkdir(d,{recursive:true})));
+  await writeFile(join(target,".harbor-release"),digest);
+  await writeFile(membership,"0::/harbor-workspace.service\n");
+  assert.ok(selectedWorkspaceRelease(target,"2.0.9",cwd));
+  assert.equal(selectedWorkspaceRelease(target,"2.0.8",cwd),false);
+  const wrapper = join(cwd,"desktop","antigravity.cjs");
+  const record = async (id:number,parent:number,exe:string,args:string[]) => {
+    const dir = join(proc,String(id));
+    await mkdir(dir,{recursive:true});
+    await symlink(exe,join(dir,"exe"),process.platform==="win32"?"junction":"dir");
+    await writeFile(join(dir,"status"),"PPid:\t"+parent+"\n");
+    await writeFile(join(dir,"cmdline"),[exe,...args,""].join("\0"));
+  };
+  await Promise.all([record(11,10,node,["pty-worker.mjs"]),record(12,11,node,[wrapper,agy,"history"]),
+    record(13,12,agy,["acp","--stdio"]),record(14,13,node,[wrapper,"--mcp"])]);
+  const env={cwd,proc,cgroups,membership,pid:10,acpHosts:[11]};
+  const pids=join(group,"cgroup.procs");
+  await writeFile(pids,"10\n11\n12\n13\n14\n");
+  assert.ok(workspaceCanSwitch(target,[],env));
+  assert.equal(workspaceCanSwitch(target,[],{...env,acpHosts:[]}),false);
+  await record(15,13,node,["background-lab-task"]);
+  await writeFile(pids,"10\n11\n12\n13\n14\n15\n");
+  assert.equal(workspaceCanSwitch(target,[],env),false);
 });

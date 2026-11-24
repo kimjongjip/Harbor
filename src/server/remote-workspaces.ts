@@ -131,11 +131,12 @@ export class RemoteWorkspaces {
   private active = new Map<string, Tunnel>();
   private pending = new Map<string, Promise<Tunnel>>();
   private installed = new Set<string>();
-  private readonly version: string;
+  readonly version: string;
   private readonly updates = new Map<string, WorkspaceUpdateStatus>();
   private readonly checkedAt = new Map<string, number>();
   private readonly syncs = new Map<string, Promise<void>>();
   private readonly uploads = new Map<string, Promise<void>>();
+  private readonly transitions = new Map<string, Promise<void>>();
   private readonly syncConnections = new Set<Client>();
   private readonly disconnected = new Set<string>();
   private closed = false;
@@ -165,7 +166,7 @@ export class RemoteWorkspaces {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
   }
-  private profile(host: HostConfig) {
+  profile(host: HostConfig) {
     return createHash("sha256")
       .update(
         JSON.stringify([
@@ -303,8 +304,34 @@ export class RemoteWorkspaces {
   }
   checkEdit(host: HostConfig) {
     const id = this.profile(host);
-    if (this.pending.has(id) || this.uploads.has(id) || this.syncs.has(id))
+    if (this.pending.has(id) || this.uploads.has(id) || this.syncs.has(id) || this.transitions.has(id))
       throw Error("서버 작업 공간 연결 중입니다. 완료 후 설정을 변경하세요.");
+  }
+  /** An explicit host-PC update may ask an idle adapter to finish. Generic reconnects only stage. */
+  convergeForUpdate(host: HostConfig, password: () => Promise<string | undefined>) {
+    const id = this.profile(host);
+    const existing = this.transitions.get(id);
+    if (existing) return existing;
+    const task = this.requestTransition(host, password).finally(() => this.transitions.delete(id));
+    this.transitions.set(id, task);
+    return task;
+  }
+  private async requestTransition(host: HostConfig, password: () => Promise<string | undefined>) {
+    if (!this.enabled(host) || this.closed) return;
+    await this.synchronize(host, password, true);
+    const status = this.status(host);
+    if (status.phase !== "pending" || !status.runningVersion || status.stagedVersion !== this.version) return;
+    if (olderVersion(status.runningVersion, "2.0.8")) {
+      this.updates.set(this.profile(host), {...status, detail:"이전 서버가 열린 세션을 유지하고 있습니다. 지금 전환하려면 업데이트 창에서 서버 재시작을 선택하세요."});
+      return;
+    }
+    const guard = () => {
+      if (this.closed || !this.enabled(host)) throw Error("서버 연결 설정이 변경되었습니다.");
+    };
+    const result = await this.chat(host, await password(), "host-" + this.profile(host).slice(0,32),
+      "POST", "/workspace-transition", {version:this.version}, undefined, guard);
+    if (result.status === 409 || result.status === 503) { await this.synchronize(host, password, true); return; }
+    if (result.status !== 200 || result.value?.accepted !== true) throw Error("서버의 세션 전환 상태를 확인하세요.");
   }
   disconnect(host: HostConfig) {
     this.checkEdit(host);

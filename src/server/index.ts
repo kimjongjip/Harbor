@@ -5,8 +5,9 @@ import { MobileGateway } from "./mobile-gateway.js";
 import { DesktopAccess } from "./desktop-access.js";
 import { ChatModels } from "./chat-models.js";
 import { RemoteWorkspaces } from "./remote-workspaces.js";
+import { desktopUpdateReceipt, WorkspaceRollout } from "./workspace-rollout.js";
 import { LoopbackPorts,loopbackPortRouter } from "./loopback-ports.js";
-import { workspaceCanSwitch } from "./workspace-update.js";
+import { selectedWorkspaceRelease, workspaceCanSwitch } from "./workspace-update.js";
 import { WorkspaceAccess } from "./workspace-access.js";
 import { workspaceChatRouter } from "./workspace-chat.js";
 import {
@@ -121,6 +122,7 @@ const workspaceAccess = workspaceSocket
     )
   : undefined;
 const remoteWorkspaces = new RemoteWorkspaces(store.directory);
+const workspaceRollout = new WorkspaceRollout(store.directory, remoteWorkspaces, () => store.data.hosts, passwordFor);
 const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
   workspaceChatRouter(
     remoteWorkspaces,
@@ -131,6 +133,12 @@ const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
       const usage=await readSessionUsage(host,b.provider,b.nativeId,b.cwd,"legacy-workspace:"+host.id+":"+b.nativeId);
       const work=b.provider==="codex" ? await workMonitor.read(host,b.nativeId,codexWorkId(b.nativeId),undefined,"codex") : null;
       return {usage,work};
+    },
+    async (host,b) => {
+      const password=await passwordFor(host.id);
+      return b.provider==="codex"
+        ? history.readLatestActivity(host,password,b.nativeId)
+        : claudeHistory.read(host,password,b.nativeId,undefined,{includeActivity:true});
     },
   );
 const runtimeDiagnostics = startRuntimeDiagnostics(store.directory);
@@ -423,6 +431,7 @@ const bridge = new AgentBridge(mailbox, {
       (m) =>
         m.turnId === turnId &&
         m.kind === "assistant" &&
+        m.phase === "final_answer" &&
         m.turnStatus === "completed",
     );
     if (
@@ -698,6 +707,7 @@ const liveIdeChats = new IdeLiveChats({
       await passwordFor(id),
       nativeId,
       cursor,
+      { includeActivity: true },
     ),
   codex: codexPeers,
   claude: {
@@ -877,6 +887,7 @@ const ideChats = new IdeChats({
       await passwordFor(id),
       nativeId,
       cursor,
+      { includeActivity: true },
     ),
   nativeActive: (hostId, provider, nativeId) =>
     terminals
@@ -1035,6 +1046,16 @@ if (workspaceAccess)
       return new Set(["local"]);
     }),
   );
+// Signed host maintenance requests are deliberately outside the paired-device chat relay allowlist.
+if (workspaceAccess)
+  app.post("/_workspace/chat/workspace-transition", (req, res) => {
+    if (!/^host-[a-f0-9]{32}$/.test(String(res.locals.workspaceActor))) { res.sendStatus(403); return; }
+    const {version} = z.object({version:z.string().max(32).regex(/^\d+\.\d+\.\d+$/)}).strict().parse(req.body);
+    if (!releaseLink || !selectedWorkspaceRelease(releaseLink, version)) { res.sendStatus(409); return; }
+    handoff = {version,until:Date.now()+90000};
+    bridge.peers.emit("change");
+    res.json({accepted:true});
+  });
 if (workspaceAccess)
   app.post("/_workspace/chat/conversations/:id/control", async (req, res) => {
     const actor = String(res.locals.workspaceActor || "");
@@ -1101,6 +1122,19 @@ app.use(
   }),
 );
 app.use("/api/hosts/:hostId/loopback-ports",loopbackPortRouter(loopbackPorts,req=>!desktop.device(req)&&!workspaceAccess&&validToken(req.headers["x-harbor-token"],token),passwordFor));
+app.route("/api/update/workspaces")
+  .all((req, res, next) => {
+    if (desktop.device(req) || workspaceAccess || !validToken(req.headers["x-harbor-token"], token)) {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+  })
+  .get((_req, res) => { res.json(workspaceRollout.overview()); })
+  .post((req, res) => {
+    z.object({}).strict().parse(req.body ?? {});
+    res.status(202).json(workspaceRollout.start());
+  });
 app.get("/api/hosts/:id/server-workspace", (req, res) => {
   if (desktop.device(req) || workspaceAccess) { res.sendStatus(403); return; }
   const host = hub.host(String(req.params.id));
@@ -1157,7 +1191,9 @@ app.delete("/api/hosts/:id/server-workspace", (req, res) => {
     res.sendStatus(403);
     return;
   }
-  remoteWorkspaces.forget(hub.host(String(req.params.id)));
+  const host = hub.host(String(req.params.id));
+  remoteWorkspaces.forget(host);
+  workspaceRollout.forget(host);
   mobile.changed();
   broadcastState();
   res.json({ ok: true });
@@ -1610,7 +1646,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.7" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.8" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -1744,6 +1780,7 @@ app.patch("/api/hosts/:id", (req, res) => {
   const host = hub.updateHost(id, hostInput.parse(req.body));
   loopbackPorts.closeHost(id);
   remoteWorkspaces.changed(previous, host);
+  if (remoteWorkspaces.profile(previous) !== remoteWorkspaces.profile(host)) workspaceRollout.forget(previous);
   history.close(id);
   codexUsageHistory.clear(id);
   codexAgentTelemetry.clear(id);
@@ -1863,6 +1900,7 @@ app.post("/api/hosts/:id/connect", async (req, res) => {
 });
 app.post("/api/hosts/:id/disconnect", (req, res) => {
   remoteWorkspaces.disconnect(hub.host(String(req.params.id)));
+  workspaceRollout.forget(hub.host(String(req.params.id)));
   history.close(String(req.params.id));
   codexUsageHistory.clear(String(req.params.id));
   codexAgentTelemetry.clear(String(req.params.id));
@@ -3022,8 +3060,7 @@ richTerminals.on("block", (id, block) => {
 });
 function syncInstalledWorkspaces() {
   if (workspaceSocket) return;
-  for (const host of store.data.hosts)
-    void remoteWorkspaces.synchronize(host, () => passwordFor(host.id));
+  workspaceRollout.tick();
 }
 function onListening() {
   writeFileSync(
@@ -3038,6 +3075,9 @@ function onListening() {
     `Harbor is ready at ${workspaceSocket || "http://127.0.0.1:" + port}`,
   );
   if (!workspaceSocket) {
+    try {
+      workspaceRollout.adopt(desktopUpdateReceipt(store.directory, remoteWorkspaces.version, process.env.HARBOR_INSTALL_ROOT));
+    } catch { console.warn("서버 업데이트 요청을 저장하지 못했습니다."); }
     syncInstalledWorkspaces();
     setInterval(syncInstalledWorkspaces, 30000).unref();
   }
@@ -3054,22 +3094,39 @@ server.on("error", (error) => {
 });
 let shuttingDown = false;
 const releaseLink = process.env.HARBOR_WORKSPACE_RELEASE_LINK;
+let handoff: {version:string; until:number} | undefined;
+function workspaceHasWork() {
+  return ideChats.hasActiveWork() || hub.hasActiveWork() ||
+    research.list().some(l => !["completed","paused"].includes(l.status)) ||
+    labQuestions.list().some(j => j.status === "working") ||
+    requests.list().some(r => r.status === "pending");
+}
+function idleWorkspaceRpc() {
+  return [...hub.clients.values()].flatMap(client => client.idleChildPid ? [client.idleChildPid] : []);
+}
+if (workspaceSocket && releaseLink) {
+  bridge.workspaceHandoff = (terminalId, nativeId) => {
+    if (!handoff || Date.now() > handoff.until || workspaceWrites || shuttingDown ||
+        !selectedWorkspaceRelease(releaseLink,handoff.version) || workspaceHasWork()) return false;
+    const open = terminals.list().filter(t => !t.exited && !terminals.detachesOnShutdown(t.id));
+    if (!open.some(t => t.id === terminalId && t.agentSessionId === nativeId)) return false;
+    const acpHosts: number[] = [];
+    for (const t of open) {
+      const owner = terminals.monitorPid(t.id);
+      if (!owner || t.program !== "antigravity" || !t.agentConnected || !t.agentSessionId ||
+          t.agentState !== "idle" || !ideChats.ownsLiveTerminal(t.id,t.agentSessionId)) return false;
+      acpHosts.push(owner);
+    }
+    return workspaceCanSwitch(releaseLink,idleWorkspaceRpc(),{acpHosts});
+  };
+}
 if (workspaceSocket && releaseLink)
   setInterval(() => {
     if (shuttingDown || workspaceWrites)
       return;
-    const idleRpc = [...hub.clients.values()].flatMap((client) => client.idleChildPid ? [client.idleChildPid] : []);
-    if (!workspaceCanSwitch(releaseLink, idleRpc)) return;
-    if (
-      terminals.list().some((t) => !t.exited) ||
-      ideChats.hasActiveWork() ||
-      hub.hasActiveWork() ||
-      research
-        .list()
-        .some((l) => !["completed", "paused"].includes(l.status)) ||
-      labQuestions.list().some((j) => j.status === "working") ||
-      requests.list().some((r) => r.status === "pending")
-    )
+    const requested = handoff && Date.now() <= handoff.until && selectedWorkspaceRelease(releaseLink,handoff.version);
+    if (terminals.list().some(t => !t.exited && !(requested && terminals.detachesOnShutdown(t.id))) || workspaceHasWork() ||
+        !workspaceCanSwitch(releaseLink, idleWorkspaceRpc()))
       return;
     workspaceUpdating = true;
     process.exitCode = 75;

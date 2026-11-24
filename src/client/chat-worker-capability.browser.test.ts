@@ -28,16 +28,30 @@ test(
  const fallback=async p=>{if(p.includes('/models?')){window.fallbackCalls++;return json({models,supportsAutoAccept:true});}return json({});};
  window.fetch=async(raw,opts={})=>{
    const url=new URL(raw,'https://fixture.invalid'),p=url.pathname,b=opts.body?JSON.parse(opts.body):null;
+   if(p.endsWith('/runtime'))return json({runtimeId:window.staleId?'new-runtime':'fake-runtime',reconnectScope:'b'.repeat(64)});
    if(p.endsWith('/workspace-update'))return window.mode==='no-route'
      ? json({phase:'pending',targetVersion:'2.0.7',runningVersion:'2.0.0',stagedVersion:'2.0.7'})
      : json({},404);
    if(window.staleId && !b && p.endsWith('/conversations/'+window.staleId))return json({error:'Saved handle expired'},404);
+   if(window.mode==='restored' && !b && p.endsWith('/conversations/legacy-handle'))return json({error:'expired'},404);
+   if(window.mode==='restored' && !b && p.endsWith('/conversations/private-handle'))return json({error:'denied'},403);
    if(p.endsWith('/models')){return new Promise(r=>{window.release=()=>r(window.mode==='no-route'?json({},404):json(window.mode==='bare'?{models}:{models,supportsAutoAccept:true}));});}
    if(p.endsWith('/folders'))return json({path:'/fixture',parent:'/',folders:[],truncated:false});
    if(b)window.posts.push({p,b});
+   if(p.endsWith('/reconnect')){
+     if(window.mode==='restored'){
+       const restored={...window.c,id:'next-'+b.nativeId,nativeId:b.nativeId,provider:b.provider,runtimeId:'new-runtime',
+         reconnectScope:'b'.repeat(64),title:b.nativeId,reviewOnly:b.reviewOnly,permission:b.readOnly?'read-only':'default'};
+       window.rebound[restored.id]=restored;
+       return json(restored);
+     }
+     window.c={...window.c,id:'recovered',nativeId:b.nativeId,runtimeId:'new-runtime',reconnectScope:'b'.repeat(64),autoAccept:false};
+     return json(window.c);
+   }
    if(p.endsWith('/conversations')){window.c={hostId:'fixture',id:b.resumeId?'new-handle':'fake-'+window.mode,provider:b.provider,nativeId:b.resumeId||'thread-'+window.mode,runtimeId:b.resumeId?'new-runtime':'fake-runtime',title:'fixture',cwd:'/fixture',model:'A',status:'idle',items:[],approvals:[],historyCursor:null,revision:1,updatedAt:1,autoAccept:b.autoAccept??false};return json(window.c);}
    if(p.endsWith('/messages'))return json({ok:true,status:'submitted',requestId:b.requestId});
    if(p.endsWith('/usage'))return json({usage:null,work:null});
+   if(window.rebound && window.rebound[p.split('/').pop()])return json(window.rebound[p.split('/').pop()]);
    return json(window.c||{});
  };
  window.start=mode=>{
@@ -46,6 +60,18 @@ test(
    writeManagedTabs(area,{selected:'draft',tabs:[{key:'draft',provider:'codex',autoAccept:true}]});
    writeManagedTabDraft(area,'draft','유지할 예약 초안');
    root.render(<Panel key={mode} active hostId="fixture" serverWorkspace presentation="terminal" rememberScope={scope} request={fallback}/>);
+ };
+ window.openSavedTabs=()=>{
+   window.mode='restored';window.posts=[];window.rebound={};
+   const scope='chat-window.saved', area=JSON.stringify([scope,'durable:fixture']);
+   writeManagedTabs(area,{selected:'A',tabs:[
+     {key:'A',provider:'codex',conversationId:'legacy-handle',nativeId:'legacy-native'},
+     {key:'B',provider:'claude',conversationId:'other-handle',nativeId:'review-native',reviewOnly:true,permission:'read-only',runtimeId:'old-runtime'},
+     {key:'C',provider:'codex',conversationId:'private-handle',nativeId:'private-native'},
+     {key:'D',provider:'codex',conversationId:'changed-account',nativeId:'another-account',runtimeId:'old-runtime',reconnectScope:'a'.repeat(64)},
+   ]});
+   writeManagedTabDraft(area,'A','선택된 탭의 초안');
+   root.render(<Panel key={scope} active hostId="fixture" serverWorkspace presentation="terminal" rememberScope={scope} request={fallback}/>);
  };
  `,
       },
@@ -117,7 +143,7 @@ test(
           assert.equal(await dialog.getByRole("switch").count(), 0);
           if (mode === "no-route") {
             await dialog.getByText("서버 2.0.0 · PC 2.0.7").waitFor();
-            await dialog.getByText(/열린 터미널과 AI 프로세스/).waitFor();
+            await dialog.getByText(/호스트 PC 상단의 업데이트/).waitFor();
           }
           assert.equal(
             await page.evaluate(() => (window as any).fallbackCalls),
@@ -158,18 +184,25 @@ test(
         fixture.staleId = fixture.c.id;
         fixture.posts = [];
       });
-      const reconnect = page.getByRole("button", { name: "이 대화 다시 연결" });
-      await reconnect.waitFor();
-      assert.equal(await send.isDisabled(), true);
-      assert.equal(await page.evaluate(() => (window as any).posts.length), 0);
-      await reconnect.click();
-      await reconnect.waitFor({ state: "hidden" });
+      await page.waitForFunction(() => (window as any).c.id === "recovered");
+      await page.waitForFunction(() => !(document.querySelector('[aria-label="AI 메시지 전송"]') as HTMLButtonElement).disabled);
       assert.equal(await draft.inputValue(), "서버를 업데이트하는 동안 쓰던 초안");
       assert.equal(await send.isEnabled(), true);
       const requests = await page.evaluate(() => (window as any).posts);
       assert.equal(requests.length, 1);
-      assert.equal(requests[0].b.resumeId, "thread-capable");
+      assert.match(requests[0].p,/\/reconnect$/);
+      assert.equal(requests[0].b.nativeId, "thread-capable");
+      assert.equal(requests[0].b.previousRuntimeId, "fake-runtime");
+      assert.equal(requests[0].b.runtimeId, "new-runtime");
       assert.equal(requests[0].b.autoAccept, undefined);
+      assert.equal(requests[0].b.text,undefined);
+      await page.evaluate(() => (window as any).openSavedTabs());
+      await page.waitForFunction(() => Object.keys((window as any).rebound).length === 2);
+      assert.equal(await draft.inputValue(), "선택된 탭의 초안");
+      const restored = await page.evaluate(() => (window as any).posts.map((p:any) => p.b));
+      assert.deepEqual(restored.map((r:any) => r.nativeId), ["legacy-native", "review-native"]);
+      assert.ok(restored[1].reviewOnly && restored[1].readOnly);
+      assert.ok(restored.every((r:any) => !("text" in r) && !("autoAccept" in r)));
     } finally {
       await app.close();
     }

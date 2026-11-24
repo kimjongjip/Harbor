@@ -1,18 +1,8 @@
 import type { MessageItem } from "../shared/types.js";
-import { normalizeItem } from "./session.js";
+import { normalizeItem, publicArguments, textBlocks } from "./session.js";
 import { classifyUserMessage } from "../shared/user-message-origin.js";
 
 const text = (value: unknown): string => typeof value === "string" ? value : "";
-/** Only explicit public text blocks, never hidden reasoning/image/binary fields. */
-const textBlocks = (value: unknown): string => typeof value === "string" ? value :
-  Array.isArray(value) ? value.flatMap(block => block &&
-    ["text", "inputText", "outputText"].includes(block.type) && typeof block.text === "string" ? [block.text] : []).join("\n") : "";
-const publicArguments = (value: unknown): string => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const input = value as Record<string, unknown>;
-  return ["command", "file_path", "path", "pattern", "query", "description", "target", "recipient", "message", "question", "prompt"]
-    .flatMap(key => typeof input[key] === "string" ? [`${key}: ${input[key]}`] : []).join("\n");
-};
 
 /** History keeps exact saved public text; display-size limits belong to lazy previews. */
 export function historyItem(raw: any, turnId?: string): MessageItem | null {

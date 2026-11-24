@@ -382,6 +382,9 @@ export class History {
     map.set(key, value);
     while (map.size > 256) map.delete(map.keys().next().value!);
   }
+  readLatestActivity(host:HostConfig, password:string|undefined, threadId:string) {
+    return this.readPage(host,password,threadId,undefined,{includeActivity:true},1,false,true);
+  }
   private async readPage(
     host: HostConfig,
     password: string | undefined,
@@ -390,6 +393,7 @@ export class History {
     options: HistoryReadOptions,
     limit: number,
     summaryOnly = false,
+    paginatedOnly = false,
   ): Promise<HistoryDetail> {
     return this.using(host, password, async (client) => {
       const summary = await client.call(
@@ -436,7 +440,7 @@ export class History {
       } catch (error) {
         // Older CLI versions lack the paginated read method. Never resume as fallback.
         if (
-          summaryOnly ||
+          summaryOnly || paginatedOnly ||
           cursor ||
           !/unknown|unsupported|not found|method|not initialized|does not support|not loaded|persisted|pagination/i.test(
             String(error),

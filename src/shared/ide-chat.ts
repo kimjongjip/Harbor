@@ -32,6 +32,8 @@ export interface ChatReservation {
   error?: string;
 }
 export interface IdeChatConversation {
+  /** Opaque binding to the account/host that produced this conversation. */
+  reconnectScope?: string;
   /** Harbor answers eligible workspace-only pending tool approvals in this conversation. */
   autoAccept?: boolean;
   /** Supports scoped settings updates without replacing other selected fields. */
@@ -62,6 +64,9 @@ export interface IdeChatConversation {
   error?: string;
   revision: number;
   contentRevision?: number;
+  /** Conditional token for PC-projected activity from a previous remote worker. */
+  pollRevision?:string;
+  nativeActivityTimeline?:true;
   updatedAt: number;
   /** A view of the existing CLI; never a second native conversation process. */
   live?: IdeChatLive;
