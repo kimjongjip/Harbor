@@ -1,3 +1,5 @@
+import {chatEfforts, chatPermissions, type ChatPermission, type ChatEffort} from "../shared/ide-chat.js";
+import type {ResearchModel} from "../shared/research.js";
 import { validateImages } from "./images.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
 import { mergeClaudeUsage } from "../shared/terminal-usage.js";
@@ -51,6 +53,12 @@ type IdeHub = Pick<
 > &
   Partial<Pick<Hub, "on" | "off" | "rename">>;
 export interface IdeChatDependencies {
+  models?(hostId:string,provider:IdeChatProvider):Promise<ResearchModel[]>;
+  antigravityAutoAccept?(terminalId:string,nativeId:string):boolean;
+  canConfigureAntigravity?(terminalId:string,nativeId:string):boolean;
+  configureAntigravity?(terminalId:string,nativeId:string,config:{model?:string;effort?:ChatEffort},guard:()=>Promise<void>):Promise<{model:string;effort?:ChatEffort}>;
+  setAntigravityAutoAccept?(terminalId:string,nativeId:string,enabled:boolean):void;
+  folders?(hostId:string,path:string):Promise<import("../shared/ide-chat.js").IdeChatFolders>;
   managedClaudeWork?(hostId:string,nativeId:string,processId?:number):Promise<import("../shared/host-insights.js").TerminalWorkSnapshot|null>;
   sessionUsage?(target: Pick<IdeChatConversation,"id"|"hostId"|"provider"|"nativeId"|"cwd">, terminalId?:string):Promise<IdeChatUsage>;
   managedPeers?: ManagedPeers;
@@ -92,6 +100,7 @@ export interface IdeChatDependencies {
     resumeId: string | undefined,
     guard: Guard,
     model?: string,
+    options?:{effort?:ChatEffort;autoAccept?:boolean},
   ): Promise<string>;
   antigravityModel?(hostId:string,nativeId:string):Promise<string|undefined>;
 }
@@ -150,21 +159,22 @@ const approvalIdSchema = z
   .max(512)
   .refine((value) => !/[\x00-\x1f\x7f]/.test(value));
 const providerSchema = z.enum(["codex", "claude", "antigravity"]);
+const settingsFields = {
+  model: z.string().min(1).max(160).regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]*$/).optional(),
+  effort: z.enum(chatEfforts).optional(),
+  permission: z.enum(chatPermissions).optional(),
+};
+const settingsSchema=z.object({runtimeId:idSchema,...settingsFields}).strict();
 const createSchema = z
   .object({
     hostId: idSchema,
     provider: providerSchema,
     requestId: requestSchema,
     cwd: z.string().min(1).max(4096).optional(),
-    model: z
-      .string()
-      .min(1)
-      .max(160)
-      .regex(/^[\w.:/-]+$/)
-      .optional(),
+    ...settingsFields,
     resumeId: idSchema.optional(),
     reviewOnly: z.boolean().optional(),
-    effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+
   })
   .strict();
 const sendSchema = z
@@ -389,6 +399,10 @@ export class IdeChats {
     if (managed.liveBinding && this.dependencies.live) {
       const current = this.dependencies.live.get(managed.liveBinding);
       managed.view.live = current.live;
+      if(managed.view.provider === "antigravity"){
+        managed.view.permission=this.dependencies.antigravityAutoAccept?.(managed.liveBinding.terminalId,managed.view.nativeId)?"auto-accept":"default";
+        managed.view.canConfigureNative=!!this.dependencies.canConfigureAntigravity?.(managed.liveBinding.terminalId,managed.view.nativeId);
+      }
       managed.view.status = current.status;
       return;
     }
@@ -398,7 +412,7 @@ export class IdeChats {
       nativeId: session.threadId,
       title: managed.title || session.title,
       cwd: session.cwd,
-      model: session.model,
+      model: managed.view.configuredModel || session.model,
       status: session.status,
       items: session.items,
       approvals: session.approvals,
@@ -460,7 +474,7 @@ export class IdeChats {
     const check = async () => {
       await guard();
       this.binding(m, input.runtimeId);
-      if (m.view.reviewOnly)
+      if (m.view.reviewOnly || m.view.permission === "read-only")
         throw new IdeChatError("읽기 전용 대화입니다.", 403);
       if (
         m.hubId &&
@@ -614,6 +628,7 @@ export class IdeChats {
     guard: Guard,
   ): Promise<IdeChatConversation> {
     input = createSchema.parse(input);
+    if(input.resumeId && (input.reviewOnly || input.permission || input.effort || input.model)) throw new IdeChatError("기존 대화의 설정은 연결한 뒤 변경하세요.",409);
     await guard();
     this.dependencies.host(input.hostId);
     const key = `${actor}:${input.requestId}`;
@@ -722,10 +737,7 @@ export class IdeChats {
     guard: Guard,
   ): Promise<string> {
     const { hostId, provider } = input;
-    if (
-      (input.reviewOnly || input.effort) &&
-      (input.resumeId || provider === "antigravity")
-    )
+    if (input.reviewOnly && (provider === "antigravity" || (input.permission && input.permission !== "read-only")))
       throw new IdeChatError(
         "선택한 실행 방식에서 이 대화 설정을 지원하지 않습니다.",
         409,
@@ -740,6 +752,7 @@ export class IdeChats {
           409,
         );
     };
+    if (!input.resumeId) {await this.validateSettings(hostId,provider,input); await guard();}
     let live =
       input.resumeId &&
       this.dependencies.live?.find(hostId, provider, input.resumeId);
@@ -756,6 +769,7 @@ export class IdeChats {
         input.resumeId,
         guard,
         input.resumeId ? undefined : input.model,
+        {effort:input.effort,autoAccept:input.permission==="auto-accept"},
       );
       live = this.dependencies.live.find(hostId, provider, id);
       if (!live)
@@ -770,6 +784,7 @@ export class IdeChats {
         hostId,
         provider,
         nativeId: live.nativeId,
+        ...(provider==="antigravity"?{effort:input.effort,permission:this.dependencies.antigravityAutoAccept?.(live.terminalId,live.nativeId)?"auto-accept":"default"} as const:{}),
         title: current.terminal?.title || "열린 대화",
         cwd: current.terminal?.cwd || input.cwd || "~",
         model: provider==="antigravity" ? (await this.dependencies.antigravityModel?.(hostId,live.nativeId)) || "" : "",
@@ -829,6 +844,7 @@ export class IdeChats {
       });
     const reviewOnly =
       input.reviewOnly || (!!recovered && recovered.reviewOnly);
+    const permission: ChatPermission = reviewOnly ? "read-only" : input.permission || (recovered && recovered.permission) || "default";
     let session: SessionView | undefined;
     if (provider === "codex") {
       const password = await this.dependencies.password(hostId);
@@ -845,14 +861,14 @@ export class IdeChats {
         this.checkNative(hostId, provider, input.resumeId);
         session = await this.dependencies.hub.openSession(session.id);
         await guard();
-        session.permission = reviewOnly ? "read-only" : "workspace-write";
+        session.permission = permission === "read-only" ? "read-only" : "workspace-write";
         this.dependencies.hub.saveSession(session);
       } else
         session = await this.dependencies.hub.createSession(hostId, {
           title: "",
           cwd,
           model: input.model,
-          permission: input.reviewOnly ? "read-only" : "workspace-write",
+          permission: permission === "read-only" ? "read-only" : "workspace-write",
           ...(this.dependencies.managedPeers && !input.reviewOnly
             ? { peerTools: true }
             : {}),
@@ -872,6 +888,8 @@ export class IdeChats {
         ? { peerEnabled: false }
         : {}),
       reviewOnly,
+      permission,
+      configuredModel:input.model ?? (recovered ? recovered.model : undefined),
       effort: input.effort || (recovered ? recovered.effort : undefined),
       title: session?.title || history?.thread.title || "새 대화",
       cwd: session?.cwd || cwd,
@@ -908,9 +926,84 @@ export class IdeChats {
           value: { ok: true, requestId: receipt.requestId, status: "queued" },
         });
     }
+    if (!input.resumeId && (input.reviewOnly || input.permission || input.model || input.effort)) this.saveQueue(managed,[]);
     this.conversations.set(view.id, managed);
     this.native.set(this.nativeKey(hostId, provider, view.nativeId), view.id);
     return view.id;
+  }
+  async models(hostId:string,provider:IdeChatProvider,guard:Guard) {
+    await guard();
+    if (!this.dependencies.models) throw new IdeChatError("서버에서 모델 목록을 제공하지 않습니다.", 409);
+    const key = hostKey(this.dependencies.host(hostId));
+    const models=await this.dependencies.models(hostId,provider);
+    await guard();
+    if(key!==hostKey(this.dependencies.host(hostId)))throw new IdeChatError("서버 연결 설정이 변경되었습니다.",409);
+    return {models};
+  }
+
+  private async validateSettings(hostId:string,provider:IdeChatProvider,settings:Pick<IdeChatCreate,"model"|"effort"|"permission">) {
+    const {permission, effort, model} = settings;
+    if (permission && permission !== "default" &&
+      (permission === "auto-accept" ? provider !== "antigravity" :
+       permission === "accept-edits" ? provider !== "claude" : provider === "antigravity"))
+      throw new IdeChatError("이 AI 실행 방식에서 지원하지 않는 권한입니다.");
+    if (effort && provider!=="codex" && ["ultra","none","minimal"].includes(effort))
+      throw new IdeChatError("이 AI가 지원하지 않는 추론 강도입니다.");
+    if ((!model && !effort) || !this.dependencies.models) return;
+    const list=await this.dependencies.models(hostId,provider);
+    const match=model ? list.find(row=>row.id===model || row.resolvedModel===model || (provider==="antigravity" && row.efforts?.some(e=>row.id+"-"+e===model))) : list.find(row=>row.isDefault);
+    if (!match || effort && !match.efforts?.includes(effort))
+      throw new IdeChatError("이 서버의 모델과 추론 강도 조합을 확인하세요.",409);
+  }
+
+  async settings(id:string,input:z.infer<typeof settingsSchema>,guard:Guard) {
+    const m=this.managed(id), v=m.view;
+    const check=async()=>{
+      await guard();
+      this.binding(m,input.runtimeId);
+      this.sync(m);
+      if(v.reviewOnly)throw new IdeChatError("옆 대화의 읽기 전용 설정은 고정되어 있습니다.",409);
+      if(!m.liveBinding && (m.sending || m.run || m.draining || v.status==="running" || v.status==="waiting"))
+        throw new IdeChatError("진행 중인 작업이 끝난 뒤 설정을 변경하세요.",409);
+    };
+    await check();
+    if(m.liveBinding){
+      if(v.provider!=="antigravity" || input.permission && !["default","auto-accept"].includes(input.permission))
+        throw new IdeChatError("이 CLI 연결에서 실행 설정을 변경할 수 없습니다.",409);
+      if(input.permission && !this.dependencies.setAntigravityAutoAccept) throw new IdeChatError("승인 정책 연결을 확인하세요.",409);
+      const engineChange = (input.model !== undefined && input.model!==v.configuredModel && input.model!==v.model) ||
+        (input.effort !== undefined && input.effort!==v.effort);
+      if(engineChange){
+        const configure = this.dependencies.configureAntigravity;
+        if (!configure || !v.canConfigureNative || v.status!=="idle") throw new IdeChatError("대기 상태의 Antigravity 설정 연결을 확인하세요.",409);
+        await this.validateSettings(v.hostId,v.provider,{...input,model:input.model || v.model});
+        await check();
+        const confirmed = await configure(m.liveBinding.terminalId, v.nativeId, {model:input.model,effort:input.effort}, async()=>{await guard();this.binding(m,input.runtimeId);});
+        v.model=confirmed.model;
+        v.configuredModel=input.model || confirmed.model;
+        v.effort=confirmed.effort;
+        await check();
+      }
+      if(input.permission) this.dependencies.setAntigravityAutoAccept!(m.liveBinding.terminalId,v.nativeId,input.permission==="auto-accept");
+    } else {
+      await this.validateSettings(v.hostId,v.provider,input);
+      await check();
+      this.checkNative(v.hostId,v.provider,v.nativeId);
+      const permission=input.permission || "default";
+      const previous={model:v.model,configuredModel:v.configuredModel,effort:v.effort,permission:v.permission};
+      Object.assign(v,{model:input.model||"",configuredModel:input.model||"",effort:input.effort,permission});
+      try { this.saveQueue(m,m.queue || []); }
+      catch(error) {Object.assign(v,previous);throw error;}
+      if(m.hubId){
+        const native=this.dependencies.hub.session(m.hubId);
+        native.permission=permission==="read-only"?"read-only":"workspace-write";
+        native.model=input.model || "";
+        this.dependencies.hub.saveSession(native);
+      }
+      if(permission==="read-only" && v.peerEnabled){this.dependencies.managedPeers?.pause(v);v.peerEnabled=false;}
+    }
+    this.touch(m);
+    return this.snapshot(id);
   }
   async setCollaboration(
     id: string,
@@ -922,7 +1015,7 @@ export class IdeChats {
       peers = this.dependencies.managedPeers;
     await guard();
     this.binding(m, input.runtimeId);
-    if (!peers || v.peerEnabled === undefined || v.reviewOnly || m.liveBinding)
+    if (!peers || v.peerEnabled === undefined || v.reviewOnly || v.permission === "read-only" || m.liveBinding)
       throw new IdeChatError("이 대화에서 협업을 사용할 수 없습니다.", 409);
     if (input.enabled) {
       this.checkNative(v.hostId, v.provider, v.nativeId);
@@ -1143,13 +1236,22 @@ export class IdeChats {
       if (managed.hubId) {
         const intendedTurn =
           steer && this.dependencies.hub.session(managed.hubId).activeTurnId;
+        let model = managed.view.configuredModel, effort = managed.view.effort;
+        if (!steer && model !== undefined && (!model || !effort) && this.dependencies.models) {
+          const catalog = await this.dependencies.models(managed.view.hostId,"codex");
+          const choice = model ? catalog.find(m=>m.id===model) : catalog.find(m=>m.isDefault);
+          if (!choice) throw new IdeChatError("선택한 모델을 서버에서 확인할 수 없습니다.",409);
+          model=choice.id;
+          effort ??= choice.defaultEffort !== "default" ? choice.defaultEffort : undefined;
+        }
         await this.dependencies.hub.send(managed.hubId, input.text, {
           ...(images.length ? { images } : {}),
           ...(steer ? { mode: "steer" } : {}),
-          ...(managed.view.reviewOnly
+          ...(model ? {model} : {}),
+          ...(managed.view.reviewOnly || managed.view.permission === "read-only"
             ? { readOnly: true, strictReview: true }
             : {}),
-          ...(managed.view.effort ? { effort: managed.view.effort } : {}),
+          ...(effort ? {effort} : {}),
           beforeDispatch: async () => {
             await guard();
             this.binding(managed, input.runtimeId);
@@ -1238,6 +1340,8 @@ export class IdeChats {
         nativeId: v.nativeId,
       },
       reviewOnly: !!v.reviewOnly,
+      model:v.configuredModel,
+      permission:v.permission,
       effort: v.effort,
       entries: queue.map(({ id, text, actor, state, notBefore,accountKey }) => ({
         notBefore,accountKey,
@@ -1401,10 +1505,12 @@ export class IdeChats {
       nativeId: view.nativeId,
       resume: managed.resumed,
       cwd: view.cwd,
-      model: view.model,
+      model: view.configuredModel ?? view.model,
       effort: view.effort,
+      acceptEdits:view.permission==="accept-edits",
+      readOnly:view.permission==="read-only",
       reviewOnly: view.reviewOnly,
-      ...(view.peerEnabled && !view.reviewOnly && this.dependencies.managedPeers
+      ...(view.peerEnabled && !view.reviewOnly && view.permission !== "read-only" && this.dependencies.managedPeers
         ? {
             peerCall: (name: string, args: unknown) =>
               this.dependencies.managedPeers!.call(view, name, args),
@@ -1527,6 +1633,8 @@ export class IdeChats {
         "이 대화에서 대기 중인 승인 요청이 아닙니다.",
         409,
       );
+    if (managed.view.reviewOnly && approval.kind !== "question" && input.approved !== false)
+      throw new IdeChatError("읽기 전용 대화에서는 실행 권한을 승인할 수 없습니다.",409);
     if (approval.kind === "question" && input.approved !== false) {
       for (const question of approval.questions || [])
         if (!input.answers?.[question.id]?.trim())
@@ -1671,6 +1779,30 @@ export function createIdeChatRouter(
         ...(terminalId ? { terminalId } : {}),
       });
     };
+  router.get("/hosts/:hostId/folders",route(async req=>{
+    const hostId=idSchema.parse(req.params.hostId);
+    const {path,list}=z.object({path:z.string().max(4096).regex(/^[^\0\r\n]*$/).optional(),list:z.enum(["0","1"]).default("1")}).parse(req.query);
+    const validate=guard(req,hostId,false);
+    await validate();
+    const key=hostKey(chats.dependencies.host(hostId));
+    const resolved=await chats.dependencies.resolveCwd(hostId,path);
+    await validate();
+    if(key!==hostKey(chats.dependencies.host(hostId)))throw new IdeChatError("서버 설정이 변경되었습니다.",409);
+    if(list==="0")return {path:resolved,parent:resolved,folders:[],truncated:false};
+    if(!chats.dependencies.folders)throw new IdeChatError("이 서버가 폴더 탐색을 지원하지 않습니다.",501);
+    const result=await chats.dependencies.folders(hostId,resolved);
+    await validate();
+    if(key!==hostKey(chats.dependencies.host(hostId)))throw new IdeChatError("서버 설정이 변경되었습니다.",409);
+    return result;
+  }));
+  router.get("/hosts/:hostId/models",route(async req=>{
+    const id=idSchema.parse(req.params.hostId);
+    return chats.models(id,providerSchema.parse(req.query.provider),guard(req,id,false));
+  }));
+  router.post("/conversations/:id/settings",route(async req=>{
+    const id=idSchema.parse(req.params.id);
+    return chats.settings(id,settingsSchema.parse(req.body),guard(req,chats.hostFor(id),true,id));
+  }));
   router.get(
     "/hosts/:hostId/history",
     route(async (req) => {

@@ -16,15 +16,17 @@ import {
   Plus,
   RefreshCw,
   Search,
-  ShieldCheck,
   Square,
   X,
   FileCode2,
   FolderOpen,
+  MoreHorizontal,
+  SlidersHorizontal,
   ImagePlus,
   TerminalSquare,
 } from "lucide-react";
-import type { Approval, MessageItem, TerminalInfo } from "../../shared/types";
+import { ApprovalCard } from "./ChatApproval";
+import type { MessageItem, TerminalInfo } from "../../shared/types";
 import type { HistoryThread } from "../../shared/history";
 import type {
   IdeChatAnswer,
@@ -43,10 +45,12 @@ import { workspaceRequest } from "./workspace-request";
 import { remoteDesktop } from "../desktop-session";
 import { WorkspaceControl } from "./WorkspaceControl";
 import { displayMessage } from "./display-message";
-import { TerminalUsageBar } from "../TerminalUsageBar";
-import {readManagedTabDraft,writeManagedTabDraft} from "./managed-tab-drafts";
+import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from "./ManagedSideChat";
+import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
 import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
+import {ChatFolderPicker,loadChatFolders} from "./ChatFolderPicker";
+import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSettingsValue} from "./ChatSettings";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
 import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
@@ -73,6 +77,19 @@ const localRequest: IdeChatRequest = (path, init) =>
       ...init?.headers,
     },
   });
+const desktopFolders:IdeChatRequest = async (path,init)=>{
+  const response=await localRequest(path,init);
+  const url=new URL(path,location.origin);
+  const match=/^\/hosts\/([A-Za-z0-9_-]+)\/folders$/.exec(url.pathname);
+  if(response.status!==404 || !match)return response;
+  // An already-running desktop backend can still serve its authorized file
+  // explorer until a normal restart loads the folder-only route.
+  const listing=await fetch("/api/hosts/"+match[1]+"/files?"+new URLSearchParams({path:url.searchParams.get("path")||""}),{headers:apiHeaders(),signal:init?.signal});
+  if(!listing.ok)return listing;
+  const value=await listing.json();
+  const folders=url.searchParams.get("list")==="0"?[]:value.entries.filter((e:{kind:string})=>e.kind==="directory").map(({name,path}:{name:string;path:string})=>({name,path}));
+  return Response.json({path:value.path,parent:value.parent,folders,truncated:!!value.truncated});
+};
 export interface IdeChatAttachment {
   id: string;
   selection: IdeSelection;
@@ -82,6 +99,7 @@ type RenderChatMarkdown = (
   location: { hostId: string; cwd: string },
 ) => ReactNode;
 interface ChatDraft {
+  sideChat?:SideChatState;
   area?: string;
   restoreId?: string;
   restoreNative?: string;
@@ -104,6 +122,7 @@ interface ChatDraft {
   parentKey?: string;
   displacedKey?: string;
   reviewOnly?: boolean;
+  permission?: ChatSettingsValue["permission"];
   effort?: IdeChatCreate["effort"];
   historyIndex?: number;
   loadingOlder?: boolean;
@@ -199,104 +218,6 @@ const ChatItem = memo(
     before.item.imageCount === after.item.imageCount,
 );
 
-function ApprovalCard({
-  approval,
-  onAnswer,
-}: {
-  approval: Approval;
-  onAnswer: (answer: Omit<IdeChatAnswer, "runtimeId">) => Promise<void>;
-}) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  async function answer(value: Omit<IdeChatAnswer, "runtimeId">) {
-    setBusy(true);
-    setError("");
-    try {
-      await onAnswer(value);
-    } catch (error) {
-      setError((error as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <section className="ide-chat-approval" aria-label="AI 확인 요청">
-      <strong>
-        <ShieldCheck size={15} />
-        {approval.title}
-      </strong>
-      {approval.detail && <pre>{approval.detail}</pre>}
-      {approval.kind === "question" &&
-        approval.questions?.map((question) => (
-          <div className="ide-chat-question" key={question.id}>
-            <span>{question.question}</span>
-            <div>
-              {question.options?.map((option) => (
-                <button
-                  type="button"
-                  key={option.label}
-                  title={option.description}
-                  aria-pressed={answers[question.id] === option.label}
-                  onClick={() =>
-                    setAnswers((old) => ({
-                      ...old,
-                      [question.id]: option.label,
-                    }))
-                  }
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <input
-              aria-label={question.question}
-              value={answers[question.id] || ""}
-              onChange={(event) =>
-                setAnswers((old) => ({
-                  ...old,
-                  [question.id]: event.target.value,
-                }))
-              }
-            />
-          </div>
-        ))}
-      {error && <p role="alert">{error}</p>}
-      <div className="ide-chat-approval-actions">
-        {approval.kind !== "question" && (
-          <button
-            disabled={busy}
-            onClick={() => void answer({ approved: false })}
-          >
-            거절
-          </button>
-        )}
-        <button
-          disabled={
-            busy ||
-            approval.kind === "unsupported" ||
-            (approval.kind === "question" &&
-              !!approval.questions?.some(
-                (question) => !answers[question.id]?.trim(),
-              ))
-          }
-          onClick={() =>
-            void answer(
-              approval.kind === "question" ? { answers } : { approved: true },
-            )
-          }
-        >
-          {busy
-            ? "전송 중…"
-            : approval.kind === "question"
-              ? "답변 보내기"
-              : "이번만 허용"}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 export default function IdeChatPanel({
   presentation,
   serverWorkspace = false,
@@ -334,6 +255,7 @@ export default function IdeChatPanel({
 }) {
   const hostId = suppliedHostId || terminal?.hostId || "";
   const useWorkspace = serverWorkspace && !terminal;
+  const folderRequest=suppliedRequest===localRequest ? desktopFolders : suppliedRequest;
   const hasGemini =
     useWorkspace || (antigravityIntegration && hostId === "local");
   const request = useMemo(
@@ -377,8 +299,8 @@ export default function IdeChatPanel({
         const fallback=persisted===undefined ? readDraft(rememberScope,legacy) : "";
         if(fallback && writeManagedTabDraft(tabStoreKey(scopeHost),t.key,fallback)) saveDraft(rememberScope,legacy,undefined,"");
         const target:ChatDraft={key:t.key,area:scopeHost,hostId,provider:t.provider,createRequestId:crypto.randomUUID(),sending:false,
-          cwd:"",model:"",draft:persisted ?? fallback,
-          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort};
+          cwd:t.nativeId||t.conversationId ? "" : readDraftFolder(tabStoreKey(scopeHost),t.key),model:t.model||"",draft:persisted ?? fallback,
+          restoreId:t.conversationId,restoreNative:t.nativeId,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission};
         entries.current.set(t.key,target);
         selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
       }
@@ -388,6 +310,7 @@ export default function IdeChatPanel({
   }
   const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
   const provider=currentTab ? currentTab.provider : chosenProvider;
+  const catalog=useChatModels(hostId,provider,suppliedRequest,active,scopeHost);
   const scope = `${scopeHost}:${provider}`;
   function setProvider(next:IdeChatProvider) {
     if(multiTabs){
@@ -434,6 +357,27 @@ export default function IdeChatPanel({
     entries.current.get(selectedByScope.current.get(scope) || "") ||
     fresh(provider, true);
   const selected = useRef(view.key);
+  const [defaultDirectory,setDefaultDirectory]=useState<{scope:string;path:string}>();
+  const [pickingFolder,setPickingFolder]=useState<string>();
+  const [actionKey,setActionKey]=useState<string>();
+  const actionMenu=useRef<HTMLDetailsElement>(null);
+  const defaultPath=defaultDirectory?.scope===scopeHost ? defaultDirectory.path : "";
+  const chosenPath=view.conversation?.cwd || view.cwd || defaultPath;
+  useEffect(()=>{
+    if(!active || !hostId || view.conversation || view.cwd || defaultPath)return;
+    const c=new AbortController();
+    void loadChatFolders(folderRequest,hostId,"",false,c.signal).then(f=>{
+      if(!c.signal.aborted)setDefaultDirectory({scope:scopeHost,path:f.path});
+    }).catch(()=>{if(!c.signal.aborted)setDefaultDirectory({scope:scopeHost,path:""});});
+    return ()=>c.abort();
+  },[active,hostId,scopeHost,folderRequest,defaultPath,view.key,view.conversation?.id,view.cwd]);
+  useEffect(()=>{
+    if(!actionKey)return;
+    function outside(e:PointerEvent){if(!actionMenu.current?.contains(e.target as Node))setActionKey(undefined);}
+    function escape(e:KeyboardEvent){if(e.key==="Escape"){setActionKey(undefined);actionMenu.current?.querySelector("summary")?.focus();}}
+    document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape);
+    return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape);};
+  },[actionKey]);
   selected.current = view.key;
   const repaint = () => {
     if (mounted.current) update((value) => value + 1);
@@ -498,7 +442,8 @@ export default function IdeChatPanel({
       const open=[...entries.current.values()].filter(t=>t.area===area);
       const data={selected:selectedByHost.current.get(area)||open[0]?.key||"",tabs:open.map((t):SavedManagedTab=>({
         key:t.key,provider:t.provider,title:t.conversation?.title?.trim().slice(0,160)||t.restoreTitle,conversationId:t.conversation?.id||t.restoreId,nativeId:t.conversation?.nativeId||t.restoreNative,
-        parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort}))};
+        parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,
+        ...(!t.conversation&&!t.restoreId ? {model:t.model} : {})}))};
       const signature=JSON.stringify(data);
       if(writtenTabs.current.get(area)!==signature){writtenTabs.current.set(area,signature);writeManagedTabs(tabStoreKey(area),data);}
     }
@@ -1069,13 +1014,13 @@ export default function IdeChatPanel({
     repaint();
     try {
       if (!target.conversation) {
-        const cwd = target.cwd.trim() || undefined,
+        const cwd = target.cwd.trim() || defaultPath || undefined,
           model = target.model.trim() || undefined;
         if (
           target.createAttempt &&
           (target.createAttempt.cwd !== cwd ||
             target.createAttempt.model !== model ||
-            target.createAttempt.effort !== target.effort)
+            target.createAttempt.effort !== target.effort || target.createAttempt.permission !== (target.permission==="default" ? undefined : target.permission))
         )
           target.createRequestId = crypto.randomUUID();
         target.createAttempt = {
@@ -1085,6 +1030,7 @@ export default function IdeChatPanel({
           ...(cwd ? { cwd } : {}),
           ...(model ? { model } : {}),
           ...(target.effort ? { effort: target.effort } : {}),
+          ...(target.permission && target.permission!=="default" && !target.reviewOnly ? { permission: target.permission } : {}),
           ...(target.reviewOnly ? { reviewOnly: true } : {}),
         };
         accept(
@@ -1261,9 +1207,12 @@ export default function IdeChatPanel({
   }
   function closeTab(t:ChatDraft){
     if(t.sending || t.readingImages)return;
-    if((t.draft || t.images?.length || t.attachment) &&
+    const sideNative=t.conversation?.nativeId||t.restoreNative;
+    const sideScope=rememberScope && sideNative && sideStorageKey(rememberScope,scopeHost,t.provider,sideNative);
+    if((t.draft || t.images?.length || t.attachment || t.sideChat?.draft || (sideScope&&readManagedTabDraft(sideScope,"side"))) &&
        !window.confirm("작성 중인 초안과 첨부를 지우고 이 탭을 닫을까요?"))return;
-    if(rememberScope)storeText(t,"");
+    if(rememberScope){storeText(t,"");writeDraftFolder(tabStoreKey(scopeHost),t.key,"");}
+    if(sideScope)writeManagedTabDraft(sideScope,"side","");
     const index=tabs.findIndex(entry=>entry.key===t.key);
     entries.current.delete(t.key);
     dirtyTabAreas.current.add(scopeHost);
@@ -1391,7 +1340,11 @@ export default function IdeChatPanel({
               freshScopes.current.add(
                 `${scopeHost}:${currentTerminal.agentKind}`,
               );
-            fresh();
+            const next = fresh();
+            if (multiTabs && chosenPath) {
+              next.cwd = chosenPath;
+              if (rememberScope) writeDraftFolder(tabStoreKey(scopeHost), next.key, chosenPath);
+            }
             if (rememberScope && !multiTabs)
               try {
                 remembered().removeItem(
@@ -1430,10 +1383,35 @@ export default function IdeChatPanel({
       view.provider = next;
       view.model = "";
       view.effort = undefined;
+      view.permission = undefined;
       activateTab(view);
       return;
     }
     setProvider(next);
+  }
+  const configuredModel = conversation ? conversation.live ? conversation.model : conversation.configuredModel || "" : view.model;
+  const modelSetting=configuredModel || conversation?.model || "";
+  const exactModel=modelSetting ? chatModelOption(catalog.models,modelSetting) : undefined;
+  const variant=provider==="antigravity" && modelSetting && !exactModel ? catalog.models.find(m=>m.efforts?.some(e=>m.id+"-"+e===modelSetting)) : undefined;
+  const selectedModel=exactModel || variant || (!modelSetting ? catalog.models.find(m=>m.isDefault) : undefined);
+  const variantEffort=variant?.efforts?.find(e=>e!=="default" && variant.id+"-"+e===modelSetting);
+  const effortSetting=(conversation ? conversation.effort : view.effort) || (variantEffort && variantEffort!=="default"?variantEffort:undefined);
+  const editModel = variant?.id || configuredModel;
+  const permissionSetting=conversation?.permission || (conversation?.reviewOnly||view.reviewOnly?"read-only":view.permission||"default");
+  async function saveSettings(settings:ChatSettingsValue,engineChanged:boolean){
+    const target=view;
+    if(target.conversation){
+      const c=target.conversation;
+      const changeNativeEngine=!!c.canConfigureNative && c.status==="idle" && engineChanged;
+      if(c.live && engineChanged && !changeNativeEngine)throw Error("현재 상태에서 모델이나 추론 강도를 바꿀 수 없습니다. 설정을 다시 열어 주세요.");
+      const v=await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id)+"/settings",
+        {runtimeId:c.runtimeId,permission:settings.permission,...(!c.live||changeNativeEngine?{model:settings.model||undefined,effort:settings.effort}:{})},undefined,c.live?.terminalId);
+      accept(target,v);
+    }else{
+      target.model=settings.model;target.effort=settings.effort;target.permission=settings.permission;
+      if(multiTabs)dirtyTabAreas.current.add(scopeHost);
+    }
+    repaint();
   }
   const chat = (
     <section className="ide-chat" data-presentation={presentation} aria-label="IDE AI 대화">
@@ -1462,9 +1440,8 @@ export default function IdeChatPanel({
           <option value="claude">Claude</option>
           {hasGemini && <option value="antigravity">Antigravity</option>}
         </select>
-        <span className="ide-chat-host" title={hostName}>
-          {hostName || "서버 선택"}
-        </span>
+        <button type="button" className="chat-working-dir" disabled={!hostId || !!conversation || view.sending || !!view.restoreId} aria-label={conversation?"현재 작업 폴더":"작업 폴더 선택"} title={[hostName||hostId,chosenPath||"기본 경로 확인 필요"].filter(Boolean).join(" · ")} onClick={()=>setPickingFolder(view.key)}><FolderOpen size={14}/><span>{hostName||"서버 선택"}</span><span><bdi dir="ltr">{chosenPath || (defaultDirectory?.scope===scopeHost?"기본 경로 확인 필요":"폴더 확인 중…")}</bdi></span></button>
+        <button type="button" className="chat-settings-button" aria-label="모델·추론 강도·권한 설정" title={[selectedModel?.name||modelSetting||"기본 모델",effortSetting||selectedModel?.defaultEffort||"기본 노력",permissionLabels[permissionSetting]].join(" · ")} aria-expanded={folderOpen} disabled={!hostId || view.sending || !!view.restoreId && !conversation} onClick={()=>setFolderOpen(true)}><SlidersHorizontal size={14}/><span>{selectedModel?.name||modelSetting||"기본 모델"}</span><small>{effortSetting||selectedModel?.defaultEffort||"기본 노력"} · {permissionLabels[permissionSetting]}</small></button>
         <button
           aria-label="대화 기록"
           title="대화 기록"
@@ -1478,11 +1455,9 @@ export default function IdeChatPanel({
           <span>기록</span>
         </button>
         {!multiTabs && <button aria-label="새 대화" title="새 대화" onClick={addChat}><Plus size={17}/></button>}
-      </header>
-
-      {(conversation || view.parentKey) && (
-        <div className="chat-actions">
-          {view.parentKey && (
+        {(conversation || view.parentKey) && <details className="chat-more" ref={actionMenu} open={actionKey===view.key}>
+          <summary aria-label="대화 메뉴" title="대화 메뉴" aria-expanded={actionKey===view.key} onMouseDown={e=>e.preventDefault()} onClick={e=>{e.preventDefault();setHandoffOpen(false);setActionKey(actionKey===view.key?undefined:view.key);}}><MoreHorizontal size={16}/></summary>
+          <div className="chat-more-list" role="group" aria-label="대화 동작">          {view.parentKey && (
             <button onClick={() => backToParent(false)}>원래 대화</button>
           )}
           {view.parentKey &&
@@ -1491,7 +1466,7 @@ export default function IdeChatPanel({
                 답을 원래 초안에 담기
               </button>
             )}
-          {conversation && (
+          {conversation && !multiTabs && (
             <button
               onMouseDown={(event) => event.preventDefault()}
               onClick={() =>
@@ -1527,12 +1502,53 @@ export default function IdeChatPanel({
                   repaint();
                   return;
                 }
-                setLabQuote({ text, sessionId: conversation.id });
+                setActionKey(undefined);setLabQuote({ text, sessionId: conversation.id });
               }}
             >
               연구실에서 묻기
             </button>
           )}
+          {handoffOpen &&
+            (["codex", "claude", "antigravity"] as const)
+              .filter(
+                (p) => p !== provider && (p !== "antigravity" || hasGemini),
+              )
+              .map((p) => (
+                <button key={p} onClick={() => startRelated(p, false)}>
+                  {agentLabel(p)}로 인계
+                </button>
+              ))}
+        {conversation?.peerEnabled !== undefined && (
+          <button
+            type="button"
+            aria-pressed={conversation.peerEnabled}
+            onClick={async () => {
+              setActionKey(undefined);const target = view;
+              try {
+                const next = await call<IdeChatConversation>(
+                  `/conversations/${encodeURIComponent(conversation.id)}/collaboration`,
+                  {
+                    runtimeId: conversation.runtimeId,
+                    enabled: !conversation.peerEnabled,
+                  },
+                );
+                accept(target, next);
+                repaint();
+              } catch (e) {
+                target.error = (e as Error).message;
+                repaint();
+              }
+            }}
+          >
+            {conversation.peerEnabled ? "세션 협업 끄기" : "세션 협업 켜기"}
+          </button>
+        )}
+</div>
+        </details>}
+      </header>
+
+      {folderOpen && <ChatSettings key={view.key} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} onClose={()=>setFolderOpen(false)}/>}
+      {pickingFolder===view.key && !conversation && <ChatFolderPicker key={scopeHost+view.key} hostId={hostId} hostName={hostName||hostId} initialPath={chosenPath} request={folderRequest} onClose={()=>setPickingFolder(undefined)} onSelect={path=>{view.cwd=path;if(multiTabs && rememberScope)writeDraftFolder(tabStoreKey(scopeHost),view.key,path);dirtyTabAreas.current.add(scopeHost);setPickingFolder(undefined);repaint();}}/>}
           {conversation && labQuote?.sessionId === conversation.id && (
             <Modal
               title="연구실에서 묻기"
@@ -1556,18 +1572,6 @@ export default function IdeChatPanel({
               />
             </Modal>
           )}
-          {handoffOpen &&
-            (["codex", "claude", "antigravity"] as const)
-              .filter(
-                (p) => p !== provider && (p !== "antigravity" || hasGemini),
-              )
-              .map((p) => (
-                <button key={p} onClick={() => startRelated(p, false)}>
-                  {agentLabel(p)}로 인계
-                </button>
-              ))}
-        </div>
-      )}
       {currentTerminal && (
         <div className="ide-chat-current-terminal">
           <button
@@ -1600,33 +1604,9 @@ export default function IdeChatPanel({
           <span>{currentTerminal.title}</span>
         </div>
       )}
+      {!multiTabs && (
       <div className="ide-chat-conversation-title">
         <strong>{conversation?.title || "새 대화"}</strong>
-        {conversation?.peerEnabled !== undefined && (
-          <button
-            type="button"
-            aria-pressed={conversation.peerEnabled}
-            onClick={async () => {
-              const target = view;
-              try {
-                const next = await call<IdeChatConversation>(
-                  `/conversations/${encodeURIComponent(conversation.id)}/collaboration`,
-                  {
-                    runtimeId: conversation.runtimeId,
-                    enabled: !conversation.peerEnabled,
-                  },
-                );
-                accept(target, next);
-                repaint();
-              } catch (e) {
-                target.error = (e as Error).message;
-                repaint();
-              }
-            }}
-          >
-            {conversation.peerEnabled ? "세션 협업 끄기" : "세션 협업 켜기"}
-          </button>
-        )}
         <span>
           {running
             ? "작업 중"
@@ -1637,6 +1617,7 @@ export default function IdeChatPanel({
                 : "질문을 보내면 시작됩니다"}
         </span>
       </div>
+      )}
       {live && (
         <div className="ide-chat-live" role="status">
           <span>
@@ -1723,7 +1704,7 @@ export default function IdeChatPanel({
       >
         {!!view.restoreId && !view.historyPaused && !conversation && <p role="status">대화에 다시 연결 중…</p>}
         {!conversation && (presentation === "terminal" ? (
-          <div className="managed-chat-empty"><strong>{label}</strong><span>{hostName || hostId} · {view.cwd || "서버 홈"}</span></div>
+          null
         ) : (
           <div className="ide-chat-empty">
             <div className="ide-chat-empty-icon">
@@ -1906,6 +1887,8 @@ export default function IdeChatPanel({
         )}
         <textarea
           aria-label="AI에게 보낼 메시지"
+          rows={multiTabs ? 1 : undefined}
+          aria-description={multiTabs ? "Enter로 전송, Shift+Enter로 줄바꿈" : undefined}
           onPaste={(e) => {
             const files = Array.from(e.clipboardData.files);
             if (!files.length) return;
@@ -1976,7 +1959,7 @@ export default function IdeChatPanel({
             }
           }}
         />
-        <div>
+        <div className="ide-chat-compose-controls">
           <button
             type="button"
             aria-label="이미지 첨부"
@@ -2006,15 +1989,7 @@ export default function IdeChatPanel({
               void attachImages(files);
             }}
           />
-          <button
-            type="button"
-            aria-label="대화 작업 폴더 설정"
-            aria-expanded={folderOpen}
-            title={conversation?.cwd || view.cwd || "서버 홈 폴더"}
-            onClick={() => setFolderOpen(!folderOpen)}
-          >
-            <FolderOpen size={14} />
-          </button>
+
           <small>
             {live?.canSend === false
               ? "입력·승인은 열린 터미널에서"
@@ -2081,65 +2056,20 @@ export default function IdeChatPanel({
             </button>
           )}
         </div>
-        {folderOpen && (
-          <div className="ide-chat-options">
-            {provider !== "antigravity" && (
-              <label>
-                추론 강도
-                <select
-                  aria-label="추론 강도"
-                  value={conversation?.effort || view.effort || ""}
-                  disabled={!!conversation || view.sending}
-                  onChange={(e) => {
-                    if(multiTabs)dirtyTabAreas.current.add(scopeHost);
-                  view.effort =
-                      (e.target.value as IdeChatCreate["effort"]) || undefined;
-                    repaint();
-                  }}
-                >
-                  <option value="">모델 기본값</option>
-                  {["low", "medium", "high", "xhigh"].map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label>
-              작업 폴더
-              <input
-                aria-label="AI 작업 폴더"
-                placeholder="서버 홈 폴더 (~)"
-                value={conversation?.cwd || view.cwd}
-                disabled={!!conversation || view.sending}
-                onChange={(event) => {
-                  view.cwd = event.target.value;
-                  repaint();
-                }}
-              />
-            </label>
-            <label>
-              모델
-              <input
-                aria-label="AI 모델"
-                placeholder="계정 기본 모델"
-                value={conversation?.model || view.model}
-                disabled={!!conversation || view.sending}
-                onChange={(event) => {
-                  view.model = event.target.value;
-                  repaint();
-                }}
-              />
-            </label>
-          </div>
-        )}
+
       </form>
     </section>
   );
   return presentation==="terminal" && !mobileWorkspace ? <div className="managed-chat-surface">
     {chat}
-    <TerminalUsageBar managedId={conversation?.id}
-      managedRequest={request} hostId={hostId} provider={conversation?.provider || provider}
-      sessionId={conversation?.nativeId} active={active} working={!!running}
-      waiting={conversation?.status==="waiting"} managedStatus={conversation?.status} managedModel={conversation?.model}/>
+
+    <ManagedSideRail storageScope={rememberScope && conversation ? sideStorageKey(rememberScope,scopeHost,conversation.provider,conversation.nativeId):undefined} parent={conversation} state={view.sideChat ||= newSideChat(view.provider)}
+      request={request} hostId={hostId} provider={view.provider} active={active} selection={selectedPassage}
+      append={text=>{
+        if(selected.current!==view.key || !entries.current.has(view.key))return;
+        const next=[view.draft,text].filter(Boolean).join("\n\n");
+        if(next.length>32000){view.error="원래 초안과 답변이 입력 한도를 넘었습니다. 필요한 부분을 복사하세요.";repaint();return;}
+        view.draft=next;storeText(view,next);repaint();
+      }}/>
   </div> : chat;
 }

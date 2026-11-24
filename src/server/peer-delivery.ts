@@ -324,10 +324,11 @@ export class PeerDelivery extends EventEmitter {
     sessionId: string | undefined,
     waitMs: number,
     signal?: AbortSignal,
+    extraReady?:()=>boolean,
   ) {
     z.number().int().min(0).max(25000).parse(waitMs);
     const current = this.events(terminalId, sessionId);
-    if (current.messages.length || current.reason || !waitMs || signal?.aborted)
+    if (current.messages.length || current.reason || !waitMs || signal?.aborted || extraReady?.())
       return current;
     await new Promise<void>((done) => {
       const finish = () => {
@@ -338,7 +339,7 @@ export class PeerDelivery extends EventEmitter {
       };
       const changed = () => {
         const next = this.events(terminalId, sessionId);
-        if (next.messages.length || next.reason) finish();
+        if (next.messages.length || next.reason || extraReady?.()) finish();
       };
       const timer = setTimeout(finish, waitMs);
       this.on("change", changed);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm,symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { AntigravityHistory, findAntigravity } from "./antigravity";
@@ -10,6 +10,58 @@ import { AgentBridge } from "./agent-bridge";
 import { Mailbox } from "./mailbox";
 import { createBridgeRouter } from "./bridge-router";
 import { createInterface } from "node:readline";
+import { createRequire } from "node:module";
+test("Antigravity approval keeps escaped, linked or hidden workspace paths manual",async t=>{
+  const {allowOnce}=createRequire(import.meta.url)("../../desktop/antigravity.cjs");
+  const base=resolve(".cache/antigravity-test");await mkdir(base,{recursive:true});
+  const fixture=await mkdtemp(join(base,"approve-paths-")),workspace=join(fixture,"project"),outside=join(fixture,"outside");
+  t.after(()=>rm(fixture,{recursive:true,force:true}));
+  await mkdir(workspace);await mkdir(outside);await symlink(outside,join(workspace,"link"),process.platform==="win32"?"junction":"dir");
+  const choice={optionId:"opaque",kind:"allow_once"};
+  const approved=(kind:string,target:string)=>allowOnce({toolCall:{kind,rawInput:{TargetFile:target}},options:[choice]},"default",workspace);
+  assert.equal(approved("read",workspace),choice);assert.equal(approved("edit",join(workspace,"safe.ts")),choice);
+  for(const path of [workspace,join(workspace,".git","config"),join(workspace,"link","outside.ts"),join(outside,"outside.ts"),"relative.ts"])
+    assert.equal(approved("edit",path),undefined);
+});
+test("Antigravity can delegate only an unambiguous allow_once for a native tool action", () => {
+  const { allowOnce } = createRequire(import.meta.url)(
+    "../../desktop/antigravity.cjs",
+  );
+  const onceOption = { kind: "allow_once", optionId: "opaque-once" },
+    persistent = { kind: "allow_always", optionId: "remember" };
+  const request = {
+    toolCall: {
+      kind: "edit",
+      title: "Edit",
+      rawInput: { TargetFile: join(process.cwd(), "fixture-note.txt") },
+    },
+    options: [persistent, onceOption],
+  };
+  assert.equal(allowOnce(request, "default"), onceOption);
+  for (const toolCall of [
+    { kind: "execute", title: "shell" },
+    { kind: "delete", title: "delete" },
+    { kind: "move", title: "move" },
+    { kind: "fetch", title: "URL" },
+    { kind: "edit", title: "unknown path" },
+    { kind: "edit", rawInput: { path: resolve("..", "outside.txt") } },
+  ])
+    assert.equal(allowOnce({ ...request, toolCall }, "default"), undefined);
+  for (const mode of ["plan", "read-only", "new-mode", undefined])
+    assert.equal(allowOnce(request, mode), undefined);
+  for (const options of [
+    [persistent],
+    [{ kind: "reject_once", optionId: "no" }],
+    [onceOption, onceOption],
+  ])
+    assert.equal(allowOnce({ ...request, options }, "default"), undefined);
+  for (const toolCall of [
+    { kind: "other", title: "Confirm" },
+    { kind: "execute", title: "AskUserQuestion" },
+    { kind: "edit", rawInput: { name: "mcp__x__request_user_input" } },
+  ])
+    assert.equal(allowOnce({ ...request, toolCall }, "default"), undefined);
+});
 import type { TerminalInfo } from "../shared/types";
 import type { HostConfig } from "../shared/types";
 
@@ -33,24 +85,68 @@ const update=u=>send({method:'session/update',params:{sessionId:sid,update:u}});
 function finish(req){update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'## fixture answer'}});update({sessionUpdate:'usage_update',used:250,size:1000,cost:{amount:1.5,currency:'USD'}});send({id:req,result:{stopReason:'end_turn'}})}
 rl.on('line',s=>{const m=JSON.parse(s);if(m.method==='initialize')send({id:m.id,result:{protocolVersion:1}});
 else if(m.method==='session/new'||m.method==='session/load'){if(m.params.mcpServers[0].name!=='harbor')process.exit(2);fs.appendFileSync('trace',JSON.stringify([m.method,m.params.sessionId])+'\\n');send({id:m.id,result:{sessionId:sid,configOptions:[{id:'model',category:'model',currentValue:'fixture-model'}]}})}
-else if(m.method==='session/set_config_option'){if(m.params.value!=='fixture-model-low')process.exit(3);send({id:m.id,result:{configOptions:[{id:'model',category:'model',currentValue:'fixture-model'},{id:'thought_level',category:'thought_level',currentValue:'low'}]}})}
-else if(m.method==='session/prompt'){const text=m.params.prompt[0].text;fs.appendFileSync('trace',JSON.stringify(['prompt',m.params.sessionId,text])+'\\n');if(text.includes('approve-fixture')){prompting=m.id;send({id:901,method:'session/request_permission',params:{sessionId:sid,toolCall:{title:'test tool'},options:[{optionId:'one',name:'one'}]}})}else finish(m.id)}
+else if(m.method==='session/set_config_option'){if(!['fixture-model-low','low'].includes(m.params.value))process.exit(3);send({id:m.id,result:{configOptions:[{id:'model',category:'model',currentValue:'fixture-model'},{id:'thought_level',category:'thought_level',currentValue:'low'},{id:'mode',category:'mode',currentValue:'default'}]}})}
+else if(m.method==='session/prompt'){const text=m.params.prompt[0].text;fs.appendFileSync('trace',JSON.stringify(['prompt',m.params.sessionId,text])+'\\n');if(text.includes('approve-fixture')){if(process.env.HARBOR_HOOK_TOKEN||process.env.HARBOR_HOOK_URL)process.exit(4);const auto=text.startsWith('auto-');prompting=m.id;send({id:901,method:'session/request_permission',params:{sessionId:sid,toolCall:{title:'test tool',kind:auto?'edit':'other',rawInput:{TargetFile:require('node:path').join(process.cwd(),'fixture-edit.txt')}},options:auto?[{optionId:'persist',kind:'allow_always',name:'always'},{optionId:'opaque-once',kind:'allow_once',name:'once'}]:[{optionId:'one',name:'one'}]}})}else finish(m.id)}
 else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.result.outcome])+'\\n');finish(prompting)}});
 `,
     );
     let queued = false,
       acked = false;
     const states: string[] = [];
+    let nativeApprovals = 0,
+      registered = false,
+      configPending = false;
+    const applied: any[] = [];
+    let releaseGrant: undefined | (() => void);
     const server = createServer(async (req, res) => {
-      assert.equal(req.headers.authorization, "Bearer fixture");
+      assert.equal(
+        req.headers.authorization,
+        req.url === "/bridge/permission"
+          ? "Bearer fixture-hook"
+          : "Bearer fixture",
+      );
       res.setHeader("Content-Type", "application/json");
       let body = "";
       for await (const data of req) body += data;
+      if (req.url === "/bridge/permission") {
+        const event = JSON.parse(body);
+        if (event.harbor_acp_config) {
+          const cfg = event.harbor_acp_config;
+          assert.equal(cfg.nativeId, id);
+          if (cfg.op === "register") registered = true;
+          if (cfg.op === "claim") {
+            configPending = false;
+            res.end(JSON.stringify({ id, config: { effort: "low" } }));
+            return;
+          }
+          if (cfg.op === "ack") applied.push(cfg);
+          res.end("{}");
+          return;
+        }
+        assert.equal(event.harbor_acp, true);
+        assert.equal(event.session_id, id);
+        assert.equal(event.tool_name, "Antigravity/edit");
+        nativeApprovals++;
+        if (nativeApprovals === 2)
+          await new Promise<void>((r) => {
+            releaseGrant = r;
+          });
+        res.end(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PermissionRequest",
+              decision: { behavior: "allow" },
+            },
+          }),
+        );
+        return;
+      }
       if (req.url?.includes("/events?")) {
         if (!queued || acked) await new Promise((r) => setTimeout(r, 80));
         res.end(
           JSON.stringify({
             sessionId: id,
+            configPending,
             messages:
               queued && !acked
                 ? [
@@ -85,7 +181,12 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
           cwd: dir,
           env: {
             ...process.env,
-            HARBOR_AGY_CONFIG: JSON.stringify({model:"fixture-model-low"}),
+            HARBOR_AGY_CONFIG: JSON.stringify({
+              model: "fixture-model-low",
+              effort: "low",
+            }),
+            HARBOR_HOOK_TOKEN: "fixture-hook",
+            HARBOR_HOOK_URL: `http://127.0.0.1:${address.port}/bridge/permission`,
             HARBOR_SESSION_TOKEN: "fixture",
             HARBOR_AGY_BRIDGE: `http://127.0.0.1:${address.port}/bridge/mcp`,
           },
@@ -104,7 +205,11 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
     proc.stdout.resume();
     proc.stderr.resume();
     try {
-      await wait(() => states.includes("idle"));
+      await wait(() => states.includes("idle") && registered);
+      configPending = true;
+      await wait(() => applied.length > 0);
+      assert.equal(applied[0].model, "fixture-model-low");
+      assert.equal(applied[0].effort, "low");
       queued = true;
       await wait(() => acked && states.at(-1) === "idle");
       proc.stdin.write("\x1b[200~approve-fixture\r\nsecond line\x1b[201~");
@@ -127,7 +232,19 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       const usage = await history.usage(host, id);
       assert.equal(usage?.usedTokens, 250);
       assert.equal(usage?.contextWindow, 1000);
-      assert.equal(usage?.model,"fixture-model-low");
+      assert.equal(usage?.model, "fixture-model-low");
+      assert.equal(
+        nativeApprovals,
+        0,
+        "manual requests are not sent to an automatic grant",
+      );
+      proc.stdin.write("auto-approve-fixture\r");
+      await wait(() => nativeApprovals === 1 && states.at(-1) === "idle");
+      proc.stdin.write("auto-race-approve-fixture\r");
+      await wait(() => nativeApprovals === 2 && !!releaseGrant);
+      proc.stdin.write("/deny\r");
+      await wait(() => states.at(-1) === "idle");
+      releaseGrant!();
       proc.stdin.write("/exit\r");
       await wait(() => proc.exitCode !== null);
       states.length = 0;
@@ -147,6 +264,28 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       assert.ok(trace.some((x) => x[0] === "session/load" && x[1] === id));
       assert.ok(
         trace.some((x) => x[0] === "permission" && x[1].optionId === "one"),
+      );
+      assert.ok(
+        trace.some(
+          (x) => x[0] === "permission" && x[1].optionId === "opaque-once",
+        ),
+      );
+      assert.equal(
+        trace.filter(
+          (x) => x[0] === "permission" && x[1].optionId === "opaque-once",
+        ).length,
+        1,
+        "a late allow never overrides a local deny",
+      );
+      assert.ok(
+        trace.some(
+          (x) => x[0] === "permission" && x[1].outcome === "cancelled",
+        ),
+      );
+      assert.ok(
+        !trace.some(
+          (x) => x[0] === "permission" && x[1].optionId === "persist",
+        ),
       );
       proc.stdin.write("/exit\r");
       await wait(() => proc.exitCode !== null);

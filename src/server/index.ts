@@ -3,6 +3,7 @@ import {claudeUsageControl} from "./claude-account-usage.js";
 import { MobileAccess } from "./mobile-access.js";
 import { MobileGateway } from "./mobile-gateway.js";
 import { DesktopAccess } from "./desktop-access.js";
+import { ChatModels } from "./chat-models.js";
 import { RemoteWorkspaces } from "./remote-workspaces.js";
 import { LoopbackPorts,loopbackPortRouter } from "./loopback-ports.js";
 import { workspaceCanSwitch } from "./workspace-update.js";
@@ -730,7 +731,9 @@ managedPeers = new ManagedPeers({
 });
 hub.managedPeerCall = (hostId, nativeId, name, args) =>
   managedPeers!.call({ hostId, nativeId, provider: "codex" }, name, args);
+const chatModels = new ChatModels(history, files, passwordFor);
 const ideChats = new IdeChats({
+  models:(hostId,provider)=>chatModels.list(hub.host(hostId),provider),
   sessionUsage: async (v, terminalId) => {
     const host=hub.host(v.hostId);
     const matches = () => !terminalId || terminals.list().some(t=>t.id===terminalId && !t.exited &&
@@ -775,13 +778,25 @@ const ideChats = new IdeChats({
   hub,
   live: liveIdeChats,
   antigravityModel:async(hostId,id)=>(await antigravityHistory.usage(hub.host(hostId),id))?.model,
-  openAntigravity: async (hostId, cwd, resumeId, guard, model) => {
+  antigravityAutoAccept:(terminalId,nativeId)=>{
+    const policy=autoApproval.state(terminalId);
+    return policy.enabled && policy.sessionId===nativeId;
+  },
+  canConfigureAntigravity:(terminalId,nativeId)=>bridge.acpSettings.registered(terminalId,nativeId),
+  configureAntigravity:(terminalId,nativeId,config,guard)=>bridge.acpSettings.configure(terminalId,nativeId,config,guard),
+  setAntigravityAutoAccept:(terminalId,nativeId,enabled)=>{
+    const current=terminals.list().find(t=>t.id===terminalId);
+    if(!current || current.exited || current.program!=="antigravity" || !current.agentConnected || current.agentSessionId!==nativeId)
+      throw new IdeChatError("Antigravity 대화 연결이 변경되었습니다.",409);
+    autoApproval.set(terminalId,enabled);
+  },
+  openAntigravity: async (hostId, cwd, resumeId, guard, model, options) => {
     const host = hub.host(hostId);
     if (host.kind !== "local")
       throw new Error("Antigravity는 이 컴퓨터에서 실행할 수 있습니다.");
     const folder = resumeId
       ? (await antigravityHistory.summary(host, undefined, resumeId)).cwd
-      : cwd;
+      : await files.workingDirectory(host,cwd);
     await guard();
     const terminal = resumeId
       ? await historyResumer.resume(host, resumeId, { provider: "antigravity" })
@@ -789,13 +804,16 @@ const ideChats = new IdeChats({
           program: "antigravity",
           resumeCwd: folder,
           antigravityModel:model,
+            antigravityEffort:options?.effort,
         });
     for (let i = 0; i < 200; i++) {
       await guard();
       const current = terminals.list().find((t) => t.id === terminal.id);
       if (!current || current.exited) break;
-      if (current.agentSessionId && current.agentConnected)
+        if (current.agentSessionId && current.agentConnected){
+          if(!resumeId && options?.autoAccept===true)autoApproval.set(current.id,true);
         return current.agentSessionId;
+        }
       await new Promise((r) => setTimeout(r, 150));
     }
     throw new Error("Antigravity 터미널에서 로그인 및 연결 상태를 확인하세요.");
@@ -804,9 +822,11 @@ const ideChats = new IdeChats({
   password: passwordFor,
   resolveCwd: async (id, cwd) => {
     await passwordFor(id);
-    const host = hub.host(id);
-    const path = await files.resolvePath(host, cwd || "~", "~");
-    return (await files.list(host, path)).path;
+    return files.workingDirectory(hub.host(id),cwd);
+  },
+  folders:async(id,path)=>{
+    const v=await files.list(hub.host(id),path);
+    return {path:v.path,parent:v.parent,folders:v.entries.filter(e=>e.kind==="directory").map(({name,path})=>({name,path})),truncated:v.truncated};
   },
   historyList: async (id, provider, options) =>
     historyReader(provider).list(hub.host(id), await passwordFor(id), {
@@ -1523,7 +1543,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.4" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.5" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

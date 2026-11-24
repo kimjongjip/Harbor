@@ -7,6 +7,7 @@ import express, {
   type Router,
 } from "express";
 import { z } from "zod";
+import {AntigravitySettings,nativeControlEvent} from "./antigravity-settings.js";
 import { claudeHookSchema, type ClaudeHookEvent } from "./claude-hooks.js";
 import { claudeUsage } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
@@ -286,6 +287,7 @@ export class AgentBridge {
   readonly richHandle: Router;
   readonly annotations: TerminalAnnotations;
   readonly peers: PeerDelivery;
+  readonly acpSettings:AntigravitySettings;
   private readonly credentials = new Map<string, Credential>();
   private readonly pendingCalls = new Map<
     string,
@@ -304,6 +306,11 @@ export class AgentBridge {
     this.peerHandle = express.Router();
     this.richHandle = express.Router();
     this.peers = new PeerDelivery(mailbox);
+    this.acpSettings=new AntigravitySettings((id,nativeId)=>{
+      const t=options.terminals().find(t=>t.id===id),runtime=this.peers.runtime(id);
+      if(!t||t.exited||t.program!=="antigravity"||t.agentSessionId!==nativeId||!runtime||runtime.kind!=="antigravity"||runtime.sessionId!==nativeId||runtime.state==="offline")return;
+      return runtime.state==="idle"?"idle":"busy";
+    },()=>this.peers.emit("change"));
     const authenticate =
       (hook: boolean, allowGet = false, rich = false): RequestHandler =>
       (req, res, next) => {
@@ -438,8 +445,9 @@ export class AgentBridge {
           query.sessionId,
           query.waitMs,
           controller.signal,
+          ()=>this.acpSettings.pending(credential.terminalId,query.sessionId),
         );
-        if (!res.destroyed) res.json(events);
+        if (!res.destroyed) res.json(this.acpSettings.pending(credential.terminalId,query.sessionId)?{...events,configPending:true}:events);
       } catch (error) {
         if (!res.destroyed)
           res.status(400).json({
@@ -836,11 +844,17 @@ export class AgentBridge {
       runtime.detail =
         "기존 Claude 대화 · 다음 입력·도구·응답 완료 때 수신. 입력 대기 중이면 받은함 확인 요청을 보내세요. 재실행은 필요하지 않습니다.";
     this.peers.setRuntime(terminalId, runtime);
+    if(previous?.kind==="antigravity" && previous.sessionId && (runtime.kind!=="antigravity" || runtime.sessionId!==previous.sessionId || runtime.state==="offline")){
+      this.acpSettings.revoke(terminalId);
+      try{this.options.requests?.cancelPermissions(terminalId,previous.sessionId);}
+      catch{/* Native binding checks still reject a stale approval if disk writes fail. */}
+    }
     this.options.onPeerRuntime?.(terminalId, runtime);
     this.options.onChange?.();
   }
 
   private revokePeerRuntime(terminalId: string): void {
+    this.acpSettings.revoke(terminalId);
     const runtime = this.peers.runtime(terminalId);
     this.peers.revoke(terminalId);
     if (runtime)
@@ -1017,9 +1031,26 @@ export class AgentBridge {
     credential: Credential,
   ): Promise<void> {
     const requests = this.options.requests;
+    if(req.body?.harbor_acp_config){
+      const parsed=nativeControlEvent.safeParse(req.body.harbor_acp_config);
+      if(!parsed.success){res.status(400).json({error:"잘못된 ACP 설정 이벤트입니다."});return;}
+      try{res.json(await this.acpSettings.receive(credential.terminalId,parsed.data));}
+      catch{res.status(409).json({error:"Antigravity 세션 연결을 확인하세요."});}
+      return;
+    }
     const event = permissionEventSchema.safeParse(req.body);
+    const acp= req.body?.harbor_acp===true;
+    const acpBound=()=>{
+      if(!acp)return true;
+      const runtime=this.peers.runtime(credential.terminalId);
+      const terminal=this.options.terminals().find(t=>t.id===credential.terminalId);
+      return !!event.success && this.credentials.get(credential.terminalId)===credential &&
+        runtime?.kind==="antigravity" && runtime.sessionId===event.data.session_id && runtime.state!=="offline" &&
+        terminal?.program==="antigravity" && !terminal.exited && terminal.agentSessionId===event.data.session_id &&
+        /^Antigravity\/(?:edit|read|search)$/.test(event.data.tool_name);
+    };
     // No decision means Codex retains its original approval flow.
-    if (!requests || !event.success) {
+    if (!requests || !event.success || !acpBound()) {
       res.json({});
       return;
     }
@@ -1124,6 +1155,7 @@ export class AgentBridge {
         res.json({});
         return;
       }
+      if(!acpBound()){res.json({});return;}
       res.json({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",

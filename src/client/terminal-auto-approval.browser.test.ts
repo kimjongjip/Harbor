@@ -25,6 +25,8 @@ test(
       cwd: "/fixture",
       exited: false,
       integration: "ready",
+      agentKind: id==="a"?"antigravity":"codex",
+      program: id==="a"?"antigravity":"codex",
       agentSessionId: `native-${id}`,
     }));
     const resolver = {
@@ -37,7 +39,7 @@ test(
       requests.createPermission(id, {
         hook_event_name: "PermissionRequest",
         session_id: `native-${id}`,
-        tool_name: "Bash",
+        tool_name: id==="a"?"Antigravity/edit":"Bash",
         tool_input: { command: "echo fixture" },
       });
     const pending = permission("a"),
@@ -97,6 +99,7 @@ test(
       await page
         .getByRole("button", { name: "자동 수락 설정: Session a", exact: true })
         .click();
+      await page.getByRole("dialog").getByText(/Antigravity가 실행 승인/).waitFor();
       await page
         .getByRole("button", { name: "이 세션 자동 수락 켜기", exact: true })
         .click();

@@ -15,9 +15,10 @@ import type { AccountQuota } from "../shared/host-insights.js";
 
 // An async stream that never yields a user message only opens the control
 // protocol. skipBehaviors avoids scanning transcripts on the selected host.
-export async function claudeUsageControl(
+export async function withClaudeControl<T>(
   host: HostConfig,
   password: string | undefined,
+  action: (session: ReturnType<ClaudeQuery>) => Promise<T>,
   start: ClaudeQuery = query,
 ) {
   let finish!: () => void;
@@ -59,63 +60,77 @@ export async function claudeUsageControl(
         },
       },
     });
-    const account = await session.accountInfo();
-    if (account.apiProvider && account.apiProvider !== "firstParty")
-      return {
-        error: "이 Claude 로그인 방식에서는 구독 한도가 제공되지 않습니다.",
-      };
-    if (!account.email) return;
-    const identity = {
-      email: account.email,
-      plan: account.subscriptionType,
-      source: "cli",
-    };
-    if (
-      typeof session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !==
-      "function"
-    )
-      return;
-    try {
-      const usage =
-        await session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(
-          { skipBehaviors: true },
-        );
-      if (usage.rate_limits_available && usage.rate_limits)
-        return {
-          ...identity,
-          plan: usage.subscription_type || account.subscriptionType,
-          usage: usage.rate_limits,
-        };
-      return {
-        ...identity,
-        error: usage.rate_limits_available
-          ? "Claude Code에서 한도를 확인하는 중입니다."
-          : "Claude Code에서 이 계정의 구독 한도를 제공하지 않습니다.",
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      if (/429|too many requests|rate.?limit/i.test(message))
-        return {
-          ...identity,
-          status: 429,
-          error: "Claude 사용량 조회 요청 제한입니다.",
-        };
-      if (
-        /unsupported|unknown (?:control|request|subtype)|not implemented/i.test(
-          message,
-        )
-      )
-        return;
-      return {
-        ...identity,
-        error: "Claude Code의 사용량 조회가 일시적으로 실패했습니다.",
-      };
-    }
+    return await action(session);
   } finally {
     clearTimeout(timer);
     finish();
     session?.close();
   }
+}
+export async function claudeUsageControl(
+  host: HostConfig,
+  password: string | undefined,
+  start: ClaudeQuery = query,
+) {
+  return withClaudeControl(
+    host,
+    password,
+    async (session) => {
+      const account = await session.accountInfo();
+      if (account.apiProvider && account.apiProvider !== "firstParty")
+        return {
+          error: "이 Claude 로그인 방식에서는 구독 한도가 제공되지 않습니다.",
+        };
+      if (!account.email) return;
+      const identity = {
+        email: account.email,
+        plan: account.subscriptionType,
+        source: "cli",
+      };
+      if (
+        typeof session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !==
+        "function"
+      )
+        return;
+      try {
+        const usage =
+          await session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(
+            { skipBehaviors: true },
+          );
+        if (usage.rate_limits_available && usage.rate_limits)
+          return {
+            ...identity,
+            plan: usage.subscription_type || account.subscriptionType,
+            usage: usage.rate_limits,
+          };
+        return {
+          ...identity,
+          error: usage.rate_limits_available
+            ? "Claude Code에서 한도를 확인하는 중입니다."
+            : "Claude Code에서 이 계정의 구독 한도를 제공하지 않습니다.",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (/429|too many requests|rate.?limit/i.test(message))
+          return {
+            ...identity,
+            status: 429,
+            error: "Claude 사용량 조회 요청 제한입니다.",
+          };
+        if (
+          /unsupported|unknown (?:control|request|subtype)|not implemented/i.test(
+            message,
+          )
+        )
+          return;
+        return {
+          ...identity,
+          error: "Claude Code의 사용량 조회가 일시적으로 실패했습니다.",
+        };
+      }
+    },
+    start,
+  );
 }
 export function quotaHostKey(host: HostConfig) {
   return JSON.stringify([

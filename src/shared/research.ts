@@ -26,6 +26,7 @@ export interface ResearchAgentSettings {
 /** Capabilities returned by the selected server's authenticated native CLI. */
 export interface ResearchModel {
   id: string;
+  resolvedModel?: string;
   name: string;
   isDefault: boolean;
   efforts?: ResearchEffort[];

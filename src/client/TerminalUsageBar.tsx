@@ -1,5 +1,5 @@
 import { providerName as agentLabel } from "../shared/agent-provider";
-import { memo, useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api, ApiError } from "./api";
 import { TerminalPanelResize } from "./TerminalPanelResize";
@@ -21,6 +21,7 @@ interface Props {
   managedRequest?: (path: string, init?: RequestInit) => Promise<Response>;
   managedModel?: string;
   managedStatus?: SessionStatus;
+  sideChat?:{enabled:boolean;open:boolean;toggle:(open:boolean)=>void;pane:ReactNode};
   hostId?: string;
   provider: import("../shared/agent-provider").AgentProvider;
   sessionId?: string;
@@ -37,6 +38,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   managedRequest,
   managedModel,
   managedStatus,
+  sideChat,
   hostId,
   provider,
   sessionId,
@@ -59,7 +61,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
   const scope = JSON.stringify([hostId,terminalId,managedId,provider,sessionId]);
-  const collect = active && (!managedRequest || !collapsed);
+  const collect = active && (!managedRequest || (!collapsed && !sideChat?.open));
   const [snapshot, setSnapshot] = useState<{
     scope: string;
     usage: TerminalUsage | null;
@@ -184,7 +186,13 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
   }, [scope,terminalId,managedId,managedRequest,hostId,provider,sessionId,collect,working]);
   // Keep cached usage/collapse state while releasing the panel's space, resize
   // observer and Crew animations. The terminal DOM and socket stay mounted.
-  if (!shown) return null;
+  if (!shown) {
+    if(!visible || !mobile || !sideChat?.enabled)return null;
+    return <aside className="managed-side-compact">
+      <button type="button" aria-pressed={sideChat.open} onMouseDown={e=>e.preventDefault()} onClick={()=>sideChat.toggle(!sideChat.open)}>{sideChat.open?"옆 대화 접기":"옆 대화"}</button>
+      {sideChat.open && sideChat.pane}
+    </aside>;
+  }
   const usage = current?.usage;
   const percent = usage?.usedPercent ?? null;
   const title = [
@@ -232,13 +240,16 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
         controls={panelId}
       />
       <header className="terminal-usage-header">
-        {!collapsed && <span>Harbor</span>}
+        {!collapsed && (sideChat?<div className="managed-side-switch" aria-label="Harbor 패널">
+          <button type="button" aria-label="Harbor 상태" aria-pressed={!sideChat.open} onClick={()=>sideChat.toggle(false)}>Harbor</button>
+          <button type="button" aria-pressed={sideChat.open} disabled={!sideChat.enabled} onMouseDown={e=>e.preventDefault()} onClick={()=>sideChat.toggle(true)}>옆 대화</button>
+        </div>:<span>Harbor</span>)}
         <button
           type="button"
           aria-label={collapsed ? "상태 패널 펼치기" : "상태 패널 접기"}
           title={collapsed ? "상태 패널 펼치기" : "상태 패널 접기"}
           aria-expanded={!collapsed}
-          onClick={() => setCollapsed((value) => !value)}
+          onClick={() => {if(!collapsed && sideChat?.open)sideChat.toggle(false);setCollapsed((value) => !value);}}
         >
           {collapsed ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
         </button>
@@ -247,7 +258,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
         <span className="terminal-usage-compact" title={title}>
           {percent === null ? "상태" : `${Math.round(percent)}%`}
         </span>
-      ) : managedRequest && !sessionId ? (
+      ) : sideChat?.open ? sideChat.pane : managedRequest && !sessionId ? (
         <div className="terminal-usage-scroll">
           <div className="terminal-usage-session"><strong>{providerName}</strong></div>
           <p className="terminal-usage-note">대화를 시작하면 표시됩니다.</p>

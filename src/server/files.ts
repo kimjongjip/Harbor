@@ -155,6 +155,18 @@ export class Files {
     this.opening.set(host.id, promise);
     return promise;
   }
+  async workingDirectory(host: HostConfig, requested?:string) {
+    const directory=await this.resolvePath(host,requested || host.defaultCwd || "~","~");
+    if(host.kind==="local"){
+      const canonical=await fs.realpath(directory);
+      if(!(await fs.stat(canonical)).isDirectory())throw Error("작업 폴더를 선택하세요.");
+      return canonical;
+    }
+    const sftp=await this.sftp(host);
+    const canonical=await call<string>(cb=>sftp.realpath(directory,cb));
+    if(!(await call<Stats>(cb=>sftp.stat(canonical,cb))).isDirectory())throw Error("작업 폴더를 선택하세요.");
+    return canonical;
+  }
   async list(host: HostConfig, directory: string): Promise<DirectoryView> {
     if (host.kind === "local") {
       const canonical = await fs.realpath(

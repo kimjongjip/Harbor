@@ -1,6 +1,8 @@
 import type { ChatEffort, IdeChatProvider } from "../../shared/ide-chat";
 
 export interface SavedManagedTab {
+  permission?: import("../../shared/ide-chat").ChatPermission;
+  model?: string;
   key: string;
   title?: string;
   provider: IdeChatProvider;
@@ -45,11 +47,25 @@ function normalize(raw: unknown): SavedTabs | undefined {
       ...(typeof tab.title === "string" &&
         tab.title.trim() && { title: tab.title.trim().slice(0, 160) }),
       provider: tab.provider,
+      ...(typeof tab.model === "string" &&
+        /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]{0,159}$/.test(tab.model) && { model: tab.model }),
       ...(id(tab.conversationId) && { conversationId: tab.conversationId }),
       ...(id(tab.nativeId) && { nativeId: tab.nativeId }),
       ...(id(tab.parentKey) && { parentKey: tab.parentKey }),
       ...(tab.reviewOnly === true && { reviewOnly: true }),
-      ...(["low", "medium", "high", "xhigh"].includes(tab.effort) && {
+      ...(["default", "read-only", "accept-edits", "auto-accept"].includes(
+        tab.permission,
+      ) && { permission: tab.permission }),
+      ...([
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+      ].includes(tab.effort) && {
         effort: tab.effort,
       }),
     });

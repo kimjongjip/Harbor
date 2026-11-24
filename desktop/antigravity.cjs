@@ -2,6 +2,7 @@
 // keyboard input and peer messages, including while its editor is idle.
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
+const { realpathSync, lstatSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const { PassThrough } = require("node:stream");
@@ -10,6 +11,132 @@ const { stripVTControlCharacters } = require("node:util");
 const token = process.env.HARBOR_SESSION_TOKEN;
 const bridge = process.env.HARBOR_AGY_BRIDGE;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+// ACP option IDs are opaque. Only an explicitly offered allow_once may be
+// delegated to Harbor; native policy changes and user questions stay interactive.
+function workspaceTarget(value, cwd, editing) {
+  if (
+    typeof value !== "string" ||
+    !path.isAbsolute(value) ||
+    /[\0\r\n]/.test(value) ||
+    value.split(/[\\/]/).includes("..")
+  )
+    return false;
+  try {
+    const root = realpathSync(cwd),
+      target = path.normalize(value),
+      relative = path.relative(root, target);
+    if (
+      relative === ".." ||
+      relative.startsWith(".." + path.sep) ||
+      path.isAbsolute(relative) ||
+      relative.split(path.sep).some((part) => part.startsWith("."))
+    )
+      return false;
+    if (
+      (editing && !relative) ||
+      (process.platform === "win32" && relative.includes(":"))
+    )
+      return false;
+    let existing = target;
+    for (;;) {
+      try {
+        const entry = lstatSync(existing);
+        if (editing && existing === target && !entry.isFile()) return false;
+        break;
+      } catch (e) {
+        if (e.code !== "ENOENT" || existing === root) return false;
+        existing = path.dirname(existing);
+      }
+    }
+    const actual = realpathSync(existing),
+      resolved = path.relative(root, actual);
+    return !(
+      resolved === ".." ||
+      resolved.startsWith(".." + path.sep) ||
+      path.isAbsolute(resolved) ||
+      resolved.split(path.sep).some((part) => part.startsWith("."))
+    );
+  } catch {
+    return false;
+  }
+}
+function allowOnce(params, mode, cwd = process.cwd()) {
+  const tool = params?.toolCall,
+    options = params?.options;
+  if (
+    !["default", "auto", "accept-edits"].includes(mode) ||
+    !["edit", "read", "search"].includes(tool?.kind) ||
+    !Array.isArray(options)
+  )
+    return;
+  if (
+    ["failed", "completed", "cancelled"].includes(tool.status) ||
+    Array.isArray(tool.rawInput?.questions)
+  )
+    return;
+  const identity = [
+    tool.title,
+    tool.rawInput?.tool_name,
+    tool.rawInput?.name,
+    tool.rawInput?.toolName,
+  ]
+    .filter((v) => typeof v === "string")
+    .join(" ");
+  if (
+    /AskUserQuestion|request_user_input|ask_user|harbor_request|ExitPlanMode|EnterPlanMode|switch_mode|ask.question|ask user|사용자.*질문/i.test(
+      identity,
+    )
+  )
+    return;
+  if (
+    /permission|chmod|chown|shell|command|delete|move|policy|sandbox/i.test(
+      identity,
+    )
+  )
+    return;
+  const input = tool.rawInput || {},
+    targets = [];
+  for (const [key, value] of Object.entries(input)) {
+    if (
+      /command|url|uri|mode|permission|executable|shell|delete|move|overwrite.*policy/i.test(
+        key,
+      )
+    )
+      return;
+    if (
+      /^(targetfile|absolutepath|searchpath|directorypath|file_path|path|file)$/i.test(
+        key,
+      )
+    )
+      targets.push(value);
+    else if (
+      /path|file|director|(^|_)(source|destination|src|dest|to|from)($|_)/i.test(
+        key,
+      )
+    )
+      return;
+  }
+  if (tool.kind === "edit" && !targets.length) return;
+  if (
+    tool.locations !== undefined &&
+    (!Array.isArray(tool.locations) || tool.locations.length > 64)
+  )
+    return;
+  for (const l of tool.locations || []) targets.push(l?.path);
+  if (
+    !targets.length ||
+    targets.length > 64 ||
+    targets.some((v) => !workspaceTarget(v, cwd, tool.kind === "edit"))
+  )
+    return;
+  const once = options.filter(
+    (o) =>
+      o?.kind === "allow_once" &&
+      typeof o.optionId === "string" &&
+      o.optionId.length,
+  );
+  return once.length === 1 ? once[0] : undefined;
+}
 async function request(route, body, signal) {
   const res = await fetch(new URL(route, bridge), {
     method: body === undefined ? "GET" : "POST",
@@ -247,9 +374,12 @@ async function run(
     if (folder && !usageTimer)
       usageTimer = setTimeout(() => void saveUsage().catch(() => {}), 700);
   }
-  let requestedVariant;
+  let requestedVariant,
+    permissionMode,
+    configuring = false;
   function configuration(options) {
     configs = options || [];
+    permissionMode = config("mode")?.currentValue ?? permissionMode;
     model =
       configs.find((o) => o.category === "model" || o.id === "model")
         ?.currentValue || model;
@@ -264,6 +394,120 @@ async function run(
         x.category === key ||
         (key === "effort" && x.category === "thought_level"),
     );
+  }
+  async function configEvent(event) {
+    const res = await fetch(process.env.HARBOR_HOOK_URL, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + process.env.HARBOR_HOOK_TOKEN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        harbor_acp_config: { ...event, nativeId: sessionId },
+      }),
+      signal: AbortSignal.any([polling.signal, AbortSignal.timeout(8000)]),
+    });
+    if (!res.ok) throw Error("설정 연결에 실패했습니다.");
+    return res.json();
+  }
+  async function setOption(key, value) {
+    const option = config(key);
+    if (!option)
+      throw Error("Antigravity가 " + key + " 설정을 제공하지 않습니다.");
+    if (key === "model") requestedVariant = value;
+    const r = await call(
+      "session/set_config_option",
+      { sessionId, configId: option.id, value },
+      8000,
+    );
+    if (!Array.isArray(r.configOptions))
+      throw Error("실제 설정을 확인하지 못했습니다.");
+    configuration(r.configOptions);
+    if ((key === "model" ? model : config(key)?.currentValue) !== value)
+      throw Error("요청한 " + key + " 설정이 확인되지 않았습니다.");
+  }
+  async function handleConfiguration() {
+    const request = await configEvent({ op: "claim" });
+    if (!request?.id) return;
+    const { id, config: desired } = request;
+    if (turn || approval || queue.length || configuring) {
+      await configEvent({
+        op: "ack",
+        id,
+        error: "작업 중인 Antigravity입니다.",
+      });
+      return;
+    }
+    configuring = true;
+    const oldModel = model,
+      oldBase = config("model")?.currentValue,
+      oldEffort = config("effort")?.currentValue;
+    let modelAttempted = false;
+    try {
+      if (desired.model && desired.model !== model) {
+        modelAttempted = true;
+        await setOption("model", desired.model);
+      }
+      // An agy variant such as <model>-low selects the thought level itself.
+      const level = config("effort");
+      const variants = (level?.options || [])
+        .flatMap((o) => o.options || [o])
+        .map((o) => o.value);
+      const isVariant =
+        desired.model && desired.model !== config("model")?.currentValue;
+      if (isVariant && desired.effort && desired.effort !== level?.currentValue)
+        throw Error("선택한 모델 변형의 effort와 요청한 값이 다릅니다.");
+      const keep =
+        desired.effort ||
+        (modelAttempted && !isVariant && variants.includes(oldEffort)
+          ? oldEffort
+          : undefined);
+      if (keep && keep !== level?.currentValue) await setOption("effort", keep);
+      if (
+        !model ||
+        (desired.effort && desired.effort !== config("effort")?.currentValue)
+      )
+        throw Error("실제 모델 설정을 확인하지 못했습니다.");
+      if (oldModel !== model) {
+        recordUsage({});
+        await saveUsage();
+      }
+      await meta();
+    } catch (e) {
+      try {
+        if (modelAttempted && oldBase) await setOption("model", oldBase);
+        if (oldEffort && config("effort")?.currentValue !== oldEffort)
+          await setOption("effort", oldEffort);
+        requestedVariant = oldModel;
+        configuration(configs);
+        await configEvent({
+          op: "ack",
+          id,
+          error: clean(e.message).slice(0, 300),
+        });
+      } catch {
+        await configEvent({
+          op: "ack",
+          id,
+          error:
+            "설정 적용 상태가 불확실합니다. 원래 대화에서 모델과 effort를 확인하세요.",
+        }).catch(() => {});
+      }
+      configuring = false;
+      void drain();
+      return;
+    }
+    try {
+      await configEvent({
+        op: "ack",
+        id,
+        model,
+        effort: config("effort")?.currentValue,
+      });
+    } finally {
+      configuring = false;
+      void drain();
+    }
   }
   async function ack(id) {
     if (!id || acknowledging.has(id)) return;
@@ -298,6 +542,7 @@ async function run(
         approval = {
           id: msg.id,
           options: Array.isArray(p.options) ? p.options : [],
+          controller: new AbortController(),
         };
         status("waiting");
         line(
@@ -309,6 +554,59 @@ async function run(
               .join("\n") +
             "\n/approve 번호 또는 /deny",
         );
+        const captured = approval,
+          activeTurn = turn;
+        const toolCall = {
+          ...activeTurn?.capabilities.get(p.toolCall?.toolCallId),
+          ...p.toolCall,
+        };
+        const action = { ...p, toolCall },
+          choice = allowOnce(action, permissionMode);
+        if (
+          choice &&
+          turn &&
+          process.env.HARBOR_HOOK_URL &&
+          process.env.HARBOR_HOOK_TOKEN
+        ) {
+          void (async () => {
+            await reported;
+            if (closed || approval !== captured || turn !== activeTurn) return;
+            const res = await fetch(process.env.HARBOR_HOOK_URL, {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " + process.env.HARBOR_HOOK_TOKEN,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                harbor_acp: true,
+                hook_event_name: "PermissionRequest",
+                session_id: sessionId,
+                tool_name: "Antigravity/" + toolCall.kind,
+                tool_input: {
+                  description:
+                    clean(toolCall.title).slice(0, 1500) || toolCall.kind,
+                },
+              }),
+              signal: AbortSignal.any([
+                polling.signal,
+                captured.controller.signal,
+                AbortSignal.timeout(310000),
+              ]),
+            });
+            if (!res.ok) return;
+            const decision = (await res.json())?.hookSpecificOutput?.decision
+              ?.behavior;
+            if (
+              closed ||
+              approval !== captured ||
+              turn !== activeTurn ||
+              allowOnce(action, permissionMode) !== choice ||
+              !["allow", "deny"].includes(decision)
+            )
+              return;
+            finishApproval(decision === "allow" ? choice : undefined);
+          })().catch(() => {});
+        }
         return;
       }
       if (msg.method === "session/request_permission")
@@ -326,6 +624,29 @@ async function run(
     )
       return;
     const u = p.update || {};
+    if (u.sessionUpdate === "current_mode_update") {
+      permissionMode = u.currentModeId;
+      return;
+    }
+    if (
+      u.sessionUpdate === "config_option_update" &&
+      Array.isArray(u.configOptions)
+    ) {
+      configuration(u.configOptions);
+      return;
+    }
+    if (
+      turn &&
+      ["tool_call", "tool_call_update"].includes(u.sessionUpdate) &&
+      typeof u.toolCallId === "string" &&
+      u.kind &&
+      (turn.capabilities.has(u.toolCallId) || turn.capabilities.size < 128)
+    ) {
+      turn.capabilities.set(u.toolCallId, {
+        kind: u.kind,
+        title: clean(u.title).slice(0, 1500),
+      });
+    }
     if (
       replaying &&
       ["user_message_chunk", "agent_message_chunk"].includes(u.sessionUpdate) &&
@@ -401,6 +722,22 @@ async function run(
       receive(JSON.parse(s));
     } catch {}
   });
+  function finishApproval(option) {
+    const current = approval;
+    if (!current) return;
+    approval = undefined;
+    current.controller.abort();
+    write({
+      id: current.id,
+      result: {
+        outcome: option
+          ? { outcome: "selected", optionId: option.optionId }
+          : { outcome: "cancelled" },
+      },
+    });
+    status("working");
+    rl?.prompt();
+  }
   function end(error) {
     if (closed) return;
     closed = true;
@@ -423,10 +760,17 @@ async function run(
   agent.on("exit", () => end(Error("Antigravity 연결이 종료됐습니다.")));
   agent.stdin.on("error", end);
   async function drain() {
-    if (turn || closed || !queue.length) return;
+    if (turn || configuring || closed || !queue.length) return;
     const job = queue.shift(),
       id = randomUUID(),
-      tx = { id, receipt: job.receipt, answer: "", partial: "", tools: [] };
+      tx = {
+        id,
+        receipt: job.receipt,
+        answer: "",
+        partial: "",
+        tools: [],
+        capabilities: new Map(),
+      };
     turn = tx;
     const name = "turn-" + Date.now() + "-" + id + ".json";
     const first = {
@@ -480,6 +824,8 @@ async function run(
       } catch {
         line("대화 기록 저장 실패");
       }
+      approval?.controller.abort();
+      approval = undefined;
       turn = undefined;
       approval = undefined;
       if (!closed) {
@@ -498,6 +844,8 @@ async function run(
           undefined,
           polling.signal,
         );
+        if (batch?.sessionId === sessionId && batch.configPending)
+          await handleConfiguration();
         if (batch?.sessionId === sessionId)
           for (const m of batch.messages || []) {
             if (queue.length >= 32) break;
@@ -597,6 +945,7 @@ async function run(
           await fs.readFile(path.join(folder, "session.json"), "utf8"),
         ).title;
       } catch {}
+    permissionMode = opened.modes?.currentModeId;
     configuration(opened.configOptions);
     model = model || opened.models?.currentModelId;
     const settings = JSON.parse(process.env.HARBOR_AGY_CONFIG || "{}");
@@ -614,8 +963,13 @@ async function run(
           value: settings[key],
         });
         configuration(r.configOptions);
-        if ((key === "model" ? model : config(key)?.currentValue) !== settings[key])
-          throw Error("Antigravity가 요청한 " + key + " 설정을 적용하지 않았습니다.");
+        if (
+          (key === "model" ? model : config(key)?.currentValue) !==
+          settings[key]
+        )
+          throw Error(
+            "Antigravity가 요청한 " + key + " 설정을 적용하지 않았습니다.",
+          );
       }
     await meta();
     if (resumeId)
@@ -631,6 +985,8 @@ async function run(
     await saveUsage();
     status("idle");
     await reported;
+    if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN)
+      await configEvent({ op: "register" }).catch(() => {});
     out("Antigravity · Harbor\n/exit 종료 · Ctrl+C 작업 중단\n");
     editor = editorInput(process.stdin, line);
     process.stdout.write("\x1b[?2004h");
@@ -657,17 +1013,7 @@ async function run(
           line("/approve 번호 또는 /deny");
           return;
         }
-        write({
-          id: approval.id,
-          result: {
-            outcome: option
-              ? { outcome: "selected", optionId: option.optionId }
-              : { outcome: "cancelled" },
-          },
-        });
-        approval = undefined;
-        status("working");
-        rl.prompt();
+        finishApproval(option);
         return;
       }
       const setting = /^\/(model|effort|mode)(?:\s+(.+))?$/.exec(text);
@@ -680,18 +1026,17 @@ async function run(
         }
         if (!setting[2])
           line(JSON.stringify({ current: o.currentValue, options: o.options }));
-        else if (turn) line("작업이 끝난 뒤 설정을 변경하세요.");
-        else
-          void call("session/set_config_option", {
-            sessionId,
-            configId: o.id,
-            value: setting[2],
-          })
-            .then((r) => {
-              configuration(r.configOptions);
-              line("설정을 변경했습니다.");
-            })
-            .catch((e) => line(e.message));
+        else if (turn || configuring) line("작업이 끝난 뒤 설정을 변경하세요.");
+        else {
+          configuring = true;
+          void setOption(key, setting[2])
+            .then(() => line("설정을 변경했습니다."))
+            .catch((e) => line(e.message))
+            .finally(() => {
+              configuring = false;
+              void drain();
+            });
+        }
         return;
       }
       if (queue.length >= 32) {
@@ -703,13 +1048,7 @@ async function run(
       rl.prompt();
     });
     rl.on("SIGINT", () => {
-      if (approval) {
-        write({
-          id: approval.id,
-          result: { outcome: { outcome: "cancelled" } },
-        });
-        approval = undefined;
-      }
+      if (approval) finishApproval();
       if (turn) notify("session/cancel", { sessionId });
       else rl.prompt();
     });
@@ -730,7 +1069,7 @@ async function run(
       }).catch(() => {});
   }
 }
-module.exports = { run, editorInput };
+module.exports = { run, editorInput, allowOnce };
 if (require.main === module)
   (process.argv[2] === "--mcp" ? mcp() : run()).catch((e) => {
     console.error(clean(e.message));

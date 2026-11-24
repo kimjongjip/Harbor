@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { chatEfforts, chatPermissions } from "../shared/ide-chat.js";
 
 const scopeSchema = z.object({
   hostId: z.string(),
@@ -21,8 +22,8 @@ const entrySchema = z.object({
   text: z.string().min(1).max(64000),
   actor: z.string().max(256),
   state: z.enum(["queued", "sending", "blocked"]),
-  notBefore:z.number().int().positive().optional(),
-  accountKey:z.string().length(64).optional(),
+  notBefore: z.number().int().positive().optional(),
+  accountKey: z.string().length(64).optional(),
 });
 const receiptSchema = z.object({
   actor: z.string().max(256),
@@ -33,7 +34,9 @@ const recordSchema = z.object({
   version: z.literal(1),
   scope: scopeSchema,
   reviewOnly: z.boolean(),
-  effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  effort: z.enum(chatEfforts).optional(),
+  permission: z.enum(chatPermissions).optional(),
+  model: z.string().max(160).optional(),
   entries: z.array(entrySchema).max(20),
   receipts: z.array(receiptSchema).max(4000),
 });

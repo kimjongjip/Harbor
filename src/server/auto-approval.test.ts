@@ -46,6 +46,84 @@ const permission = (session = "native-a", tool = "Bash") => ({
   tool_input: { command: "echo synthetic" },
 });
 
+test("Antigravity native approval is bound to the private hook, ACP program and current conversation", async (t) => {
+  const { dir, auto, requests, resolver, terminals } = await fixture(t);
+  const terminal = terminals[0];
+  terminal.program = "antigravity";
+  terminal.agentKind = "antigravity";
+  const bridge = new AgentBridge(new Mailbox(dir, resolver), {
+    terminals: () => terminals,
+    host: resolver.host,
+    requests,
+  });
+  const token = bridge.issue(terminal.id);
+  const runtime = (sessionId: string) =>
+    bridge.setPeerRuntime(terminal.id, {
+      kind: "antigravity",
+      sessionId,
+      state: "working",
+      delivery: "automatic",
+    });
+  runtime("native-a");
+  const app = express();
+  app.all("/permission", bridge.permissionHandle);
+  const server = createServer(app).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const send = (
+    session: string,
+    toolName = "Antigravity/edit",
+    key = token.hookToken,
+  ) =>
+    fetch(
+      "http://127.0.0.1:" + (server.address() as any).port + "/permission",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...permission(session, toolName),
+          harbor_acp: true,
+        }),
+      },
+    );
+  assert.equal(
+    (await send("native-a", "Antigravity/edit", token.token)).status,
+    401,
+  );
+  auto.set(terminal.id, true);
+  assert.deepEqual(await (await send("wrong-session")).json(), {});
+  assert.deepEqual(
+    await (await send("native-a", "Antigravity/execute")).json(),
+    {},
+  );
+  assert.deepEqual(
+    await (await send("native-a", "Antigravity/request_user_input")).json(),
+    {},
+  );
+  assert.equal(
+    (await (await send("native-a")).json()).hookSpecificOutput.decision
+      .behavior,
+    "allow",
+  );
+  assert.equal(auto.state(terminal.id).accepted, 1);
+  auto.set(terminal.id, false);
+  const appeared = once(requests, "change"),
+    old = send("native-a");
+  await appeared;
+  terminal.agentSessionId = "replacement";
+  runtime("replacement");
+  assert.deepEqual(await (await old).json(), {});
+  assert.ok(!requests.list().some((r) => r.status === "pending"));
+  bridge.revoke(terminal.id);
+  assert.equal((await send("replacement")).status, 401);
+});
+
 test("live per-session auto acceptance handles pending/future permissions, not another terminal, stale conversation or questions", async (t) => {
   const { auto, requests, terminals } = await fixture(t);
   const pending = requests.createPermission("a", permission());

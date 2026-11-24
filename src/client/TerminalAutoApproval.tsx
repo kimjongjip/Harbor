@@ -61,14 +61,22 @@ export default function TerminalAutoApproval({
               {status?.accepted || 0}건
             </p>
             <p>
-              이 세션에서 Codex·Claude가 실행 승인을 요청하면 Harbor가 ‘이번만
-              허용’을 자동으로 선택합니다. 지금 받은함에서 대기 중인 실행 승인도
-              포함합니다.
+              이 세션에서 Codex·Claude·Antigravity가 실행 승인을 요청하면
+              Harbor가 ‘이번만 허용’을 자동으로 선택합니다. 지금 받은함에서 대기
+              중인 실행 승인도 포함합니다.
             </p>
-            <p>
-              명령 실행·파일 삭제 등도 자동 수락됩니다. 다른 세션에는 적용하지
-              않으며, 일반 질문과 계획 확인에는 답하지 않습니다.
-            </p>
+            {terminal.agentKind === "antigravity" ||
+            terminal.program === "antigravity" ? (
+              <p>
+                Antigravity는 작업 폴더의 읽기·검색·파일 편집만 자동 수락합니다.
+                셸 실행, 삭제, 네트워크, 계획·질문은 직접 확인합니다.
+              </p>
+            ) : (
+              <p>
+                명령 실행·파일 삭제 등도 자동 수락됩니다. 다른 세션에는 적용하지
+                않으며, 일반 질문과 계획 확인에는 답하지 않습니다.
+              </p>
+            )}
             <p>
               CLI의 승인 설정을 바꾸지 않습니다. 앱을 완전히 종료하거나 다른
               대화로 전환하면 다시 켜야 합니다. 최초 신뢰·로그인 등 Harbor로

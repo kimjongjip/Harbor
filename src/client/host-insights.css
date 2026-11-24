@@ -1,113 +1,51 @@
 .account-usage-panel {
-  flex: 0 0 auto;
-  margin: 0;
-  padding: 8px 14px;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel);
-  font-size: 12px;
-  max-height: 30vh;
-  overflow: auto;
+  flex: 0 0 auto; margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--border);
+  background: var(--panel); font-size: 12px; max-height: 30vh; overflow: auto; container-type: inline-size;
 }
-.account-usage-panel header,
-.quota-window > div {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-.insights-heading {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: 0;
-  color: inherit;
-  font-weight: 700;
-  padding: 0;
-}
-.account-usage-panel small,
-.terminal-work-list small,
-.codex-context-settings small {
-  color: var(--muted);
-  font-size: 11px;
-}
-.account-quota {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-.account-quota[data-provider="antigravity"] {
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  column-gap:12px;
-}
-.account-quota[data-provider="antigravity"] > header,
-.account-quota[data-provider="antigravity"] > p { grid-column:1/-1; }
-.account-quota[data-provider="antigravity"] .quota-window > div { display:grid; gap:0; }
-.quota-account-heading strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.quota-account-heading > small {
-  flex-shrink: 0;
-}
-.quota-host {
-  display: block;
-  margin-top: 2px;
-}
-.account-usage-panel > header .icon-button {
-  width: 24px;
-  height: 24px;
-  padding: 4px;
-}
-.account-usage-panel .insights-warning,
-.account-usage-panel > p {
-  margin: 4px 0 0;
-}
-.quota-unavailable {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 400;
-}
-.quota-window {
-  margin: 5px 0 0;
-  line-height: 1.35;
-}
-.quota-window progress {
-  appearance: none;
-  width: 100%;
-  display: block;
-  margin: 3px 0 1px;
-  height: 5px;
-  border: 0;
-  border-radius: 8px;
-  overflow: hidden;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
-.quota-window progress::-webkit-progress-bar {
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
-.quota-window progress::-webkit-progress-value {
-  background: #55bf90;
-  border-radius: 8px;
-}
-.quota-window progress::-moz-progress-bar {
-  background: #55bf90;
-}
-.quota-window progress.low::-webkit-progress-value {
-  background: #dca54c;
-}
-.quota-window progress.critical::-webkit-progress-value {
-  background: #e96579;
-}
-.insights-warning {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
+.account-usage-panel > header,.quota-window-value,.quota-unmeasured {display:flex; align-items:center; justify-content:space-between; gap:5px;}
+.insights-heading {display:flex; align-items:center; gap:5px; background:none; border:0; color:inherit; font-weight:700; padding:0;}
+.insights-heading[aria-expanded=false] svg {transform:rotate(-90deg);}
+.quota-legend {margin-inline-start:auto;color:var(--muted);font-size:11px;}
+.account-usage-panel > header .icon-button {width:24px;height:24px;padding:4px;}
+.account-usage-panel small,.terminal-work-list small,.codex-context-settings small {color:var(--muted);font-size:11px;}
+.account-quota,.quota-unmeasured {border-top:1px solid var(--border);}
+.quota-summary {display:grid;grid-template-columns:70px minmax(0,1fr) 12px;align-items:center;column-gap:8px;padding:5px 0;list-style:none;cursor:pointer;line-height:1.2;}
+.quota-summary::-webkit-details-marker {display:none;}
+.quota-summary:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;}
+.quota-provider {display:flex;flex-wrap:wrap;gap:2px 5px;align-items:center;font-weight:650;}
+.quota-status {font-weight:500;}
+.quota-limits,.quota-group {display:grid;min-width:0;gap:4px;}
+.quota-values {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(65px,100%),1fr));gap:4px 8px;min-width:0;}
+.quota-window {display:block;min-width:0;}
+.quota-period,.quota-group-name {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);}
+.quota-period {font-size:11px;}
+.quota-window-value b {font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.quota-window progress {appearance:none;display:block;width:100%;height:3px;border:0;border-radius:2px;overflow:hidden;margin-top:2px;background:var(--border);}
+.quota-window progress::-webkit-progress-bar {background:var(--border);}
+.quota-window progress::-webkit-progress-value {background:#42a57b;}
+.quota-window progress::-moz-progress-bar {background:#42a57b;}
+.quota-window progress.low::-webkit-progress-value {background:#c58c34;}
+.quota-window progress.critical::-webkit-progress-value {background:#dc546c;}
+.quota-window progress.low::-moz-progress-bar {background:#c58c34;}
+.quota-window progress.critical::-moz-progress-bar {background:#dc546c;}
+.quota-unavailable {color:var(--muted);font-weight:500;}
+.quota-disclosure {grid-column:3;grid-row:1;color:var(--muted);transform:rotate(-90deg);}
+.account-quota[open] .quota-disclosure {transform:none;}
+.account-quota[data-grouped=true] .quota-provider {grid-column:1/3;}
+.account-quota[data-grouped=true] .quota-limits {grid-column:1/3;grid-row:2;margin-top:4px;}
+.account-quota[data-grouped=true] .quota-group {grid-template-columns:70px minmax(0,1fr);column-gap:8px;align-items:center;}
+.quota-group-name {font-size:11px;}
+.quota-detail {padding:2px 0 6px;color:var(--muted);font-size:11px;overflow-wrap:anywhere;}
+.quota-detail p,.account-usage-panel > p {margin:2px 0;}
+.quota-unmeasured {padding:5px 0;}
+.quota-unmeasured span,.insights-warning {color:var(--muted);font-size:11px;line-height:1.4;}
+@container (max-width: 215px) {
+  .quota-summary {grid-template-columns:minmax(0,1fr) 12px;}
+  .quota-provider,.account-quota[data-grouped=true] .quota-provider {grid-column:1;}
+  .quota-limits,.account-quota[data-grouped=true] .quota-limits {grid-column:1/-1;grid-row:2;margin-top:3px;}
+  .quota-disclosure {grid-column:2;}
+  .account-quota[data-grouped=true] .quota-group {grid-template-columns:55px minmax(0,1fr);column-gap:5px;}
+  .quota-group-name {white-space:normal;overflow-wrap:anywhere;text-overflow:clip;}
 }
 .codex-context-settings {
   padding: 18px;

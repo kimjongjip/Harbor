@@ -377,6 +377,28 @@ async function until(predicate: () => boolean) {
   assert.ok(predicate());
 }
 
+test("chat controls validate the selected engine and apply model, effort and read-only policy to the next native turn", async () => {
+  const {chats,calls}=harness({models:async()=>[{id:"fixture-codex",name:"Fixture",isDefault:true,efforts:["high","max"]}]});
+  const view=await create(chats);
+  const settings={runtimeId:view.runtimeId,model:"fixture-codex",effort:"max" as const,permission:"read-only" as const};
+  await assert.rejects(chats.settings(view.id,{...settings,effort:"ultra"},guard));
+  await assert.rejects(chats.settings(view.id,{...settings,permission:"auto-accept"},guard));
+  assert.equal(chats.snapshot(view.id).permission,"default");
+  const updated=await chats.settings(view.id,settings,guard);
+  assert.equal(updated.nativeId,view.nativeId);
+  assert.equal(updated.permission,"read-only");
+  assert.equal(updated.configuredModel,"fixture-codex");
+  await send(chats,view.id,"Inspect the selected file");
+  const cmd=calls.find(c=>c.method==="turn/start")!;
+  assert.equal(cmd.params.model,"fixture-codex");
+  assert.equal(cmd.params.effort,"max");
+  assert.equal(cmd.params.sandboxPolicy.type,"readOnly");
+  assert.equal(cmd.params.approvalPolicy,"never");
+  await assert.rejects(chats.settings(view.id,{runtimeId:view.runtimeId,permission:"default"},guard));
+  const review=await create(chats,"codex",{reviewOnly:true});
+  await assert.rejects(chats.settings(review.id,{runtimeId:review.runtimeId,permission:"default"},guard));
+  chats.close();
+});
 test("managed reservations survive client disconnect, allow editing and dispatch once when the active turn finishes", async () => {
   const { chats, hub, calls } = harness();
   const view = await create(chats, "codex", {
@@ -765,6 +787,18 @@ test("a changed host binding cannot receive a prompt intended for its previous s
   assert.notEqual(reopened.id, view.id);
 });
 
+test("read-only managed children can decline tool permission but cannot grant it",async()=>{
+  const {chats,hub,client,replies}=harness();
+  const child=await create(chats,"codex",{reviewOnly:true});
+  (hub as any).request(host.id,client,{id:77,method:"item/permissions/requestApproval",params:{threadId:child.nativeId,permissions:{network:{enabled:true}}}});
+  const ask=chats.snapshot(child.id).approvals[0];
+  await assert.rejects(chats.answer(child.id,ask.id,{runtimeId:child.runtimeId,approved:true},guard),/읽기 전용/);
+  assert.equal(replies.length,0);
+  await chats.answer(child.id,ask.id,{runtimeId:child.runtimeId,approved:false},guard);
+  assert.equal(replies.length,1);
+  assert.deepEqual(replies[0].result.permissions,{});
+  chats.close();
+});
 test("Codex approval is bound to native conversation and only grants original turn permissions", async () => {
   const { chats, hub, client, replies } = harness();
   const first = await create(chats),
@@ -946,7 +980,11 @@ test("Claude SDK streams a native answer, asks permission in IDE, and resumes it
 });
 
 test("router enforces authorization for reads/writes and accepts scoped Codex approval IDs", async (t) => {
-  const { chats, hub, client } = harness();
+  let folderReads=0;
+  const { chats, hub, client } = harness({folders:async(id,path)=>{
+    assert.equal(id,host.id);folderReads++;
+    return {path,parent:"/",folders:[{name:"project",path:path+"/project"}],truncated:false};
+  }});
   const app = express();
   app.use(express.json());
   app.use(
@@ -967,6 +1005,14 @@ test("router enforces authorization for reads/writes and accepts scoped Codex ap
     chats.close();
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/ide-chat`;
+  const folders=base+"/hosts/"+host.id+"/folders";
+  assert.equal((await fetch(folders)).status,403);
+  assert.equal(folderReads,0);
+  const onlyDefault=await fetch(folders+"?list=0",{headers:{authorization:"test-token"}});
+  assert.equal((await onlyDefault.json()).path,"/home/test");assert.equal(folderReads,0);
+  const list=await fetch(folders+"?path=%2Fproject",{headers:{authorization:"test-token"}});
+  assert.equal(list.status,200);assert.deepEqual((await list.json()).folders,[{name:"project",path:"/project/project"}]);
+  assert.equal(folderReads,1);
   assert.equal(
     (await fetch(`${base}/hosts/${host.id}/history?provider=codex`)).status,
     403,

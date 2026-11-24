@@ -104,7 +104,7 @@ export function NewTerminalDialog({
               hostId,
               title: title || undefined,
               program: launch,
-              autoApprove: !launch.startsWith("antigravity") && autoApprove,
+              autoApprove: launch!=="antigravity-cli" && autoApprove,
               claudePeerChannel:
                 claudeIntegration &&
                 (launch === "shell" || launch.startsWith("claude")) &&
@@ -258,16 +258,15 @@ export function NewTerminalDialog({
             <span className="host-check">
               <input
                 type="checkbox"
-                checked={!launch.startsWith("antigravity") && autoApprove}
-                disabled={busy || launch.startsWith("antigravity")}
+                checked={launch!=="antigravity-cli" && autoApprove}
+                disabled={busy || launch==="antigravity-cli"}
                 onChange={(event) => setAutoApprove(event.target.checked)}
               />
               이 세션의 실행 승인 요청을 Harbor가 자동 수락
             </span>
-            {autoApprove && (
+            {autoApprove && launch!=="antigravity-cli" && (
               <small>
-                명령 실행·파일 삭제도 자동 허용합니다. 다른 세션과 일반 질문에는
-                적용하지 않습니다.
+                {launch==="antigravity" ? "작업 폴더의 읽기·검색·파일 편집에 이번만 허용을 적용합니다." : "명령 실행·파일 삭제도 자동 허용합니다. 다른 세션과 일반 질문에는 적용하지 않습니다."}
               </small>
             )}
           </label>

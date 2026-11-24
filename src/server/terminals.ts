@@ -658,10 +658,16 @@ export class Terminals extends EventEmitter {
           const issued = this.bridge.issue(info.id);
           env.HARBOR_SESSION_TOKEN = issued.token;
           env.HARBOR_AGY_BRIDGE = `http://127.0.0.1:${this.bridge.port}/bridge/mcp`;
-          if (options.researchLaunch || options.antigravityModel)
+          delete env.HARBOR_HOOK_TOKEN;
+          delete env.HARBOR_HOOK_URL;
+          if(issued.hookToken && issued.hookPath){
+            env.HARBOR_HOOK_TOKEN=issued.hookToken;
+            env.HARBOR_HOOK_URL=`http://127.0.0.1:${this.bridge.port}${issued.hookPath}`;
+          }
+          if (options.researchLaunch || options.antigravityModel || options.antigravityEffort)
             env.HARBOR_AGY_CONFIG = JSON.stringify({
               model: options.researchLaunch?.model || options.antigravityModel,
-              effort: options.researchLaunch?.effort,
+              effort: options.researchLaunch?.effort || options.antigravityEffort,
             });
           command = process.execPath;
           args = [

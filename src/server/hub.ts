@@ -572,6 +572,7 @@ export class Hub extends EventEmitter {
       mode?: "send" | "steer";
       effort?: import("../shared/ide-chat.js").ChatEffort;
       strictReview?: boolean;
+      model?: string;
       readOnly?: boolean;
       jobId?: string;
       images?: string[];
@@ -618,6 +619,7 @@ export class Hub extends EventEmitter {
           threadId: s.threadId,
           input,
           ...(options.effort ? { effort: options.effort } : {}),
+          ...(options.model ? { model: options.model } : {}),
           approvalPolicy: options.strictReview ? "never" : "on-request",
           approvalsReviewer: "user",
           sandboxPolicy: readOnly

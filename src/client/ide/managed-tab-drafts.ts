@@ -37,3 +37,11 @@ export function writeManagedTabDraft(scope: string, tab: string, text: string) {
     return false; /* Keep the in-memory draft when local storage is unavailable or full. */
   }
 }
+
+export function readDraftFolder(scope: string, tab: string) {
+  const path = readManagedTabDraft(scope, tab + ".cwd");
+  return path && path.length <= 4096 && !/[\0\r\n]/.test(path) ? path : "";
+}
+export function writeDraftFolder(scope: string, tab: string, path: string) {
+  return writeManagedTabDraft(scope, tab + ".cwd", path);
+}

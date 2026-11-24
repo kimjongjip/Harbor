@@ -42,6 +42,8 @@ export interface ClaudeChatTurn {
   model?: string;
   reviewOnly?: boolean;
   effort?: import("../shared/ide-chat.js").ChatEffort;
+  acceptEdits?: boolean;
+  readOnly?: boolean;
   peerCall?: ManagedPeerCall;
   text: string;
   requestId: string;
@@ -499,8 +501,8 @@ export function createClaudeChatFactory(
             ? { resume: turn.nativeId }
             : { sessionId: turn.nativeId }),
           pathToClaudeCodeExecutable: executable,
-          permissionMode: "default",
-          ...(turn.effort ? { effort: turn.effort } : {}),
+          permissionMode: turn.acceptEdits && !turn.readOnly && !turn.reviewOnly ? "acceptEdits" : "default",
+          ...(turn.effort && turn.effort !== "none" && turn.effort !== "minimal" && turn.effort !== "ultra" ? { effort: turn.effort } : {}),
           ...(turn.reviewOnly
             ? {
                 tools: [],
@@ -511,7 +513,8 @@ export function createClaudeChatFactory(
               }
             : {}),
           canUseTool: permissions,
-          settingSources: turn.reviewOnly ? [] : ["user", "project", "local"],
+          ...(turn.readOnly && !turn.reviewOnly ? {tools:["Read","Glob","Grep"],mcpServers:{},strictMcpConfig:true} : {}),
+          settingSources: turn.reviewOnly || turn.readOnly ? [] : ["user", "project", "local"],
           systemPrompt: { type: "preset", preset: "claude_code" },
           includePartialMessages: true,
           abortController,

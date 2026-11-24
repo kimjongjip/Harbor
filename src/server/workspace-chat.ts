@@ -93,6 +93,11 @@ export function relayChatRequest(
     /^\/conversations\/[a-f0-9-]{36}\/usage$/i.test(req.path)
   )
     return { path: req.path, body: undefined };
+  if(req.method==="GET" && req.path==="/hosts/"+encodeURIComponent(hostId)+"/models"){
+    const provider=z.enum(["codex","claude","antigravity"]).parse(req.query.provider);
+    return {path:"/hosts/local/models?"+new URLSearchParams({provider}),body:undefined};
+  }
+  if(req.method==="POST" && /^\/conversations\/[a-f0-9-]{36}\/settings$/i.test(req.path))return {path:req.path,body:req.body};
   const pattern =
     /^\/conversations\/[0-9a-f-]{36}(\/(messages|collaboration|interrupt|history|control|rate-reset)|\/(queue|approvals)\/[A-Za-z0-9_:%-]{1,180})?$/i;
   if (

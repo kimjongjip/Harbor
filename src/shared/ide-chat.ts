@@ -10,10 +10,19 @@ export interface IdeChatLive {
     "codex-native" | "claude-channel" | "antigravity-acp" | "unavailable";
   reason?: string;
 }
-export type ChatEffort = "low" | "medium" | "high" | "xhigh";
+export const chatEfforts = ["none","minimal","low","medium","high","xhigh","max","ultra"] as const;
+export type ChatEffort = typeof chatEfforts[number];
+export const chatPermissions = ["default","read-only","accept-edits","auto-accept"] as const;
+export type ChatPermission = typeof chatPermissions[number];
 export interface IdeChatUsage {
   usage: import("./terminal-usage").TerminalUsage | null;
   work: import("./host-insights").TerminalWorkSnapshot | null;
+}
+export interface IdeChatFolders {
+  path:string;
+  parent:string;
+  folders:{name:string;path:string}[];
+  truncated:boolean;
 }
 export interface ChatReservation {
   notBefore?:number;
@@ -23,6 +32,9 @@ export interface ChatReservation {
   error?: string;
 }
 export interface IdeChatConversation {
+  configuredModel?:string;
+  canConfigureNative?:boolean;
+  permission?: ChatPermission;
   /** Present on chats where Harbor owns the peer tool binding. */
   peerEnabled?: boolean;
   reviewOnly?: boolean;
@@ -49,6 +61,7 @@ export interface IdeChatConversation {
   live?: IdeChatLive;
 }
 export interface IdeChatCreate {
+  permission?: ChatPermission;
   reviewOnly?: boolean;
   effort?: ChatEffort;
   hostId: string;

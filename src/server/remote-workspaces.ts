@@ -275,6 +275,11 @@ export class RemoteWorkspaces {
                   });
                   return;
                 }
+                if (method === "POST" && status === 404 && /^\/conversations\/[a-f0-9-]{36}\/settings$/i.test(path) &&
+                    /^text\/html\b/i.test(String(r.headers["content-type"]))) {
+                  done({status:409,value:{error:"이 서버 작업 공간은 실행 설정 변경을 아직 지원하지 않습니다. 서버 관리에서 업데이트 상태를 확인하세요."}});
+                  return;
+                }
                 if (
                   status >= 400 &&
                   !String(r.headers["content-type"])

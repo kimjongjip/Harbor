@@ -37,7 +37,7 @@ test(
       postTurnPercent: null as number | null,
     };
     const actions: string[] = [];
-    let includeFable = true;
+    let includeFable = true, staleClaude=false;
     const app = express();
     app.use(express.json());
     app.get("/api/hosts/fixture/account-usage", (_req, res) =>
@@ -56,12 +56,13 @@ test(
             provider: "claude",
             plan: "Max",
             windows: [
-              { label: "7일 한도", remaining: 32 },
+              { label: "7일 한도", remaining: 32, resetsAt:1900000000000 },
               ...(includeFable
                 ? [{ label: "7일 Fable 한도", remaining: 1 }]
                 : []),
             ],
-            updatedAt: Date.now(),
+            updatedAt: staleClaude? 1899990000000:Date.now(),
+            ...(staleClaude?{stale:true,error:"Claude 요청 제한",retryAt:1900000000000}:{}),
           },
         ],
       }),
@@ -137,22 +138,36 @@ test(
       const page = await desktop.firstWindow();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.getByText("75% 남음", { exact: true }).waitFor();
+      await page.getByText("75%", { exact: true }).waitFor();
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
       const panel = page.locator(".account-usage-panel");
       await panel.getByText("Antigravity",{exact:true}).waitFor();
-      await panel.getByText("85.67% 남음",{exact:true}).waitFor();
+      await panel.getByText("85.67%",{exact:true}).waitFor();
       assert.equal(
         Math.round((await panel.boundingBox())!.width),
         290,
         "quota fills sidebar width",
       );
       assert.ok(
-        (await panel.boundingBox())!.height < 260,
+        (await panel.boundingBox())!.height <= 165,
         "quota panel must leave room for servers",
       );
-      await panel.getByText("7일 Fable 한도", { exact: true }).waitFor();
+      const claude=panel.locator('[data-provider="claude"]');
+      const weekly=claude.getByRole("progressbar",{name:"Claude 7일 한도 남은 비율"}), fable=claude.getByRole("progressbar",{name:"Claude 7일 Fable 한도 남은 비율"});
+      const weekBox=await weekly.boundingBox(),fableBox=await fable.boundingBox();
+      assert.ok(weekBox && fableBox && Math.abs(weekBox.y-fableBox.y)<2 && weekBox.x<fableBox.x,"weekly and Fable remain side by side");
+      assert.equal(await panel.evaluate(el=>el.scrollHeight<=el.clientHeight+1),true,"all providers fit without inner scrolling");
+      const box=await panel.boundingBox();
+      console.log("Compact quota panel dimensions:",box!.width,box!.height);
+      await panel.screenshot({path:join(dir,"compact-quota.png")});
+      await claude.locator("summary").focus();await page.keyboard.press("Enter");
+      await claude.getByText(/7일 한도.*초기화/).waitFor();
+      await page.keyboard.press("Enter");
+      await page.evaluate(()=>{document.querySelector("main")!.style.gridTemplateColumns="202px 1fr 300px";});
+      await panel.screenshot({path:join(dir,"compact-quota-narrow.png")});
+      assert.equal(await panel.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
+      await page.evaluate(()=>{document.querySelector("main")!.style.gridTemplateColumns="290px 1fr 300px";});
       assert.equal(
         await panel.getByText("5시간 한도", { exact: true }).count(),
         0,
@@ -169,6 +184,13 @@ test(
         6,
         "missing Fable must never show an invented percentage",
       );
+      staleClaude = true;
+      includeFable = true;
+      await panel.getByRole("button", { name: /사용 한도 새로고침/ }).click();
+      await claude.getByText("이전 수치", { exact: true }).waitFor();
+      await claude.locator("summary").click();
+      await claude.getByText(/Claude 요청 제한/).waitFor();
+      await claude.getByText(/마지막 측정/).waitFor();
       assert.match(
         await page.locator(".terminal-work-list").innerText(),
         /4,096 MiB/,
