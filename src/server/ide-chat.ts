@@ -53,8 +53,9 @@ type IdeHub = Pick<
   | "session"
   | "saveSession"
 > &
-  Partial<Pick<Hub, "on" | "off" | "rename">>;
+  Partial<Pick<Hub, "on" | "off" | "rename" | "forkSideSession">>;
 export interface IdeChatDependencies {
+  sideReader?(read:()=>Promise<IdeChatConversation>): import("./side-parent.js").SideReader;
   approveWorkspaceTargets?(hostId:string,cwd:string,paths:ApprovalTarget[]):Promise<boolean>;
   nativeAutoAccept?(terminalId:string,nativeId:string):boolean|undefined;
   setNativeAutoAccept?(terminalId:string,nativeId:string,enabled:boolean):void;
@@ -133,6 +134,9 @@ interface Managed {
   title?: string;
   run?: ClaudeChatRun;
   liveBinding?: IdeLiveBinding;
+  sideReader?: import("./side-parent.js").SideReader;
+  sideParentId?: string;
+  sideReadGuard?: Guard;
   liveOlder?: boolean;
   livePending?: Map<
     string,
@@ -182,6 +186,7 @@ const createSchema = z
     cwd: z.string().min(1).max(4096).optional(),
     ...settingsFields,
     resumeId: idSchema.optional(),
+    sideParent: z.object({id:idSchema,runtimeId:idSchema,nativeId:idSchema}).strict().optional(),
     reviewOnly: z.boolean().optional(),
     autoAccept:z.boolean().optional(),
 
@@ -483,7 +488,7 @@ export class IdeChats {
         }),
       );
     // Never return mutable receipt/approval resolver objects or credentials.
-    return structuredClone({...managed.view,reconnectScope:managed.hostKey,supportsPartialSettings:true,nativeActivityTimeline:true});
+    return structuredClone({...managed.view,reconnectScope:managed.hostKey,supportsPartialSettings:true,nativeActivityTimeline:true,supportsSideFork:true});
   }
   async unchanged(id: string, version: string | undefined, guard: Guard) {
     if (!version) return false;
@@ -681,6 +686,8 @@ export class IdeChats {
     terminalId?: string,
   ): Promise<IdeChatConversation> {
     input = createSchema.parse(input);
+    if (input.sideParent && (!input.reviewOnly || input.resumeId || input.autoAccept || terminalId || input.provider === "antigravity"))
+      throw new IdeChatError("잘못된 옆 대화 요청입니다.",409);
     if (terminalId !== undefined) {
       idSchema.parse(terminalId);
       const authorize = guard;
@@ -853,7 +860,11 @@ export class IdeChats {
     terminalId?: string,
   ): Promise<string> {
     const { hostId, provider } = input;
-    if (input.reviewOnly && (provider === "antigravity" || (input.permission && input.permission !== "read-only")))
+    if (
+      input.reviewOnly &&
+      (provider === "antigravity" ||
+        (input.permission && input.permission !== "read-only"))
+    )
       throw new IdeChatError(
         "선택한 실행 방식에서 이 대화 설정을 지원하지 않습니다.",
         409,
@@ -868,10 +879,18 @@ export class IdeChats {
           409,
         );
     };
-    if (!input.resumeId) {await this.validateSettings(hostId,provider,input); await guard();}
+    if (!input.resumeId) {
+      await this.validateSettings(hostId, provider, input);
+      await guard();
+    }
     let live =
       input.resumeId &&
-      this.dependencies.live?.find(hostId, provider, input.resumeId, terminalId);
+      this.dependencies.live?.find(
+        hostId,
+        provider,
+        input.resumeId,
+        terminalId,
+      );
     if (terminalId !== undefined && !live)
       throw new IdeChatError("선택한 터미널의 대화 연결이 끝났습니다.", 409);
     if (
@@ -887,7 +906,10 @@ export class IdeChats {
         input.resumeId,
         guard,
         input.resumeId ? undefined : input.model,
-        {effort:input.effort,autoAccept:input.autoAccept??(input.permission==="auto-accept")},
+        {
+          effort: input.effort,
+          autoAccept: input.autoAccept ?? input.permission === "auto-accept",
+        },
       );
       live = this.dependencies.live.find(hostId, provider, id);
       if (!live || (input.resumeId && live.nativeId !== input.resumeId))
@@ -902,10 +924,26 @@ export class IdeChats {
         hostId,
         provider,
         nativeId: live.nativeId,
-        ...(provider==="antigravity"?{effort:input.effort,permission:this.dependencies.antigravityAutoAccept?.(live.terminalId,live.nativeId)?"auto-accept":"default"} as const:{}),
+        ...(provider === "antigravity"
+          ? ({
+              effort: input.effort,
+              permission: this.dependencies.antigravityAutoAccept?.(
+                live.terminalId,
+                live.nativeId,
+              )
+                ? "auto-accept"
+                : "default",
+            } as const)
+          : {}),
         title: current.terminal?.title || "열린 대화",
         cwd: current.terminal?.cwd || input.cwd || "~",
-        model: provider==="antigravity" ? (await this.dependencies.antigravityModel?.(hostId,live.nativeId)) || "" : "",
+        model:
+          provider === "antigravity"
+            ? (await this.dependencies.antigravityModel?.(
+                hostId,
+                live.nativeId,
+              )) || ""
+            : "",
         status: current.status,
         items: [],
         approvals: [],
@@ -938,7 +976,8 @@ export class IdeChats {
       await guard();
       if (
         history.thread.id !== input.resumeId ||
-        history.thread.hostId !== hostId || (history.thread.provider && history.thread.provider !== provider)
+        history.thread.hostId !== hostId ||
+        (history.thread.provider && history.thread.provider !== provider)
       )
         throw new IdeChatError("대화 기록의 서버·ID가 요청과 다릅니다.", 409);
     }
@@ -962,98 +1001,224 @@ export class IdeChats {
       });
     const reviewOnly =
       input.reviewOnly || (!!recovered && recovered.reviewOnly);
-    const permission: ChatPermission = reviewOnly ? "read-only" : input.permission || (recovered && recovered.permission) || "default";
-    let session: SessionView | undefined;
-    if (provider === "codex") {
-      const password = await this.dependencies.password(hostId);
-      await guard();
-      await this.dependencies.hub.connect(hostId, password);
-      await guard();
-      if (input.resumeId) {
-        this.checkNative(hostId, provider, input.resumeId);
-        session = await this.dependencies.hub.importSession(
-          hostId,
-          input.resumeId,
-        );
-        await guard();
-        this.checkNative(hostId, provider, input.resumeId);
-        session = await this.dependencies.hub.openSession(session.id);
-        await guard();
-        session.permission = permission === "read-only" ? "read-only" : "workspace-write";
-        this.dependencies.hub.saveSession(session);
-      } else
-        session = await this.dependencies.hub.createSession(hostId, {
-          title: "",
-          cwd,
-          model: input.model,
-          permission: permission === "read-only" ? "read-only" : "workspace-write",
-          ...(this.dependencies.managedPeers && !input.reviewOnly
-            ? { peerTools: true }
-            : {}),
+    const permission: ChatPermission = reviewOnly
+      ? "read-only"
+      : input.permission || (recovered && recovered.permission) || "default";
+    const source = input.sideParent;
+    let parent: IdeChatConversation | undefined;
+    let claudeFork: string | undefined;
+    if (source) {
+      parent = await this.read(source.id, guard);
+      if (
+        parent.hostId !== hostId ||
+        (parent.cwd !== cwd && await this.dependencies.resolveCwd(hostId,parent.cwd) !== cwd) ||
+        parent.runtimeId !== source.runtimeId ||
+        parent.nativeId !== source.nativeId
+      )
+        throw new IdeChatError("본 대화의 연결을 다시 확인하세요.", 409);
+      if (
+        provider === "claude" &&
+        parent.provider === provider &&
+        this.dependencies.host(hostId).kind === "local"
+      ) {
+        const sdk = await import("@anthropic-ai/claude-agent-sdk");
+        const messages = await sdk.getSessionMessages(parent.nativeId, {
+          dir: cwd,
         });
+        const point = messages
+          .reverse()
+          .find(
+            (m) =>
+              m.type === "assistant" &&
+              (m.message as { stop_reason?: string })?.stop_reason ===
+                "end_turn",
+          );
+        if (point) {
+          await guard();
+          const fork = await sdk.forkSession(parent.nativeId, {
+            dir: cwd,
+            upToMessageId: point.uuid,
+            title: "옆 대화",
+          });
+          if (!fork.sessionId || fork.sessionId === parent.nativeId)
+            throw new IdeChatError(
+              "옆 대화 분기 ID를 확인할 수 없습니다.",
+              409,
+            );
+          claudeFork = fork.sessionId;
+        }
+      }
+    }
+    let child: Managed | undefined;
+    const reader =
+      source && this.dependencies.host(hostId).kind === "local"
+        ? this.dependencies.sideReader?.(async () => {
+            const readGuard = child?.sideReadGuard;
+            if (
+              !child ||
+              !readGuard ||
+              this.closed ||
+              this.conversations.get(child.view.id) !== child
+            )
+              throw new IdeChatError("옆 대화가 종료되었습니다.", 409);
+            await readGuard();
+            this.binding(child, this.dependencies.runtimeId);
+            this.sync(child);
+            if (!child.sending && child.view.status !== "running")
+              throw new IdeChatError(
+                "옆 질문을 처리하는 중에만 읽을 수 있습니다.",
+                409,
+              );
+            const latest = await this.read(source.id, readGuard);
+            if (
+              latest.nativeId !== source.nativeId ||
+              latest.runtimeId !== source.runtimeId ||
+              latest.hostId !== hostId ||
+                latest.cwd !== parent?.cwd
+            )
+              throw new IdeChatError("본 대화 연결이 바뀌었습니다.", 409);
+            return latest;
+          })
+        : undefined;
+    try {
+      let session: SessionView | undefined;
+      if (provider === "codex") {
+        const password = await this.dependencies.password(hostId);
+        await guard();
+        await this.dependencies.hub.connect(hostId, password);
+        await guard();
+        if (input.resumeId) {
+          this.checkNative(hostId, provider, input.resumeId);
+          session = await this.dependencies.hub.importSession(
+            hostId,
+            input.resumeId,
+          );
+          await guard();
+          this.checkNative(hostId, provider, input.resumeId);
+          session = await this.dependencies.hub.openSession(session.id);
+          await guard();
+          session.permission =
+            permission === "read-only" ? "read-only" : "workspace-write";
+          this.dependencies.hub.saveSession(session);
+        } else {
+          if (parent?.provider === "codex")
+            session = await this.dependencies.hub.forkSideSession?.(
+              hostId,
+              parent.nativeId,
+              cwd,
+              input.model,
+              guard,
+              reader,
+            );
+          session ??= await this.dependencies.hub.createSession(hostId, {
+            title: "",
+            cwd,
+            model: input.model,
+            permission:
+              permission === "read-only" ? "read-only" : "workspace-write",
+            ...(reader && { sideReader: reader }),
+            ...(this.dependencies.managedPeers && !input.reviewOnly
+              ? { peerTools: true }
+              : {}),
+          });
+        }
+        await guard();
+      }
+      const now = Date.now();
+      const restoredModel =
+        input.resumeId && !session?.model && !input.model
+          ? await this.dependencies.historyModel?.(
+              hostId,
+              provider,
+              input.resumeId,
+              cwd,
+            )
+          : undefined;
       await guard();
+      const view: IdeChatConversation = {
+        id: randomUUID(),
+        runtimeId: this.dependencies.runtimeId,
+        hostId,
+        provider,
+        nativeId:
+          session?.threadId || claudeFork || input.resumeId || randomUUID(),
+        ...(!reviewOnly &&
+        this.dependencies.managedPeers &&
+        (provider === "claude" || session?.peerTools)
+          ? { peerEnabled: false }
+          : {}),
+        reviewOnly,
+        permission,
+        configuredModel:
+          input.model ?? (recovered ? recovered.model : undefined),
+        effort: input.effort || (recovered ? recovered.effort : undefined),
+        title: session?.title || history?.thread.title || "새 대화",
+        cwd: session?.cwd || cwd,
+        model:
+          session?.model ||
+          restoredModel ||
+          input.model ||
+          (recovered ? recovered.model : "") ||
+          "",
+        observedModel: session?.observedModel || restoredModel,
+        observedEffort: session?.observedEffort,
+        status: session?.status || "idle",
+        items: session?.items.length
+          ? session.items
+          : history
+            ? expandTimeline(history)
+            : [],
+        approvals: session?.approvals || [],
+        historyCursor: session?.historyCursor || history?.nextCursor || null,
+        historyNotice: history?.notice,
+        revision: 1,
+        updatedAt: now,
+      };
+      const managed: Managed = {
+        view,
+        hostKey: originalHostKey,
+        hubId: session?.id,
+        resumed: Boolean(input.resumeId || claudeFork),
+        sideReader: reader,
+        sideParentId: source?.id,
+        sending: false,
+        pending: new Map(),
+        receipts: new Map(),
+      };
+      if (recovered) {
+        managed.queue = recovered.entries.map((row) => ({
+          ...row,
+          error:
+            row.state === "sending"
+              ? "전송 여부 미확인 · 대화 기록을 확인한 뒤 이 항목을 취소하세요."
+              : "복원된 예약 · 계속하려면 다시 승인하세요.",
+        }));
+        managed.reservationReceipts = recovered.receipts;
+        for (const receipt of recovered.receipts)
+          managed.receipts.set(receipt.actor + ":" + receipt.requestId, {
+            fingerprint: receipt.hash,
+            value: { ok: true, requestId: receipt.requestId, status: "queued" },
+          });
+      }
+      if (
+        !input.resumeId &&
+        (input.reviewOnly || input.permission || input.model || input.effort)
+      )
+        this.saveQueue(managed, []);
+      this.conversations.set(view.id, managed);
+      child = managed;
+      if (input.autoAccept && !managed.liveBinding)
+        managed.autoPolicy = {
+          nativeId: view.nativeId,
+          cwd: view.cwd,
+          guard,
+          checked: new WeakSet(),
+        };
+      this.native.set(this.nativeKey(hostId, provider, view.nativeId), view.id);
+      return view.id;
+    } finally {
+      if (!child) reader?.release();
     }
-    const now = Date.now();
-    const restoredModel=input.resumeId && !session?.model && !input.model
-      ? await this.dependencies.historyModel?.(hostId,provider,input.resumeId,cwd) : undefined;
-    await guard();
-    const view: IdeChatConversation = {
-      id: randomUUID(),
-      runtimeId: this.dependencies.runtimeId,
-      hostId,
-      provider,
-      nativeId: session?.threadId || input.resumeId || randomUUID(),
-      ...(!reviewOnly &&
-      this.dependencies.managedPeers &&
-      (provider === "claude" || session?.peerTools)
-        ? { peerEnabled: false }
-        : {}),
-      reviewOnly,
-      permission,
-      configuredModel:input.model ?? (recovered ? recovered.model : undefined),
-      effort: input.effort || (recovered ? recovered.effort : undefined),
-      title: session?.title || history?.thread.title || "새 대화",
-      cwd: session?.cwd || cwd,
-      model: session?.model || restoredModel || input.model || (recovered ? recovered.model : "") || "",
-      observedModel:session?.observedModel || restoredModel,
-      observedEffort: session?.observedEffort,
-      status: session?.status || "idle",
-      items: session?.items.length ? session.items : history ? expandTimeline(history) : [],
-      approvals: session?.approvals || [],
-      historyCursor: session?.historyCursor || history?.nextCursor || null,
-      historyNotice: history?.notice,
-      revision: 1,
-      updatedAt: now,
-    };
-    const managed: Managed = {
-      view,
-      hostKey: originalHostKey,
-      hubId: session?.id,
-      resumed: Boolean(input.resumeId),
-      sending: false,
-      pending: new Map(),
-      receipts: new Map(),
-    };
-    if (recovered) {
-      managed.queue = recovered.entries.map((row) => ({
-        ...row,
-        error:
-          row.state === "sending"
-            ? "전송 여부 미확인 · 대화 기록을 확인한 뒤 이 항목을 취소하세요."
-            : "복원된 예약 · 계속하려면 다시 승인하세요.",
-      }));
-      managed.reservationReceipts = recovered.receipts;
-      for (const receipt of recovered.receipts)
-        managed.receipts.set(receipt.actor + ":" + receipt.requestId, {
-          fingerprint: receipt.hash,
-          value: { ok: true, requestId: receipt.requestId, status: "queued" },
-        });
-    }
-    if (!input.resumeId && (input.reviewOnly || input.permission || input.model || input.effort)) this.saveQueue(managed,[]);
-    this.conversations.set(view.id, managed);
-    if(input.autoAccept && !managed.liveBinding)managed.autoPolicy={nativeId:view.nativeId,cwd:view.cwd,guard,checked:new WeakSet()};
-    this.native.set(this.nativeKey(hostId, provider, view.nativeId), view.id);
-    return view.id;
   }
   async models(hostId:string,provider:IdeChatProvider,guard:Guard) {
     await guard();
@@ -1268,6 +1433,7 @@ export class IdeChats {
     input: IdeChatSend,
     actor: string,
     guard: Guard,
+    parentReadGuard?: (id:string) => Guard,
   ): Promise<IdeChatReceipt> {
     input = sendSchema.parse(input);
     let images: string[];
@@ -1360,6 +1526,10 @@ export class IdeChats {
         managed.view.nativeId,
       );
     managed.sending = true;
+    if (managed.sideReader && managed.sideParentId) {
+      const check = parentReadGuard?.(managed.sideParentId);
+      managed.sideReadGuard = async () => { await guard(); await check?.(); };
+    }
     const receipt: IdeChatReceipt = {
       ok: true,
       requestId: input.requestId,
@@ -1692,6 +1862,7 @@ export class IdeChats {
       password,
       nativeId: view.nativeId,
       resume: managed.resumed,
+      sideReader: managed.sideReader,
       cwd: view.cwd,
       model: view.configuredModel || undefined,
       effort: view.effort,
@@ -1911,6 +2082,7 @@ export class IdeChats {
     this.dependencies.hub.off?.("session-roster-item",this.onRosterItem);
     for (const managed of this.conversations.values()) {
       if (managed.alarm)clearTimeout(managed.alarm.timer);
+      managed.sideReader?.release();
       if (managed.view.peerEnabled)
         this.dependencies.managedPeers?.pause(managed.view);
       managed.run?.close();
@@ -2033,10 +2205,15 @@ export function createIdeChatRouter(
     "/conversations",
     route(async (req) => {
       const input = createSchema.parse(req.body);
+      if (input.sideParent && (!input.reviewOnly || input.resumeId || input.provider === "antigravity" || chats.hostFor(input.sideParent.id) !== input.hostId))
+        throw new IdeChatError("본 대화의 서버를 확인하세요.",409);
       return chats.create(
         input,
         options.actor(req),
-        guard(req, input.hostId, true),
+        async () => {
+          await guard(req,input.hostId,true)();
+          if (input.sideParent) await guard(req,input.hostId,false,input.sideParent.id)();
+        },
         req.get("X-Harbor-Terminal"),
       );
     }),
@@ -2094,6 +2271,7 @@ export function createIdeChatRouter(
         sendSchema.parse(req.body),
         options.actor(req),
         guard(req, hostId, true, id),
+          parentId => guard(req,hostId,false,parentId),
       );
     }),
   );

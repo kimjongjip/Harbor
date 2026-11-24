@@ -25,6 +25,56 @@ import {
 
 const guard = () => {};
 
+test("side questions fork only through a completed Codex turn and never send a prompt to the parent", async (t) => {
+  const { chats, client, calls } = harness();
+  t.after(() => chats.close());
+  const parent = await create(chats);
+  const rpc = client.call.bind(client);
+  const childId = randomUUID();
+  const stable = randomUUID();
+  client.call = async (method, params) => {
+    if (method === "thread/turns/list")
+      return {
+        data: [
+          { id: "working", status: "inProgress" },
+          { id: stable, status: "completed" },
+        ],
+      } as any;
+    if (method === "thread/fork") {
+      calls.push({ method, params });
+      return {
+        thread: { id: childId, cwd: parent.cwd, status: "idle" },
+      } as any;
+    }
+    return rpc(method, params);
+  };
+  const link = {
+    id: parent.id,
+    runtimeId: parent.runtimeId,
+    nativeId: parent.nativeId,
+  };
+  const child = await create(chats, "codex", {
+    cwd: parent.cwd,
+    sideParent: link,
+    reviewOnly: true,
+  });
+  assert.equal(child.nativeId, childId);
+  assert.equal(child.permission, "read-only");
+  assert.equal(
+    calls.find((c) => c.method === "thread/fork")?.params.lastTurnId,
+    stable,
+  );
+  assert.equal(calls.filter((c) => c.method === "turn/start").length, 0);
+  await assert.rejects(
+    create(chats, "codex", {
+      cwd: parent.cwd,
+      sideParent: { ...link, nativeId: "wrong" },
+      reviewOnly: true,
+    }),
+  );
+  assert.equal(calls.filter((c) => c.method === "thread/fork").length, 1);
+});
+
 test("managed Claude auto toggle handles only the real pending check and cannot grant after disable or a forced human rule",async t=>{
   const results:any[]=[];let releaseCheck!:()=>void,checks=0;
   const slow=new Promise<void>(ok=>{releaseCheck=ok;});

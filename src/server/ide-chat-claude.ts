@@ -43,6 +43,7 @@ export interface ClaudeChatTurn {
   cwd: string;
   model?: string;
   reviewOnly?: boolean;
+  sideReader?: {url:string;token:string};
   effort?: import("../shared/ide-chat.js").ChatEffort;
   acceptEdits?: boolean;
   readOnly?: boolean;
@@ -557,7 +558,8 @@ export function createClaudeChatFactory(
           ...(turn.reviewOnly
             ? {
                 tools: [],
-                mcpServers: {},
+                mcpServers: turn.sideReader ? {harbor_side:{type:"http",url:turn.sideReader.url,headers:{Authorization:"Bearer "+turn.sideReader.token}}} : {},
+                ...(turn.sideReader && {allowedTools:["mcp__harbor_side__read_parent"]}),
                 strictMcpConfig: true,
                 settingSources: [],
                 persistSession: true,

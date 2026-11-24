@@ -36,6 +36,7 @@ export interface ChatReservation {
   error?: string;
 }
 export interface IdeChatConversation {
+  supportsSideFork?: boolean;
   /** Opaque binding to the account/host that produced this conversation. */
   reconnectScope?: string;
   /** Harbor answers eligible workspace-only pending tool approvals in this conversation. */
@@ -76,6 +77,7 @@ export interface IdeChatConversation {
   live?: IdeChatLive;
 }
 export interface IdeChatCreate {
+  sideParent?: { id:string; runtimeId:string; nativeId:string };
   autoAccept?: boolean;
   permission?: ChatPermission;
   reviewOnly?: boolean;

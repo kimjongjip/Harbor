@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import {sideSettings,withParentActivity} from "./side-parent";
 import type {
   IdeChatConversation,
   IdeChatReceipt,
@@ -27,7 +28,7 @@ export interface SideChatState {
   started: boolean;
   createId: string;
   child?: IdeChatConversation;
-  attempt?: { id: string; text: string };
+  attempt?: { id: string; question: string; text: string };
   sent: Map<string, string>;
   listeners: Set<() => void>;
   busy: boolean;
@@ -318,19 +319,18 @@ function SidePane({
       return;
     const draft = state.draft,
       quote = state.quote;
-    const text = quote
+    const question = quote
       ? draft + "\n\n[원래 대화에서 인용 · " + parent.nativeId + "]\n" + quote
       : draft;
-    const attempt =
-      state.attempt?.text === text
-        ? state.attempt
-        : { id: crypto.randomUUID(), text };
-    state.attempt = attempt;
     state.busy = true;
     state.error = undefined;
     following.current = true;
     repaint();
     try {
+      const attempt = state.attempt?.question === question ? state.attempt :
+        {id:crypto.randomUUID(),question,text:await withParentActivity(request,parent,question)};
+      state.attempt = attempt;
+      const text = attempt.text;
       if (!state.child) {
         const c = await sideRequest<IdeChatConversation>(
           request,
@@ -341,14 +341,7 @@ function SidePane({
             ...(parent.cwd ? { cwd: parent.cwd } : {}),
             reviewOnly: true,
             requestId: state.createId,
-            ...(parent.provider === state.provider && parent.effort
-              ? { effort: parent.effort }
-              : {}),
-            ...(parent.provider === state.provider &&
-            parent.model &&
-            parent.model !== "default"
-              ? { model: parent.model }
-              : {}),
+            ...sideSettings(parent,state.provider),
           },
         );
         validChild(parent, state, c);
@@ -428,7 +421,7 @@ function SidePane({
             <option value="claude">Claude</option>
           </select>
         </label>
-        <span>읽기 전용</span>
+        <span title="질문을 보낼 때 본 대화의 최신 작업을 함께 읽습니다.">본 대화 참고 · 읽기 전용</span>
       </header>
       <div
         className="managed-side-log"
@@ -460,7 +453,7 @@ function SidePane({
                 <p>
                   {state.sent.get(i.text) ||
                     (i.kind === "user"
-                      ? i.text.split(
+                      ? i.text.split("\n\n[본 대화의 최신 작업 · "+parent.nativeId+"]",1)[0].split(
                           "\n\n[원래 대화에서 인용 · " +
                             parent.nativeId +
                             "]\n",

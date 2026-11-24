@@ -32,6 +32,14 @@ import {
   upsertItem,
 } from "./session.js";
 
+function sideReaderConfig(reader: { url: string; token: string }) {
+  return {
+    "mcp_servers.harbor_side": {
+      url: reader.url,
+      http_headers: { Authorization: "Bearer " + reader.token },
+    },
+  };
+}
 export class Hub extends EventEmitter {
   managedPeerCall?: (
     hostId: string,
@@ -436,6 +444,7 @@ export class Hub extends EventEmitter {
       model?: string;
       permission: PermissionMode;
       peerTools?: boolean;
+      sideReader?: { url: string; token: string };
     },
   ) {
     const host = this.host(hostId);
@@ -455,6 +464,7 @@ export class Hub extends EventEmitter {
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       serviceName: "codex-harbor",
+      ...(input.sideReader && { config: sideReaderConfig(input.sideReader) }),
     };
     let peerTools = !!(input.peerTools && this.managedPeerCall),
       result;
@@ -582,6 +592,65 @@ export class Hub extends EventEmitter {
     this.changed();
     this.publish(s);
     return s;
+  }
+  async forkSideSession(
+    hostId: string,
+    threadId: string,
+    cwd: string,
+    model: string | undefined,
+    guard: () => void | Promise<void>,
+    reader?: { url: string; token: string },
+  ) {
+    const client = this.client(hostId);
+    let turns;
+    try {
+      turns = await client.call("thread/turns/list", {
+        threadId,
+        limit: 16,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      });
+    } catch (error) {
+      if (error instanceof RpcRequestRejected) return;
+      throw error;
+    }
+    const point = turns.data?.find(
+      (turn: { status: string; id: string }) => turn.status === "completed",
+    );
+    if (!point?.id) return;
+    await guard();
+    let result;
+    try {
+      result = await client.call("thread/fork", {
+        threadId,
+        lastTurnId: point.id,
+        cwd,
+        model,
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        excludeTurns: true,
+        ...(reader && { config: sideReaderConfig(reader) }),
+      });
+    } catch (error) {
+      if (
+        error instanceof RpcRequestRejected &&
+        /unknown|unsupported|method not found|not implemented/i.test(
+          error.message,
+        )
+      )
+        return;
+      throw error;
+    }
+    if (!result.thread?.id || result.thread.id === threadId)
+      throw Error("옆 대화 분기 ID를 확인할 수 없습니다.");
+    const child = this.track(hostId, result.thread, {
+      title: "옆 대화",
+      permission: "read-only",
+      model,
+    });
+    this.hydrateLaunchSettings(child, result);
+    child.loaded = true;
+    return child;
   }
   async fork(id: string, title: string) {
     const source = this.session(id);
@@ -737,11 +806,13 @@ export class Hub extends EventEmitter {
         break;
       case "turn/completed":
         // Some app-server versions include the final public items only on the turn.
-        if (Array.isArray(p.turn.items)) for (const raw of p.turn.items.slice(-600)) {
-          if (!raw?.id) continue;
-          const row = normalizeItem(raw,p.turn.id);
-          if (row) upsertItem(s,{...row,status:row.status || "completed"});
-        }
+        if (Array.isArray(p.turn.items))
+          for (const raw of p.turn.items.slice(-600)) {
+            if (!raw?.id) continue;
+            const row = normalizeItem(raw, p.turn.id);
+            if (row)
+              upsertItem(s, { ...row, status: row.status || "completed" });
+          }
         this.completedTurns.add(`${s.id}:${p.turn.id}`);
         if (this.completedTurns.size > 1000)
           this.completedTurns.delete(
@@ -769,7 +840,8 @@ export class Hub extends EventEmitter {
           this.emit("session-compacted", s);
         const item = normalizeItem(p.item, p.turnId);
         if (item) {
-          item.status ||= method === "item/started" ? "inProgress" : "completed";
+          item.status ||=
+            method === "item/started" ? "inProgress" : "completed";
           upsertItem(s, item);
           if (method === "item/started" && p.item?.type === "fileChange") {
             const actual = s.items.find(
@@ -787,20 +859,28 @@ export class Hub extends EventEmitter {
         appendDelta(s, p, true);
         break;
       case "item/fileChange/outputDelta":
-        appendDelta(s,p,true,"change");
+        appendDelta(s, p, true, "change");
         break;
       case "item/fileChange/patchUpdated": {
         if (!p.itemId || !Array.isArray(p.changes)) return;
-        const row = normalizeItem({id:p.itemId,type:"fileChange",changes:p.changes,status:"inProgress"},p.turnId);
-        if (row) upsertItem(s,row);
+        const row = normalizeItem(
+          {
+            id: p.itemId,
+            type: "fileChange",
+            changes: p.changes,
+            status: "inProgress",
+          },
+          p.turnId,
+        );
+        if (row) upsertItem(s, row);
         break;
       }
       case "item/mcpToolCall/progress":
         if (typeof p.message === "string" && p.message)
-          appendDelta(s,{...p,delta:"\n"+p.message},true,"tool");
+          appendDelta(s, { ...p, delta: "\n" + p.message }, true, "tool");
         break;
       case "item/plan/delta":
-        appendDelta(s,p,false,"plan");
+        appendDelta(s, p, false, "plan");
         break;
       case "turn/plan/updated":
         upsertItem(s, {

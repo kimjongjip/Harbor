@@ -49,6 +49,7 @@ import { useWorkspaceUpdate } from "../WorkspaceUpdateState";
 import type { TerminalUsage } from "../../shared/terminal-usage";
 import { displayMessage } from "./display-message";
 import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from "./ManagedSideChat";
+import {sideSettings,withParentActivity} from "./side-parent";
 import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
 import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
@@ -129,6 +130,7 @@ interface ChatDraft {
   createRequestId: string;
   createAttempt?: IdeChatCreate;
   attempt?: IdeChatSend;
+  attemptedQuestion?: string;
   sending: boolean;
   parentKey?: string;
   displacedKey?: string;
@@ -1149,6 +1151,9 @@ export default function IdeChatPanel({
     target.notice = undefined;
     repaint();
     try {
+      const parent = target.reviewOnly && target.parentKey ? entries.current.get(target.parentKey)?.conversation : undefined;
+      if (parent && parent.hostId !== target.hostId)
+        throw Error("본 대화의 서버를 확인하세요.");
       if (!target.conversation) {
         const cwd = target.cwd.trim() || defaultPath || undefined,
           model = target.model.trim() || undefined;
@@ -1169,6 +1174,7 @@ export default function IdeChatPanel({
           ...(target.permission && target.permission!=="default" && !target.reviewOnly ? { permission: target.permission } : {}),
           ...(target.autoAccept && catalog.supportsAutoAccept && !target.reviewOnly && target.permission!=="read-only" ? {autoAccept:true} : {}),
           ...(target.reviewOnly ? { reviewOnly: true } : {}),
+          ...(parent && sideSettings(parent,target.provider)),
         };
         accept(
           target,
@@ -1180,7 +1186,7 @@ export default function IdeChatPanel({
       }
       const conversation = target.conversation!;
       const input: IdeChatSend =
-        target.attempt?.text === text &&
+        target.attempt && (target.attemptedQuestion ?? target.attempt.text) === text &&
         target.attempt.delivery === delivery &&
         (target.attempt.images?.length || 0) === (images?.length || 0) &&
         (!images ||
@@ -1190,11 +1196,12 @@ export default function IdeChatPanel({
           : {
               runtimeId: conversation.runtimeId,
               requestId: crypto.randomUUID(),
-              text,
+              text: parent ? await withParentActivity(request,parent,text) : text,
               ...(images?.length ? { images } : {}),
               ...(delivery ? { delivery } : {}),
             };
       target.attempt = input;
+      target.attemptedQuestion = text;
       const receipt = await call<IdeChatReceipt>(
         `/conversations/${encodeURIComponent(conversation.id)}/messages`,
         input,
