@@ -9,6 +9,30 @@ import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { PeerDelivery } from "./peer-delivery.js";
 import type { TerminalInfo } from "../shared/types.js";
+import { randomUUID } from "node:crypto";
+
+test("the Antigravity manual approval hook is private and scoped to the waiting native session",async t=>{
+  const {mailbox,terminals,resolver}=await fixture(t);
+  const terminal=terminals[0],session=randomUUID();
+  Object.assign(terminal,{program:"antigravity",agentSessionId:session,exited:false});
+  const bridge=new AgentBridge(mailbox,{terminals:()=>terminals,host:resolver.host});
+  const credential=bridge.issue(terminal.id);
+  bridge.peers.setRuntime(terminal.id,{kind:"antigravity",sessionId:session,state:"waiting",delivery:"automatic"});
+  const http=createServer(express().use("/permission",bridge.permissionHandle)).listen(0,"127.0.0.1");
+  await once(http,"listening");
+  t.after(()=>{http.closeAllConnections();http.close();});
+  const url="http://127.0.0.1:"+(http.address() as {port:number}).port+"/permission";
+  const offer=(key:string,id:string)=>fetch(url,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+key},
+    body:JSON.stringify({harbor_acp_manual:{session:id,title:"명령 실행",detail:"fixture command"}})});
+  assert.equal((await offer(credential.token,session)).status,401);
+  assert.equal((await offer(credential.hookToken,randomUUID())).status,409);
+  const pending=offer(credential.hookToken,session);
+  for(let i=0;i<100&&!bridge.acpManual.pending(terminal.id,session).length;i++)await new Promise(r=>setTimeout(r,10));
+  const [card]=bridge.acpManual.pending(terminal.id,session);
+  assert.ok(card);
+  assert.ok(bridge.acpManual.answer(terminal.id,session,card.id,false));
+  assert.deepEqual(await (await pending).json(),{approved:false});
+});
 
 test("Claude preparation requests wait for native Stop without claiming model receipt", async (t) => {
   const f = await fixture(t);

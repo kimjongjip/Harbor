@@ -32,9 +32,10 @@ export function workspaceRelayToken(
 
 const launchPage = `<!DOCTYPE html><html lang="ko"><meta charset="utf-8"><title>Harbor</title><p>서버 작업 공간 연결 중…</p><script>
 const ticket = location.hash.slice(1);
+const focus = new URLSearchParams(location.search).get("focus");
 history.replaceState(null, "", location.pathname);
 fetch("/_workspace/login", {method:"POST",headers:{"X-Harbor-Link":ticket}}).then(r=>{
- if(!r.ok) throw new Error(); location.replace("/");
+ if(!r.ok) throw new Error(); location.replace(focus && /^[a-zA-Z0-9_-]{1,160}$/.test(focus) ? "/?focus="+encodeURIComponent(focus) : "/");
 }).catch(()=>document.querySelector("p").textContent="연결 링크가 만료되었습니다. Harbor 서버 관리에서 작업 공간을 다시 여세요.");
 </script></html>`;
 

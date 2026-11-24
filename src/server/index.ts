@@ -769,6 +769,7 @@ function connectedApprovalTerminal(terminalId: string, nativeId: string) {
   );
 }
 const ideChats = new IdeChats({
+  manualAcp:bridge.acpManual,
   sideReader: read => sideParentReaders.issue(bridgePort,read),
   historyModel: async(hostId,provider,nativeId,cwd)=>{
     const u=await readSessionUsage(hub.host(hostId),provider,nativeId,cwd,"settings:"+hostId+":"+nativeId).catch(()=>null);
@@ -1655,7 +1656,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.13" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.14" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

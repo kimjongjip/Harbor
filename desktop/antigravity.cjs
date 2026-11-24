@@ -491,6 +491,7 @@ async function run(
   let requestedVariant,
     permissionMode,
     configuring = false;
+  let manualApprovals = false;
   let reportSettings = false,
     lastReport = "",
     reporting = Promise.resolve();
@@ -503,6 +504,7 @@ async function run(
     const snapshot = { op: "register", model, effort };
     reporting = reporting
       .then(() => configEvent(snapshot))
+      .then(result => {manualApprovals = result?.manualApprovals === true;})
       .catch(() => {
         if (lastReport === value) lastReport = "";
       });
@@ -689,6 +691,29 @@ async function run(
         };
         const action = { ...p, toolCall },
           choice = allowOnce(action, permissionMode);
+        const choices = captured.options.filter(o => o?.kind === "allow_once" && typeof o.optionId === "string");
+        const detail = JSON.stringify(toolCall.rawInput ?? toolCall.locations ?? {});
+        if (manualApprovals && activeTurn && choices.length === 1 && choices[0].optionId &&
+            captured.options.filter(o=>o.optionId===choices[0].optionId).length===1 && detail.length <= 8000) {
+          void (async () => {
+            await reported;
+            while (!closed && approval === captured && turn === activeTurn) {
+              const response = await fetch(process.env.HARBOR_HOOK_URL, {
+                method:"POST",headers:{Authorization:"Bearer "+process.env.HARBOR_HOOK_TOKEN,"Content-Type":"application/json"},
+                body:JSON.stringify({harbor_acp_manual:{session:sessionId,title:clean(toolCall.title || toolCall.kind || "Antigravity 실행 승인").slice(0,1000),detail}}),
+                signal:AbortSignal.any([polling.signal,captured.controller.signal,AbortSignal.timeout(310000)]),
+              });
+              if (!response.ok) return;
+              const decision = await response.json();
+              if (closed || approval !== captured || turn !== activeTurn) return;
+              if (typeof decision.approved === "boolean") {
+                finishApproval(decision.approved ? choices[0] : undefined);
+                return;
+              }
+              await new Promise(resolve=>setTimeout(resolve,1000));
+            }
+          })().catch(()=>{});
+        }
         if (
           choice &&
           turn &&

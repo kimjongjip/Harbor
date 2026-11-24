@@ -278,7 +278,9 @@ const tools = [
 ];
 
 /** Stateless MCP Streamable HTTP, with a distinct capability token per terminal. */
+import { AcpManualApprovals } from "./acp-manual-approval.js";
 export class AgentBridge {
+  readonly acpManual = new AcpManualApprovals();
   workspaceHandoff?: (terminalId: string, nativeId: string) => boolean;
   readonly handle: Router;
   readonly permissionHandle: Router;
@@ -857,6 +859,8 @@ export class AgentBridge {
       runtime.detail =
         "기존 Claude 대화 · 다음 입력·도구·응답 완료 때 수신. 입력 대기 중이면 받은함 확인 요청을 보내세요. 재실행은 필요하지 않습니다.";
     this.peers.setRuntime(terminalId, runtime);
+    if (previous?.kind === "antigravity" && (runtime.state !== "waiting" || runtime.sessionId !== previous.sessionId || runtime.kind !== previous.kind))
+      this.acpManual.revoke(terminalId);
     if(previous?.kind==="antigravity" && previous.sessionId && (runtime.kind!=="antigravity" || runtime.sessionId!==previous.sessionId || runtime.state==="offline")){
       this.acpSettings.revoke(terminalId);
       try{this.options.requests?.cancelPermissions(terminalId,previous.sessionId);}
@@ -867,6 +871,7 @@ export class AgentBridge {
   }
 
   private revokePeerRuntime(terminalId: string): void {
+    this.acpManual.revoke(terminalId);
     this.acpSettings.revoke(terminalId);
     const runtime = this.peers.runtime(terminalId);
     this.peers.revoke(terminalId);
@@ -1044,10 +1049,29 @@ export class AgentBridge {
     credential: Credential,
   ): Promise<void> {
     const requests = this.options.requests;
+    if(req.body?.harbor_acp_manual){
+      const input=z.object({session:z.string().uuid(), title:z.string().min(1).max(1000),detail:z.string().max(8000)}).strict().safeParse(req.body.harbor_acp_manual);
+      const current=()=>{
+        const t=this.options.terminals().find(t=>t.id===credential.terminalId);
+        const r=this.peers.runtime(credential.terminalId);
+        return input.success && this.credentials.get(credential.terminalId)===credential &&
+          t?.program==="antigravity" && !t.exited && t.agentSessionId===input.data.session &&
+          r?.kind==="antigravity" && r.sessionId===input.data.session && r.state==="waiting";
+      };
+      if(!input.success || !current()){res.sendStatus(409);return;}
+      const abort=new AbortController(), close=()=>abort.abort();
+      res.once("close",close);
+      try {
+        const approved=await this.acpManual.offer(credential.terminalId,input.data.session,input.data.title,input.data.detail,abort.signal);
+        if(!res.destroyed)res.json(current() && approved!==undefined ? {approved}:{});
+      } finally {res.off("close",close);}
+      return;
+    }
     if(req.body?.harbor_acp_config){
       const parsed=nativeControlEvent.safeParse(req.body.harbor_acp_config);
       if(!parsed.success){res.status(400).json({error:"잘못된 ACP 설정 이벤트입니다."});return;}
-      try{res.json(await this.acpSettings.receive(credential.terminalId,parsed.data));}
+      try{const result=await this.acpSettings.receive(credential.terminalId,parsed.data);
+        res.json(parsed.data.op==="register"?{...result,manualApprovals:true}:result);}
       catch{res.status(409).json({error:"Antigravity 세션 연결을 확인하세요."});}
       return;
     }

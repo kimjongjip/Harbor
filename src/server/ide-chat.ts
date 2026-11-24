@@ -55,6 +55,7 @@ type IdeHub = Pick<
 > &
   Partial<Pick<Hub, "on" | "off" | "rename" | "forkSideSession">>;
 export interface IdeChatDependencies {
+  manualAcp?: import("./acp-manual-approval.js").AcpManualApprovals;
   sideReader?(read:()=>Promise<IdeChatConversation>): import("./side-parent.js").SideReader;
   approveWorkspaceTargets?(hostId:string,cwd:string,paths:ApprovalTarget[]):Promise<boolean>;
   nativeAutoAccept?(terminalId:string,nativeId:string):boolean|undefined;
@@ -433,6 +434,8 @@ export class IdeChats {
     if (managed.liveBinding && this.dependencies.live) {
       delete managed.autoPolicy;
       const current = this.dependencies.live.get(managed.liveBinding);
+      if(managed.view.provider==="antigravity")managed.view.approvals=current.terminal && current.status==="waiting"
+        ? this.dependencies.manualAcp?.pending(managed.liveBinding.terminalId,managed.view.nativeId) || [] : [];
       const readPolicy = this.dependencies.nativeAutoAccept ??
         (managed.view.provider === "antigravity" ? this.dependencies.antigravityAutoAccept : undefined);
       managed.view.autoAccept = readPolicy?.(managed.liveBinding.terminalId, managed.view.nativeId);
@@ -1975,6 +1978,12 @@ export class IdeChats {
     await guard();
     this.binding(managed, input.runtimeId);
     this.sync(managed);
+    if (managed.liveBinding && managed.view.provider==="antigravity" && typeof input.approved==="boolean" &&
+        managed.view.approvals.some(a=>a.id===approvalId) && this.dependencies.manualAcp?.answer(
+          managed.liveBinding.terminalId,managed.view.nativeId,approvalId,input.approved)) {
+      this.touch(managed);
+      return this.snapshot(id);
+    }
     if (managed.liveBinding)
       throw new IdeChatError(
         "승인이나 질문에 대한 응답은 연결된 터미널에서 진행해 주세요.",

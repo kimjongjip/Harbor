@@ -50,6 +50,7 @@ import type { TerminalUsage } from "../../shared/terminal-usage";
 import { displayMessage } from "./display-message";
 import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from "./ManagedSideChat";
 import {sideSettings,withParentActivity} from "./side-parent";
+import { WorkspaceApprovalLink } from "./WorkspaceApprovalLink";
 import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
 import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
 import { ManagedTranscript } from "./ManagedTranscript";
@@ -1318,6 +1319,7 @@ export default function IdeChatPanel({
     ? chatTerminalTarget(conversation, inventory, currentTerminal?.id, useWorkspace) : undefined;
   const inputRestriction = !live || live.canSend ? "" : conversation?.status === "offline"
     ? "현재 입력을 받을 수 없어 저장된 대화를 표시합니다."
+    : conversation?.status === "waiting" && conversation.approvals.length ? "위 승인 요청에 응답하세요."
     : conversation?.status === "waiting"
       ? useWorkspace ? "이 서버의 작업 공간에서 승인 또는 질문을 확인하세요." : "승인 또는 답변을 기다리고 있습니다."
       : useWorkspace ? "이 서버의 대화 입력 연결을 사용할 수 없습니다."
@@ -2203,6 +2205,9 @@ export default function IdeChatPanel({
 
           {inputRestriction ? <div className="ide-chat-input-state" role="status">
             <span>{inputRestriction}</span>
+            {active && useWorkspace && !mobileWorkspace && !remoteDesktop && !location.hostname.startsWith("harbor-") &&
+              conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
+              <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}
             {sourceTerminal && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>
               원본 터미널 열기 · {sourceTerminal.title}
             </button>}

@@ -165,7 +165,7 @@ function finish(req){update({sessionUpdate:'agent_message_chunk',content:{type:'
 rl.on('line',s=>{const m=JSON.parse(s);if(m.method==='initialize')send({id:m.id,result:{protocolVersion:1}});
 else if(m.method==='session/new'||m.method==='session/load'){if(m.params.mcpServers[0].name!=='harbor')process.exit(2);fs.appendFileSync('trace',JSON.stringify([m.method,m.params.sessionId])+'\\n');send({id:m.id,result:{sessionId:sid,configOptions:[{id:'model',category:'model',currentValue:'fixture-model'}]}})}
 else if(m.method==='session/set_config_option'){if(!['fixture-model-low','low'].includes(m.params.value))process.exit(3);send({id:m.id,result:{configOptions:[{id:'model',category:'model',currentValue:'fixture-model'},{id:'thought_level',category:'thought_level',currentValue:'low'},{id:'mode',category:'mode',currentValue:'default'}]}})}
-else if(m.method==='session/prompt'){const text=m.params.prompt[0].text;fs.appendFileSync('trace',JSON.stringify(['prompt',m.params.sessionId,text])+'\\n');if(text.includes('approve-fixture')){if(process.env.HARBOR_HOOK_TOKEN||process.env.HARBOR_HOOK_URL)process.exit(4);const auto=text.startsWith('auto-');prompting=m.id;send({id:901,method:'session/request_permission',params:{sessionId:sid,toolCall:{title:'test tool',kind:auto?'edit':'other',rawInput:{TargetFile:require('node:path').join(process.cwd(),'fixture-edit.txt')}},options:auto?[{optionId:'persist',kind:'allow_always',name:'always'},{optionId:'opaque-once',kind:'allow_once',name:'once'}]:[{optionId:'one',name:'one'}]}})}else finish(m.id)}
+else if(m.method==='session/prompt'){const text=m.params.prompt[0].text;fs.appendFileSync('trace',JSON.stringify(['prompt',m.params.sessionId,text])+'\\n');if(text.includes('approve-fixture')){if(process.env.HARBOR_HOOK_TOKEN||process.env.HARBOR_HOOK_URL)process.exit(4);const auto=text.startsWith('auto-');prompting=m.id;send({id:901,method:'session/request_permission',params:{sessionId:sid,toolCall:{title:'test tool',kind:auto?'edit':'other',rawInput:{TargetFile:require('node:path').join(process.cwd(),'fixture-edit.txt')}},options:auto?[{optionId:'persist',kind:'allow_always',name:'always'},{optionId:'opaque-once',kind:'allow_once',name:'once'}]:[{optionId:'one',kind:'allow_once',name:'one'}]}})}else finish(m.id)}
 else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.result.outcome])+'\\n');finish(prompting)}});
 `,
     );
@@ -177,6 +177,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       registrationNeeded = false,
       configPending = false, finishForUpdate = false;
     let registrations = 0;
+    let inlineAnswer: ((approved:boolean)=>void) | undefined;
     const applied: any[] = [];
     let releaseGrant: undefined | (() => void);
     const server = createServer(async (req, res) => {
@@ -191,6 +192,12 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
       for await (const data of req) body += data;
       if (req.url === "/bridge/permission") {
         const event = JSON.parse(body);
+        if(event.harbor_acp_manual){
+          assert.equal(event.harbor_acp_manual.session,id);
+          assert.match(event.harbor_acp_manual.title,/test tool/);
+          inlineAnswer=approved=>res.end(JSON.stringify({approved}));
+          return;
+        }
         if (event.harbor_acp_config) {
           const cfg = event.harbor_acp_config;
           assert.equal(cfg.nativeId, id);
@@ -202,6 +209,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
             }
             registered = true;
             registrationNeeded = false;
+            res.end(JSON.stringify({manualApprovals:true}));return;
           }
           if (cfg.op === "claim") {
             configPending = false;
@@ -318,7 +326,8 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
           progress.filter(i => i.text === "Edit fixture" && i.detail?.includes("Preparing the replacement") &&
             i.detail.includes("fixture-edit.txt")).length === 1;
       });
-      proc.stdin.write("/approve 1\r");
+      await wait(()=>!!inlineAnswer);
+      inlineAnswer!(true);
       await wait(() => states.at(-1) === "idle");
       const history = new AntigravityHistory(journal),
         host = { id: "local", kind: "local" } as HostConfig;

@@ -28,6 +28,27 @@ const host: HostConfig = {
   createdAt: 0,
 };
 const noop = () => {};
+test("a live Antigravity approval answers only the exact waiting terminal prompt",async t=>{
+  const {AcpManualApprovals}=await import("./acp-manual-approval");
+  const h=harness("antigravity"), broker=new AcpManualApprovals();
+  h.dependencies.manualAcp=broker;
+  t.after(()=>h.chats.close());
+  const chat=await h.open();
+  h.terminal.agentState="waiting";
+  const signal=new AbortController(), result=broker.offer(h.terminal.id,chat.nativeId,"Run command","fixture command",signal.signal);
+  const [card]=h.chats.snapshot(chat.id).approvals;
+  assert.equal(card.detail,"fixture command");
+  assert.equal(broker.answer("different",chat.nativeId,card.id,true),false);
+  const reply={runtimeId:chat.runtimeId,approved:true};
+  await h.chats.answer(chat.id,card.id,reply,noop);
+  assert.equal(await result,true);
+  await assert.rejects(h.chats.answer(chat.id,card.id,reply,noop));
+  const pending=broker.offer(h.terminal.id,chat.nativeId,"Run command","again",signal.signal);
+  const [second]=h.chats.snapshot(chat.id).approvals;
+  signal.abort();
+  assert.equal(await pending,undefined);
+  assert.equal(broker.answer(h.terminal.id,chat.nativeId,second.id,true),false);
+});
 test("bound native conversations use the ordered work timeline, including subsequent progress with the same item ID", async t => {
   const h=harness("claude");
   t.after(()=>h.chats.close());
