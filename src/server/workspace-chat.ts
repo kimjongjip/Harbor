@@ -146,6 +146,10 @@ export function workspaceChatRouter(
         kind +
         "-" +
         createHash("sha256").update(device).digest("hex").slice(0, 32);
+    if (req.method === "GET" && req.path === "/workspace-update") {
+      res.set("Cache-Control", "no-store").json(workspaces.status(destination));
+      return;
+    }
     const { path, body } = relayChatRequest(id, req);
     const pass = await password(id);
     let result = await workspaces.chat(

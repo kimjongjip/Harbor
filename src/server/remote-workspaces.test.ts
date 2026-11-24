@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { createServer, request } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Client, ClientChannel } from "ssh2";
 import { RemoteWorkspaces } from "./remote-workspaces.js";
-import { workspaceInstall, workspaceShell } from "./workspace-install.js";
+import { workspaceInstall, workspaceShell, workspaceVersions } from "./workspace-install.js";
 import { WorkspaceAccess, issueWorkspaceLink } from "./workspace-access.js";
 import { workspaceCanSwitch } from "./workspace-update.js";
 import { relayChatRequest } from "./workspace-chat.js";
@@ -129,6 +129,10 @@ test(
     assert.equal(boot.code, 200);
     const view = JSON.parse(boot.data);
     assert.equal(view.localCwd, fixture);
+    const restart = await go("/api/hosts/local/server-workspace/apply", "POST", {
+      cookie: login.cookie!, "x-harbor-token": view.token,
+    });
+    assert.equal(restart.code, 403, "a remote workspace cannot restart the host's server");
     assert.ok(
       view.state.hosts.some(
         (h: HostConfig) => h.id === "local" && h.defaultCwd === fixture,
@@ -371,7 +375,7 @@ test("installer parses as bash without placing a workspace key in its arguments"
       : "/bin/bash";
   if (!existsSync(bash)) return;
   const script = workspaceInstall("c".repeat(64), "2.0.0");
-  for (const source of [script, workspaceShell(script)]) {
+  for (const source of [script, workspaceShell(script), workspaceVersions, workspaceInstall("c".repeat(64), "2.0.7", true)]) {
     const check = spawnSync(bash, ["-n"], { input: source, encoding: "utf8" });
     assert.equal(check.status, 0, check.stderr);
   }
@@ -382,6 +386,129 @@ test("installer parses as bash without placing a workspace key in its arguments"
   );
   assert.equal(run.stdout, "synthetic handshake");
   assert.throws(() => workspaceInstall("bad", "2.0.0"));
+});
+
+test("automatic workspace updates stage once, preserve a busy worker, observe activation and never downgrade", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "harbor-upgrade-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  for (const sub of [
+    "dist/client",
+    "dist/worker-manifest",
+    "desktop",
+    "scripts",
+  ])
+    await mkdir(join(dir, sub), { recursive: true });
+  for (const file of [
+    "dist/client/index.html",
+    "dist/server.mjs",
+    "dist/pty-worker.mjs",
+    "desktop/antigravity.cjs",
+    "scripts/harbor-image.py",
+  ])
+    await writeFile(join(dir, file), "fixture");
+  await writeFile(
+    join(dir, "dist/worker-manifest/package.json"),
+    '{"version":"2.0.7"}',
+  );
+  const profile = createHash("sha256")
+    .update(
+      JSON.stringify([
+        host.id,
+        host.address,
+        host.port,
+        host.username,
+        host.identityFile,
+      ]),
+    )
+    .digest("hex");
+  await writeFile(
+    join(dir, "server-workspaces.json"),
+    JSON.stringify([profile]),
+  );
+  let running = "2.0.5",
+    staged = running,
+    uploads = 0,
+    probes = 0,
+    credentials = 0;
+  const ssh = async () => {
+    const client = new EventEmitter() as Client;
+    client.end = () => client;
+    client.exec = ((command: string, receive: Function) => {
+      const body = Buffer.from(
+        /printf %s ([A-Za-z0-9+/=]+) \| base64/.exec(command)![1],
+        "base64",
+      ).toString();
+      const channel = new Writable({
+        autoDestroy: false,
+        write(_data, _enc, next) {
+          next();
+        },
+        final(next) {
+          if (body === workspaceVersions) {
+            probes++;
+            channel.emit(
+              "data",
+              Buffer.from(
+                [
+                  staged,
+                  running,
+                  staged === running ? "current" : "pending",
+                ].join("\n"),
+              ),
+            );
+          } else if (body.includes("archive.tgz")) {
+            assert.ok(body.includes("selected=$(release_version"));
+            assert.doesNotMatch(body, /systemctl --user restart/);
+            uploads++;
+            staged = "2.0.7";
+          }
+          channel.emit("exit", 0);
+          channel.emit("close", 0);
+          next();
+        },
+      });
+      Object.assign(channel, { stderr: new PassThrough() });
+      receive(null, channel);
+      return client;
+    }) as Client["exec"];
+    return client;
+  };
+  const service = new RemoteWorkspaces(dir, dir, ssh);
+  t.after(() => service.close());
+  const password = async () => {
+    credentials++;
+    return undefined;
+  };
+  await service.synchronize({ ...host, username: "other" }, password);
+  assert.equal(credentials, 0);
+  await Promise.all([
+    service.synchronize(host, password),
+    service.synchronize(host, password),
+  ]);
+  assert.equal(uploads, 1);
+  assert.equal(credentials, 1);
+  assert.deepEqual(service.status(host), {
+    phase: "pending",
+    runningVersion: "2.0.5",
+    stagedVersion: "2.0.7",
+    targetVersion: "2.0.7",
+  });
+  await service.synchronize(host, password);
+  assert.equal(probes, 2);
+  running = staged;
+  await service.synchronize(host, password, true);
+  assert.equal(service.status(host).phase, "current");
+  staged = "2.0.10";
+  await service.synchronize(host, password, true);
+  assert.equal(uploads, 1);
+  assert.equal(service.status(host).stagedVersion, "2.0.10");
+  service.disconnect(host);
+  const attempts = credentials;
+  await service.synchronize(host, password);
+  assert.equal(credentials, attempts);
+  service.forget(host);
+  await service.synchronize(host, password, true);
+  assert.equal(credentials, attempts);
 });
 
 test("dependency failure in a private installation staging directory preserves the selected release and account data", async (t) => {
@@ -440,12 +567,41 @@ test("staged update waits for a detached process in the service cgroup", async (
   await writeFile(join(next, ".harbor-release"), "fixture");
   await writeFile(member, "0::/user.slice/harbor-workspace.service\n");
   await writeFile(join(group, "cgroup.procs"), "100\n101\n");
-  assert.equal(workspaceCanSwitch(next, current, groups, member, 100), false);
+  const environment = {
+    cwd: current,
+    cgroups: groups,
+    membership: member,
+    pid: 100,
+    proc: join(root, "proc"),
+  };
+  assert.equal(workspaceCanSwitch(next, [], environment), false);
+  assert.equal(workspaceCanSwitch(next, [101], environment), true);
+  await writeFile(join(group, "cgroup.procs"), "100\n101\n150\n");
+  assert.equal(workspaceCanSwitch(next, [101], environment), false);
+  const native = join(environment.proc, "150");
+  await mkdir(native, { recursive: true });
+  await mkdir(join(root, "codex"));
+  await symlink(
+    join(root, "codex"),
+    join(native, "exe"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  await writeFile(join(native, "status"), "PPid:\t101\n");
+  await writeFile(
+    join(native, "cmdline"),
+    "codex\0app-server\0--listen\0stdio://\0",
+  );
+  assert.equal(workspaceCanSwitch(next, [101], environment), true);
+  await writeFile(join(native, "cmdline"), "codex\0exec\0background task\0");
+  assert.equal(workspaceCanSwitch(next, [101], environment), false);
   await writeFile(join(group, "cgroup.procs"), "100\n");
-  assert.equal(workspaceCanSwitch(next, current, groups, member, 100), true);
-  assert.equal(workspaceCanSwitch(next, next, groups, member, 100), false);
+  assert.equal(workspaceCanSwitch(next, [], environment), true);
+  assert.equal(
+    workspaceCanSwitch(next, [], { ...environment, cwd: next }),
+    false,
+  );
   await mkdir(join(group, "nested-jobs"));
-  assert.equal(workspaceCanSwitch(next, current, groups, member, 100), false);
+  assert.equal(workspaceCanSwitch(next, [], environment), false);
 });
 
 test("chat relay keeps requested host and approved routes separate from administrative APIs", () => {

@@ -447,7 +447,16 @@ export class AgentBridge {
           controller.signal,
           ()=>this.acpSettings.pending(credential.terminalId,query.sessionId),
         );
-        if (!res.destroyed) res.json(this.acpSettings.pending(credential.terminalId,query.sessionId)?{...events,configPending:true}:events);
+        if (!res.destroyed) {
+          const registrationNeeded = !!query.sessionId &&
+            events.runtime?.kind === "antigravity" && events.runtime.state !== "offline" &&
+            events.sessionId === query.sessionId && !this.acpSettings.registered(credential.terminalId, query.sessionId);
+          res.json({
+            ...events,
+            ...(this.acpSettings.pending(credential.terminalId,query.sessionId) && {configPending:true}),
+            ...(registrationNeeded && {configRegistrationRequired:true}),
+          });
+        }
       } catch (error) {
         if (!res.destroyed)
           res.status(400).json({

@@ -28,10 +28,14 @@ test(
  const fallback=async p=>{if(p.includes('/models?')){window.fallbackCalls++;return json({models,supportsAutoAccept:true});}return json({});};
  window.fetch=async(raw,opts={})=>{
    const url=new URL(raw,'https://fixture.invalid'),p=url.pathname,b=opts.body?JSON.parse(opts.body):null;
+   if(p.endsWith('/workspace-update'))return window.mode==='no-route'
+     ? json({phase:'pending',targetVersion:'2.0.7',runningVersion:'2.0.0',stagedVersion:'2.0.7'})
+     : json({},404);
+   if(window.staleId && !b && p.endsWith('/conversations/'+window.staleId))return json({error:'Saved handle expired'},404);
    if(p.endsWith('/models')){return new Promise(r=>{window.release=()=>r(window.mode==='no-route'?json({},404):json(window.mode==='bare'?{models}:{models,supportsAutoAccept:true}));});}
    if(p.endsWith('/folders'))return json({path:'/fixture',parent:'/',folders:[],truncated:false});
    if(b)window.posts.push({p,b});
-   if(p.endsWith('/conversations')){window.c={hostId:'fixture',id:'fake-'+window.mode,provider:b.provider,nativeId:'thread-'+window.mode,runtimeId:'fake-runtime',title:'fixture',cwd:'/fixture',model:'A',status:'idle',items:[],approvals:[],historyCursor:null,revision:1,updatedAt:1,autoAccept:b.autoAccept??false};return json(window.c);}
+   if(p.endsWith('/conversations')){window.c={hostId:'fixture',id:b.resumeId?'new-handle':'fake-'+window.mode,provider:b.provider,nativeId:b.resumeId||'thread-'+window.mode,runtimeId:b.resumeId?'new-runtime':'fake-runtime',title:'fixture',cwd:'/fixture',model:'A',status:'idle',items:[],approvals:[],historyCursor:null,revision:1,updatedAt:1,autoAccept:b.autoAccept??false};return json(window.c);}
    if(p.endsWith('/messages'))return json({ok:true,status:'submitted',requestId:b.requestId});
    if(p.endsWith('/usage'))return json({usage:null,work:null});
    return json(window.c||{});
@@ -108,9 +112,13 @@ test(
           assert.equal(await toggle.getAttribute("aria-checked"), "true");
         } else {
           await dialog
-            .getByText("서버 업데이트 필요", { exact: true })
+            .getByText(mode==="no-route" ? "업데이트 적용 후 사용" : "서버 업데이트 필요", { exact: true })
             .waitFor();
           assert.equal(await dialog.getByRole("switch").count(), 0);
+          if (mode === "no-route") {
+            await dialog.getByText("서버 2.0.0 · PC 2.0.7").waitFor();
+            await dialog.getByText(/열린 터미널과 AI 프로세스/).waitFor();
+          }
           assert.equal(
             await page.evaluate(() => (window as any).fallbackCalls),
             mode === "no-route" ? 1 : 0,
@@ -144,6 +152,24 @@ test(
           1,
         );
       }
+      await draft.fill("서버를 업데이트하는 동안 쓰던 초안");
+      await page.evaluate(() => {
+        const fixture = window as any;
+        fixture.staleId = fixture.c.id;
+        fixture.posts = [];
+      });
+      const reconnect = page.getByRole("button", { name: "이 대화 다시 연결" });
+      await reconnect.waitFor();
+      assert.equal(await send.isDisabled(), true);
+      assert.equal(await page.evaluate(() => (window as any).posts.length), 0);
+      await reconnect.click();
+      await reconnect.waitFor({ state: "hidden" });
+      assert.equal(await draft.inputValue(), "서버를 업데이트하는 동안 쓰던 초안");
+      assert.equal(await send.isEnabled(), true);
+      const requests = await page.evaluate(() => (window as any).posts);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].b.resumeId, "thread-capable");
+      assert.equal(requests[0].b.autoAccept, undefined);
     } finally {
       await app.close();
     }

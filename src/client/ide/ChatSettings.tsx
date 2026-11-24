@@ -9,6 +9,9 @@ import type {
 import type { ResearchModel } from "../../shared/research";
 import { researchEffortLabel } from "../../shared/research";
 import type { IdeChatRequest } from "./IdeChatPanel";
+import type { WorkspaceUpdateStatus } from "../../shared/types";
+import type { TerminalUsage } from "../../shared/terminal-usage";
+import { WorkspaceUpdateState } from "../WorkspaceUpdateState";
 
 export type ChatSettingsField = keyof ChatSettingsValue;
 export type ChatSettingsValue = {
@@ -36,6 +39,7 @@ export function useChatModels(
   active: boolean,
   scope: string,
   catalogFallback?: IdeChatRequest,
+  settingsOpen = false,
 ) {
   const [, show] = useState(0);
   const cache = useRef(
@@ -66,8 +70,9 @@ export function useChatModels(
         "/hosts/" + encodeURIComponent(hostId) + "/models?provider=" + provider;
       const read = async (send: IdeChatRequest) => {
         const r = await send(path, { signal: controller.signal });
+        if (!r.ok) throw r;
         const data = await r.json();
-        if (!r.ok || !Array.isArray(data.models))
+        if (!Array.isArray(data.models))
           throw Error("모델 목록을 가져올 수 없습니다.");
         return data;
       };
@@ -76,13 +81,13 @@ export function useChatModels(
         supportsAutoAccept = data.supportsAutoAccept === true;
         models = data.models;
         if(data.notice)notice="모델 목록을 가져올 수 없습니다.";
-      } catch {
+      } catch (error) {
         if (controller.signal.aborted) return;
         try {
           if (!catalogFallback || catalogFallback === request) throw Error();
           models = (await read(catalogFallback)).models;
           // Only the worker that owns the future conversation can advertise the policy.
-          supportsAutoAccept = false;
+          supportsAutoAccept = error instanceof Response && error.status === 404 ? false : undefined;
         } catch {
           notice = "모델 목록을 가져올 수 없습니다.";
         }
@@ -100,7 +105,7 @@ export function useChatModels(
     }
     void load();
     return () => controller.abort();
-  }, [active, hostId, provider, key, request, catalogFallback]);
+  }, [active, hostId, provider, key, request, catalogFallback,settingsOpen]);
   return (
     cache.current.get(key) || {
       models: [],
@@ -115,6 +120,8 @@ export function ChatSettings({
   provider,
   initial,
   observed,
+  lastTurnPolicy,
+  workspaceUpdate,
   unknown,
   models,
   notice,
@@ -134,6 +141,8 @@ export function ChatSettings({
   provider: IdeChatProvider;
   initial: ChatSettingsValue;
   observed?: { model?: string; effort?: ChatEffort };
+  lastTurnPolicy?: TerminalUsage["codexTurnPolicy"];
+  workspaceUpdate?: WorkspaceUpdateStatus;
   unknown?: { model?: boolean; effort?: boolean; permission?: boolean };
   models: ResearchModel[];
   notice: string;
@@ -193,9 +202,18 @@ export function ChatSettings({
         ? ["default", "read-only", "accept-edits"]
         : ["default"];
   const busy = active && (status === "running" || status === "waiting");
+  // These workers can start conversations but have no running-session settings endpoint.
+  const legacySettings = active && /^2\.0\.[0-4]$/.test(workspaceUpdate?.runningVersion || "");
+  const nativeAgy = bound && provider === "antigravity";
   const immutable =
-    review || (busy && !bound) || (bound && provider !== "antigravity");
+    review || legacySettings || (busy && !bound) || (bound && !nativeAgy);
   const lockEngine = immutable || (bound && (!nativeConfiguration || busy));
+  const {sandbox,approval} = lastTurnPolicy || {};
+  const policyText = [
+    sandbox && {"read-only":"읽기 전용","workspace-write":"작업 폴더 쓰기","danger-full-access":"전체 접근","external-sandbox":"외부 샌드박스"}[sandbox],
+    approval && {"on-request":"요청 시 승인","untrusted":"신뢰한 명령만 허용","on-failure":"실패 시 승인","never":"승인 요청 안 함"}[approval],
+  ].filter(Boolean).join(" · ");
+  const unsupportedEffort = nativeAgy && chosen && !efforts.length && !effort;
   async function save() {
     if (saving || immutable) return;
     setSaving(true);
@@ -236,6 +254,7 @@ export function ChatSettings({
         }}
       >
         <div className="chat-settings-fields">
+          {workspaceUpdate && workspaceUpdate.phase !== "current" && <WorkspaceUpdateState status={workspaceUpdate} inSettings />}
           <label>
             모델
             {models.length > 0 || !notice ? (
@@ -261,13 +280,13 @@ export function ChatSettings({
                     현재 모델 미확인
                   </option>
                 )}
-                <option value="">
+                {(!nativeAgy || !model && !unknownModel) && <option value="" disabled={nativeAgy}>
                   {!models.length && !notice
                     ? "모델 목록 확인 중…"
-                    : models.find((m) => m.isDefault)?.name
+                    : nativeAgy ? "현재 모델 미확인" : models.find((m) => m.isDefault)?.name
                       ? "기본 · " + models.find((m) => m.isDefault)!.name
                       : "계정 기본 모델"}
-                </option>
+                </option>}
                 {model && !chosen && <option value={model}>{model}</option>}
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -296,23 +315,23 @@ export function ChatSettings({
             <select
               aria-label="추론 강도"
               disabled={lockEngine || saving || (!efforts.length && !effort)}
-              value={unknownEffort ? "__unreported" : effort || ""}
+              value={unknownEffort && !unsupportedEffort ? "__unreported" : effort || ""}
               onChange={(e) =>
                 setEffort(
                   (e.target.value || undefined) as ChatEffort | undefined,
                 )
               }
             >
-              {unknownEffort && (
+              {unknownEffort && !unsupportedEffort && (
                 <option value="__unreported" disabled>
                   현재 강도 미확인
                 </option>
               )}
-              <option value="">
-                {chosen?.defaultEffort && chosen.defaultEffort !== "default"
+              {(!nativeAgy || !effort) && <option value="" disabled={nativeAgy}>
+                {unsupportedEffort ? "선택 가능한 강도 없음" : nativeAgy ? "강도 선택" : chosen?.defaultEffort && chosen.defaultEffort !== "default"
                   ? "모델 기본값 · " + chosen.defaultEffort
                   : "모델 기본값"}
-              </option>
+              </option>}
               {effort && !efforts.includes(effort) && (
                 <option value={effort}>{effort}</option>
               )}
@@ -333,7 +352,7 @@ export function ChatSettings({
             >
               {unknownPermission && (
                 <option value="__unreported" disabled>
-                  현재 권한 미확인
+                  {policyText ? "지난 턴 · " + policyText : legacySettings ? "이 서버 버전에서 권한 미제공" : "현재 권한 미확인"}
                 </option>
               )}
               {permissions.map((p) => (
@@ -351,13 +370,13 @@ export function ChatSettings({
           <section className="chat-auto-accept" aria-label="Harbor 승인 설정">
             <div>
               <strong>Harbor 자동 수락</strong>
-              <p>
+              {(autoAccept !== undefined || isReadOnly) && <p>
                 {isReadOnly
                   ? "읽기 전용 대화"
                   : bound || provider === "antigravity"
                     ? "연결된 터미널의 Harbor 승인 정책을 따릅니다. 사용자 질문은 직접 답합니다."
                     : "작업 폴더 안 파일 요청만 건별로 허용합니다. 명령·질문·권한 확대는 직접 확인합니다."}
-              </p>
+              </p>}
             </div>
             {autoAccept === undefined && !isReadOnly ? (
               <div className="chat-auto-unavailable"><span role="status">{autoUnavailable || "상태 미제공"}</span>{pendingDraftAuto && <button type="button" className="button secondary small" onClick={()=>void onAutoAccept(false)}>예약 해제</button>}</div>
@@ -385,7 +404,9 @@ export function ChatSettings({
               </button>
             )}
           </section>
-          {review ? (
+          {legacySettings && !bound ? (
+            <p>이 서버 버전에서는 열린 대화의 실행 설정을 변경할 수 없습니다.</p>
+          ) : review ? (
             <p>이 검토 대화는 읽기 전용입니다.</p>
           ) : busy && !bound ? (
             <p>현재 작업이 끝나면 설정을 변경할 수 있습니다.</p>
@@ -394,7 +415,7 @@ export function ChatSettings({
               {provider === "antigravity"
                 ? busy && nativeConfiguration
                   ? "모델과 추론 강도는 응답이 끝나면 변경할 수 있습니다."
-                  : "이 세션의 모델과 추론 강도는 터미널에서 변경하세요."
+                  : "열린 Antigravity 터미널의 /model·/effort에서 변경하세요. 대화 설정으로 바꾸려면 작업이 끝난 뒤 /exit하고 기록에서 같은 대화를 다시 여세요."
                 : "현재 세션의 설정은 연결된 터미널에서 변경하세요."}
             </p>
           ) : (
@@ -414,7 +435,7 @@ export function ChatSettings({
             <button
               type="submit"
               className="button primary"
-              disabled={saving || toggling || !changed.length}
+              disabled={saving || toggling || !changed.length || (nativeAgy && edits.model === "")}
             >
               {saving ? "저장 중…" : "적용"}
             </button>

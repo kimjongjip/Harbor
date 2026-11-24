@@ -49,8 +49,36 @@ test "$(loginctl show-user "$(id -un)" --property=Linger --value)" = yes || { ec
 for bin in tar sha256sum flock; do command -v "$bin" >/dev/null || { echo "$bin 설치가 필요합니다." >&2; exit 1; }; done
 `;
 
+// Versioned, completed releases only. Read both symlinks before deciding whether to upload.
+const releaseVersion = `
+release_version() {
+  local dir base
+  dir=$(readlink -f -- "$1") || return 1
+  [ -f "$dir/.harbor-release" ] && [ "$(dirname -- "$dir")" = "$root/releases" ] || return 1
+  base=$(basename -- "$dir")
+  [[ "$base" =~ ^([0-9]+\\.[0-9]+\\.[0-9]+)-[a-f0-9]{16}$ ]] || return 1
+  printf '%s\\n' "\${BASH_REMATCH[1]}"
+}
+`;
+const inspectWorkspaceRelease = `
+root=$(cd -P "$root" && pwd)
+unit="$HOME/.config/systemd/user/harbor-workspace.service"
+grep -Fxq '# Harbor managed workspace' "$unit" && systemctl --user is-enabled --quiet harbor-workspace.service || exit 1
+[ "$(systemctl --user show -p FragmentPath --value harbor-workspace.service)" = "$unit" ] || exit 1
+${releaseVersion}
+selected=$(release_version "$root/current")
+pid=$(systemctl --user show -p MainPID --value harbor-workspace.service)
+running=; state=stopped
+if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && systemctl --user is-active --quiet harbor-workspace.service && [ -S "$XDG_RUNTIME_DIR/harbor-workspace/http.sock" ]; then
+  running=$(release_version "/proc/$pid/cwd") || exit 1
+  if [ "$(readlink -f "/proc/$pid/cwd")" = "$(readlink -f "$root/current")" ]; then state=current; else state=pending; fi
+fi
+`;
+export const workspaceVersions =
+  workspaceEnvironment + inspectWorkspaceRelease + `printf '%s\\n%s\\n%s\\n' "$selected" "$running" "$state"\n`;
+
 // Never interpolate a caller-supplied path into an installation script.
-export function workspaceInstall(digest: string, version: string) {
+export function workspaceInstall(digest: string, version: string, upgradeOnly = false) {
   if (!/^[a-f0-9]{64}$/.test(digest) || !/^\d+\.\d+\.\d+$/.test(version))
     throw Error("Invalid workspace release");
   return (
@@ -61,6 +89,14 @@ root=$(cd -P "$root" && pwd)
 chmod 700 "$root"
 exec 9>"$root/install.lock"
 flock -w 120 9 || { echo '다른 설치가 진행 중입니다.' >&2; exit 1; }
+${upgradeOnly ? `${releaseVersion}
+grep -Fxq '# Harbor managed workspace' "$HOME/.config/systemd/user/harbor-workspace.service" && systemctl --user is-enabled --quiet harbor-workspace.service || exit 1
+selected=$(release_version "$root/current")
+if [ "$(printf '%s\\n' "$selected" '${version}' | sort -V | tail -n 1)" = "$selected" ]; then
+  cat >/dev/null
+  exit 0
+fi
+` : ""}
 ${workspaceNodeSetup}
 unit="$HOME/.config/systemd/user/harbor-workspace.service"
 if [ -e "$unit" ] && ! grep -Fxq '# Harbor managed workspace' "$unit"; then
@@ -171,6 +207,38 @@ else
   echo '먼저 이 서버에서 세션 유지를 설정하세요.' >&2; exit 1
 fi
 `;
+
+/** The PC operator has explicitly confirmed interrupting this running version. */
+export function workspaceApplyUpdate(runningVersion: string, stagedVersion: string) {
+  const version = /^\d+\.\d+\.\d+$/;
+  if (!version.test(runningVersion) || !version.test(stagedVersion))
+    throw Error("서버 버전을 다시 확인하세요.");
+  return workspaceEnvironment + `
+root=$(cd -P "$root" && pwd)
+exec 9>"$root/install.lock"
+flock -w 8 9 || { echo '다른 업데이트가 진행 중입니다.' >&2; exit 1; }
+inspect_release() {
+${inspectWorkspaceRelease}
+}
+inspect_release >/dev/null
+if [ "$selected" = '${stagedVersion}' ] && [ "$state" = current ]; then exit 0; fi
+if [ "$state" != pending ] || [ "$selected" != '${stagedVersion}' ] || [ "$running" != '${runningVersion}' ] ||
+   [ "$(printf '%s\\n' "$selected" "$running" | sort -V | tail -1)" != "$selected" ]; then
+  echo '서버 버전이 바뀌었습니다. 현재 상태를 다시 확인하세요.' >&2
+  exit 1
+fi
+unit="$HOME/.config/systemd/user/harbor-workspace.service"
+[ "$(systemctl --user show -p FragmentPath --value harbor-workspace.service)" = "$unit" ] ||
+  { echo 'Harbor가 설치한 사용자 서비스를 확인할 수 없습니다.' >&2; exit 1; }
+systemctl --user restart harbor-workspace.service
+for attempt in {1..30}; do
+  if inspect_release >/dev/null && [ "$state" = current ] && [ "$running" = '${stagedVersion}' ]; then exit 0; fi
+  sleep 1
+done
+echo '서버 재시작을 요청했습니다. 실행 버전을 다시 확인하세요.' >&2
+exit 1
+`;
+}
 
 // Protect protocol stdout from a login profile's banners.
 export function workspaceShell(script: string) {

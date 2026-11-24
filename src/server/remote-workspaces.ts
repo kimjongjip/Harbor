@@ -6,7 +6,7 @@ import {
   writeFileSync,
   renameSync,
 } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Agent, get, request } from "node:http";
 import {
@@ -17,20 +17,23 @@ import {
 } from "node:net";
 import { join, resolve } from "node:path";
 import type { Client } from "ssh2";
-import type { HostConfig } from "../shared/types.js";
+import type { HostConfig, WorkspaceUpdateStatus } from "../shared/types.js";
 import { passwordConnection } from "./ssh-connect.js";
 import { issueWorkspaceLink, workspaceRelayToken } from "./workspace-access.js";
 import {
   workspaceCheck,
+  workspaceApplyUpdate,
   workspaceInstall,
   workspaceProbe,
   workspaceShell,
+  workspaceVersions,
 } from "./workspace-install.js";
 
 function execute(
   connection: Client,
   script: string,
   file?: string,
+  timeout = file ? 900000 : 30000,
 ): Promise<string> {
   return new Promise((done, fail) => {
     connection.exec(workspaceShell(script), (error, channel) => {
@@ -46,7 +49,7 @@ function execute(
           channel.close();
           fail(Error("서버 작업 시간 초과"));
         },
-        file ? 900000 : 30000,
+        timeout,
       );
       const input = file ? createReadStream(file) : undefined;
       channel.on("data", (s: Buffer) => {
@@ -117,15 +120,40 @@ interface Tunnel {
   clockOffset: number;
   dispose(): void;
 }
+const versionPattern = /^\d{1,8}\.\d{1,8}\.\d{1,8}$/;
+function olderVersion(left: string, right: string) {
+  const a = left.split(".").map(Number),
+    b = right.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+}
 export class RemoteWorkspaces {
   private active = new Map<string, Tunnel>();
   private pending = new Map<string, Promise<Tunnel>>();
   private installed = new Set<string>();
+  private readonly version: string;
+  private readonly updates = new Map<string, WorkspaceUpdateStatus>();
+  private readonly checkedAt = new Map<string, number>();
+  private readonly syncs = new Map<string, Promise<void>>();
+  private readonly uploads = new Map<string, Promise<void>>();
+  private readonly syncConnections = new Set<Client>();
+  private readonly disconnected = new Set<string>();
+  private closed = false;
   constructor(
     private directory: string,
     private root = resolve("."),
     private sshConnection = passwordConnection,
   ) {
+    let version = "";
+    try {
+      const manifest = JSON.parse(
+        readFileSync(join(root, "dist/worker-manifest/package.json"), "utf8"),
+      );
+      if (versionPattern.test(manifest.version)) version = manifest.version;
+    } catch {
+      /* An unbuilt source checkout can still connect to an existing service. */
+    }
+    this.version = version;
     try {
       const data: unknown = JSON.parse(
         readFileSync(join(directory, "server-workspaces.json"), "utf8"),
@@ -153,22 +181,147 @@ export class RemoteWorkspaces {
   enabled(host: HostConfig) {
     return this.installed.has(this.profile(host));
   }
+  status(host: HostConfig): WorkspaceUpdateStatus {
+    return (
+      this.updates.get(this.profile(host)) ?? {
+        targetVersion: this.version,
+        ...(this.version
+          ? { phase: "checking" }
+          : { phase: "error", detail: "PC의 서버 배포 파일을 확인하세요." }),
+      }
+    );
+  }
+  /** Only remembered SSH accounts participate. Queries and uploads run outside the chat tunnel. */
+  synchronize(
+    host: HostConfig,
+    password: () => Promise<string | undefined>,
+    reconnect = false,
+  ): Promise<void> {
+    const id = this.profile(host);
+    if (
+      this.closed ||
+      !this.version ||
+      host.kind !== "ssh" ||
+      !this.installed.has(id)
+    )
+      return Promise.resolve();
+    if (reconnect) this.disconnected.delete(id);
+    if (this.disconnected.has(id)) return Promise.resolve();
+    const current = this.syncs.get(id);
+    if (current) {
+      if (!reconnect) return current;
+      // A verified reconnection can supply credentials while an earlier attempt is still failing.
+      return current.then(() => {
+        if (this.updates.get(id)?.phase !== "error") return;
+        this.checkedAt.delete(id);
+        return this.synchronize(host, password);
+      });
+    }
+    const phase = this.updates.get(id)?.phase;
+    const interval =
+      phase === "pending" || phase === "checking"
+        ? 15000
+        : phase === "error"
+          ? 300000
+          : 600000;
+    if (!reconnect && Date.now() - (this.checkedAt.get(id) || 0) < interval)
+      return Promise.resolve();
+    if (phase === "error")
+      this.updates.set(id, { targetVersion: this.version, phase: "checking" });
+    const task = this.checkVersion(host, id, password)
+      .catch(() => {
+        if (!this.closed && this.installed.has(id))
+          this.updates.set(id, {
+            ...this.updates.get(id),
+            targetVersion: this.version,
+            phase: "error",
+            detail:
+              "서버 버전을 확인하거나 설치하지 못했습니다. SSH 연결과 서버 관리에서 설치 상태를 확인하세요.",
+          });
+      })
+      .finally(() => {
+        if (this.installed.has(id)) this.checkedAt.set(id, Date.now());
+        this.syncs.delete(id);
+      });
+    this.syncs.set(id, task);
+    return task;
+  }
+  private async checkVersion(
+    host: HostConfig,
+    id: string,
+    password: () => Promise<string | undefined>,
+  ) {
+    const pass = await password();
+    if (this.closed || !this.installed.has(id)) return;
+    const ssh = await this.sshConnection(host, pass);
+    this.syncConnections.add(ssh);
+    const versions = async () => {
+      const [stagedVersion, runningVersion, activation] = (
+        await execute(ssh, workspaceVersions)
+      ).split(/\r?\n/);
+      if (
+        !versionPattern.test(stagedVersion) ||
+        (runningVersion && !versionPattern.test(runningVersion)) ||
+        !["stopped", "current", "pending"].includes(activation)
+      )
+        throw Error("서버 버전을 확인할 수 없습니다.");
+      const phase: WorkspaceUpdateStatus["phase"] =
+        activation === "stopped"
+          ? "checking"
+          : activation === "pending"
+            ? "pending"
+            : "current";
+      return {
+        targetVersion: this.version,
+        stagedVersion,
+        runningVersion: runningVersion || undefined,
+        phase,
+      };
+    };
+    try {
+      if (this.closed || !this.installed.has(id)) return;
+      let state = await versions();
+      if (olderVersion(state.stagedVersion, this.version)) {
+        this.updates.set(id, { ...state, phase: "installing" });
+        await this.install(host, id, pass, true);
+        state = await versions();
+        if (olderVersion(state.stagedVersion, this.version))
+          throw Error("서버 설치 확인 실패");
+      }
+      if (!state.runningVersion) {
+        // The account already explicitly enabled this managed unit; start is a no-op if active.
+        await execute(ssh, "systemctl --user start harbor-workspace.service");
+        state = await versions();
+      }
+      this.updates.set(id, state);
+      const t = this.active.get(id);
+      if (t) t.pending = state.phase === "pending";
+    } finally {
+      this.syncConnections.delete(ssh);
+      ssh.end();
+    }
+  }
   checkEdit(host: HostConfig) {
-    if (this.pending.has(this.profile(host)))
+    const id = this.profile(host);
+    if (this.pending.has(id) || this.uploads.has(id) || this.syncs.has(id))
       throw Error("서버 작업 공간 연결 중입니다. 완료 후 설정을 변경하세요.");
   }
   disconnect(host: HostConfig) {
     this.checkEdit(host);
-    this.active.get(this.profile(host))?.dispose();
+    const id = this.profile(host);
+    this.disconnected.add(id);
+    this.active.get(id)?.dispose();
   }
   changed(before: HostConfig, after: HostConfig) {
     if (this.profile(before) !== this.profile(after)) this.forget(before);
   }
   forget(host: HostConfig) {
     const id = this.profile(host);
-    if (this.pending.has(id))
-      throw Error("서버 연결이 끝난 뒤 다시 시도하세요.");
+    this.checkEdit(host);
     this.active.get(id)?.dispose();
+    this.updates.delete(id);
+    this.checkedAt.delete(id);
+    this.disconnected.delete(id);
     if (!this.installed.has(id)) return;
     const keys = new Set(this.installed);
     keys.delete(id);
@@ -275,9 +428,19 @@ export class RemoteWorkspaces {
                   });
                   return;
                 }
-                if (method === "POST" && status === 404 && /^\/conversations\/[a-f0-9-]{36}\/settings$/i.test(path) &&
-                    /^text\/html\b/i.test(String(r.headers["content-type"]))) {
-                  done({status:409,value:{error:"이 서버 작업 공간은 실행 설정 변경을 아직 지원하지 않습니다. 서버 관리에서 업데이트 상태를 확인하세요."}});
+                if (
+                  method === "POST" &&
+                  status === 404 &&
+                  /^\/conversations\/[a-f0-9-]{36}\/settings$/i.test(path) &&
+                  /^text\/html\b/i.test(String(r.headers["content-type"]))
+                ) {
+                  done({
+                    status: 409,
+                    value: {
+                      error:
+                        "이 서버 작업 공간은 실행 설정 변경을 아직 지원하지 않습니다. 서버 관리에서 업데이트 상태를 확인하세요.",
+                    },
+                  });
                   return;
                 }
                 if (
@@ -304,9 +467,35 @@ export class RemoteWorkspaces {
       },
     );
   }
+  async applyConfirmedUpdate(
+    host: HostConfig,
+    password: string | undefined,
+    running: string,
+    staged: string,
+  ) {
+    if (!this.enabled(host) || host.kind !== "ssh")
+      throw Error("연결된 서버 작업 공간을 선택하세요.");
+    const connection = await this.sshConnection(host, password);
+    try {
+      if (!this.enabled(host)) throw Error("서버 연결 설정이 바뀌었습니다.");
+      await execute(
+        connection,
+        workspaceApplyUpdate(running, staged),
+        undefined,
+        150000,
+      );
+    } finally {
+      connection.end();
+    }
+    await this.synchronize(host, async () => password, true);
+  }
   async open(host: HostConfig, password: string | undefined, install: boolean) {
+    if (host.kind !== "ssh") throw Error("SSH 서버를 선택하세요.");
+    const id = this.profile(host);
+    if (install) await this.install(host, id, password, false);
     const t = await this.tunnel(host, password, install);
-    this.remember(this.profile(host));
+    this.remember(id);
+    void this.synchronize(host, async () => password, true);
     return this.link(t);
   }
   private async tunnel(
@@ -320,11 +509,13 @@ export class RemoteWorkspaces {
     if (!waiting) {
       const old = this.active.get(id);
       if (old && !install) return old;
-      waiting = this.connect(host, id, password, install);
+      waiting = this.connect(host, id, password);
       this.pending.set(id, waiting);
     }
     try {
-      return await waiting;
+      const tunnel = await waiting;
+      void this.synchronize(host, async () => password, true);
+      return tunnel;
     } finally {
       if (this.pending.get(id) === waiting) this.pending.delete(id);
     }
@@ -335,34 +526,54 @@ export class RemoteWorkspaces {
       updatePending: t.pending,
     };
   }
+  private install(
+    host: HostConfig,
+    id: string,
+    password: string | undefined,
+    upgradeOnly: boolean,
+  ) {
+    const previous = this.uploads.get(id);
+    if (previous) return previous;
+    const task = this.upload(host, password, upgradeOnly).finally(() =>
+      this.uploads.delete(id),
+    );
+    this.uploads.set(id, task);
+    return task;
+  }
+  private async upload(
+    host: HostConfig,
+    password: string | undefined,
+    upgradeOnly: boolean,
+  ) {
+    if (!this.version) throw Error("PC의 서버 배포 파일을 확인하세요.");
+    const setup = await this.sshConnection(host, password);
+    this.syncConnections.add(setup);
+    try {
+      if (this.closed) throw Error("Harbor 연결이 종료되었습니다.");
+      await execute(setup, workspaceCheck);
+      const temp = await mkdtemp(join(tmpdir(), "harbor-workspace-"));
+      try {
+        const file = join(temp, "worker.tar.gz");
+        const hash = await makeArchive(this.root, file);
+        if (this.closed) throw Error("Harbor 연결이 종료되었습니다.");
+        await execute(
+          setup,
+          workspaceInstall(hash, this.version, upgradeOnly),
+          file,
+        );
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    } finally {
+      this.syncConnections.delete(setup);
+      setup.end();
+    }
+  }
   private async connect(
     host: HostConfig,
     id: string,
     password: string | undefined,
-    install: boolean,
   ): Promise<Tunnel> {
-    if (install) {
-      const setup = await this.sshConnection(host, password);
-      try {
-        await execute(setup, workspaceCheck);
-        const temp = await mkdtemp(join(tmpdir(), "harbor-workspace-"));
-        try {
-          const file = join(temp, "worker.tar.gz");
-          const hash = await makeArchive(this.root, file);
-          const { version } = JSON.parse(
-            await readFile(
-              join(this.root, "dist/worker-manifest/package.json"),
-              "utf8",
-            ),
-          );
-          await execute(setup, workspaceInstall(hash, version), file);
-        } finally {
-          await rm(temp, { recursive: true, force: true });
-        }
-      } finally {
-        setup.end();
-      }
-    }
     // Probe the service on a fresh SSH connection after releasing the installer.
     const ssh = await this.sshConnection(host, password);
     let server: Server | undefined;
@@ -493,6 +704,8 @@ export class RemoteWorkspaces {
     }
   }
   close() {
+    this.closed = true;
+    for (const ssh of this.syncConnections) ssh.end();
     for (const tunnel of this.active.values()) tunnel.dispose();
   }
 }

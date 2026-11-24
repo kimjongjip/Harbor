@@ -16,19 +16,30 @@ const exec = promisify(execFile);
 const modelId = /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]{0,159}$/;
 
 export function agyModels(text: string): ResearchModel[] {
-  const models = new Map<string, ResearchModel>();
+  const entries = new Map<string, string>();
+  const siblings = new Map<string, number>();
+  const variant = /^(.+)-(low|medium|high|xhigh|max)$/;
   for (const line of text.split(/\r?\n/)) {
     const [id, label] = line.trim().split(/\t+/);
-    if (!label || !modelId.test(id)) continue;
-    const match = /^(.+)-(low|medium|high|xhigh|max)$/.exec(id);
-    const key = match?.[1] || id;
+    if (!label || !modelId.test(id) || entries.has(id)) continue;
+    entries.set(id, label);
+    const base = id.match(variant)?.[1];
+    if (base) siblings.set(base, (siblings.get(base) || 0) + 1);
+  }
+  const models = new Map<string, ResearchModel>();
+  for (const [id, label] of entries) {
+    const match = id.match(variant);
+    // With a single fixed level ACP advertises the full model ID, including its suffix.
+    const grouped =
+      match && ((siblings.get(match[1]) || 0) > 1 || entries.has(match[1]));
+    const key = grouped ? match[1] : id;
     const row = models.get(key) || {
       id: key,
-      name: match ? label.replace(/\s*\([^()]*\)\s*$/, "") : label,
+      name: grouped ? label.replace(/\s*\([^()]*\)\s*$/, "") : label,
       isDefault: false,
       efforts: [],
     };
-    if (match && !row.efforts!.includes(match[2] as ChatEffort))
+    if (grouped && !row.efforts!.includes(match[2] as ChatEffort))
       row.efforts!.push(match[2] as ChatEffort);
     models.set(key, row);
   }

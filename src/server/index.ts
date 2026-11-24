@@ -1101,6 +1101,35 @@ app.use(
   }),
 );
 app.use("/api/hosts/:hostId/loopback-ports",loopbackPortRouter(loopbackPorts,req=>!desktop.device(req)&&!workspaceAccess&&validToken(req.headers["x-harbor-token"],token),passwordFor));
+app.get("/api/hosts/:id/server-workspace", (req, res) => {
+  if (desktop.device(req) || workspaceAccess) { res.sendStatus(403); return; }
+  const host = hub.host(String(req.params.id));
+  if (!remoteWorkspaces.enabled(host)) { res.sendStatus(404); return; }
+  res.set("Cache-Control", "no-store").json(remoteWorkspaces.status(host));
+});
+app.post("/api/hosts/:id/server-workspace/apply", async (req, res) => {
+  if (desktop.device(req) || workspaceAccess || !validToken(req.headers["x-harbor-token"], token)) {
+    res.sendStatus(403);
+    return;
+  }
+  const version = z.string().max(32).regex(/^\d+\.\d+\.\d+$/);
+  const confirmation = z.object({
+    confirmStop: z.literal(true),
+    runningVersion: version,
+    stagedVersion: version,
+    password: z.string().max(2048).optional(),
+  }).strict().parse(req.body);
+  const host = hub.host(String(req.params.id));
+  const state = remoteWorkspaces.status(host);
+  if (!remoteWorkspaces.enabled(host) || state.phase !== "pending" ||
+      state.runningVersion !== confirmation.runningVersion || state.stagedVersion !== confirmation.stagedVersion) {
+    res.status(409).json({ error: "서버 상태가 변경되었습니다. 현재 버전을 다시 확인하세요." });
+    return;
+  }
+  const password = await passwordFor(host.id, confirmation.password);
+  await remoteWorkspaces.applyConfirmedUpdate(host, password, confirmation.runningVersion, confirmation.stagedVersion);
+  res.json({ ok: true });
+});
 app.post("/api/hosts/:id/server-workspace", async (req, res) => {
   if (desktop.device(req) || workspaceAccess) {
     res.status(403).json({ error: "호스트 PC의 서버 관리에서 여세요." });
@@ -1581,7 +1610,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.6" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.7" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -1788,6 +1817,7 @@ app.post("/api/hosts/:id/credentials", async (req, res) => {
   await credentials.set(host, password);
   hub.passwords.set(host.id, password);
   files.close(host.id);
+  void remoteWorkspaces.synchronize(host, async () => password, true);
   broadcastState();
   res.json({ hasSavedPassword: true });
 });
@@ -1817,6 +1847,7 @@ app.post("/api/hosts/:id/test-connection", async (req, res) => {
     connection.end();
     if (body.savePassword && password) await credentials.set(host, password);
     if (password) hub.passwords.set(host.id, password);
+    void remoteWorkspaces.synchronize(host, async () => password, true);
   }
   broadcastState();
   res.json({ ok: true, hasSavedPassword: credentials.has(host) });
@@ -1826,7 +1857,9 @@ app.post("/api/hosts/:id/connect", async (req, res) => {
     .object({ password: z.string().max(2000).optional() })
     .parse(req.body || {});
   const id = String(req.params.id);
-  res.json(await hub.connect(id, await passwordFor(id, body.password)));
+  const password = await passwordFor(id, body.password);
+  res.json(await hub.connect(id, password));
+  void remoteWorkspaces.synchronize(hub.host(id), async () => password, true);
 });
 app.post("/api/hosts/:id/disconnect", (req, res) => {
   remoteWorkspaces.disconnect(hub.host(String(req.params.id)));
@@ -2987,6 +3020,11 @@ richTerminals.on("block", (id, block) => {
     if (subscription.terminals.has(id))
       send(socket, { type: "terminal-rich", id, block });
 });
+function syncInstalledWorkspaces() {
+  if (workspaceSocket) return;
+  for (const host of store.data.hosts)
+    void remoteWorkspaces.synchronize(host, () => passwordFor(host.id));
+}
 function onListening() {
   writeFileSync(
     join(store.directory, "server.json"),
@@ -2999,6 +3037,10 @@ function onListening() {
   console.log(
     `Harbor is ready at ${workspaceSocket || "http://127.0.0.1:" + port}`,
   );
+  if (!workspaceSocket) {
+    syncInstalledWorkspaces();
+    setInterval(syncInstalledWorkspaces, 30000).unref();
+  }
   if (process.env.HARBOR_AUTO_CONNECT === "1")
     void hub
       .connect("local")
@@ -3014,17 +3056,14 @@ let shuttingDown = false;
 const releaseLink = process.env.HARBOR_WORKSPACE_RELEASE_LINK;
 if (workspaceSocket && releaseLink)
   setInterval(() => {
-    if (shuttingDown || workspaceWrites || !workspaceCanSwitch(releaseLink))
+    if (shuttingDown || workspaceWrites)
       return;
+    const idleRpc = [...hub.clients.values()].flatMap((client) => client.idleChildPid ? [client.idleChildPid] : []);
+    if (!workspaceCanSwitch(releaseLink, idleRpc)) return;
     if (
       terminals.list().some((t) => !t.exited) ||
       ideChats.hasActiveWork() ||
-      hub
-        .state()
-        .sessions.some(
-          (s) => s.activeTurnId || ["running", "waiting"].includes(s.status),
-        ) ||
-      hub.state().discussions.some((d) => d.status === "running") ||
+      hub.hasActiveWork() ||
       research
         .list()
         .some((l) => !["completed", "paused"].includes(l.status)) ||
@@ -3079,6 +3118,7 @@ process.on("message", (message: unknown) => {
     (message.event === "suspend" || message.event === "resume")
   ) {
     terminals.powerEvent(message.event);
+    if (message.event === "resume") syncInstalledWorkspaces();
     return;
   }
   if (

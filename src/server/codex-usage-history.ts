@@ -1,5 +1,5 @@
 import { chatEfforts, type ChatEffort } from "../shared/ide-chat.js";
-import { codexUsage, codexUsageTail } from "./terminal-usage.js";
+import { codexUsage, codexUsageTail, codexTurnPolicy } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
 import { TerminalAgentRoster } from "./terminal-agent-roster.js";
 import { StringDecoder } from "node:string_decoder";
@@ -61,6 +61,7 @@ export function codexApiCost(
 /** Incremental ledger: one session file, bounded chunks, no transcript retained. */
 export class CodexUsageLedger {
   private effort?:ChatEffort;
+  private policy?:TerminalUsage["codexTurnPolicy"];
   model?: string;
   usage: TerminalUsage | null = null;
   cost = 0;
@@ -99,9 +100,11 @@ export class CodexUsageLedger {
         Number.isFinite(stamp) ? stamp : Date.now(),
       );
     }
-    if (row.type === "turn_context" && typeof row.payload?.model === "string"){
-      this.model = row.payload.model.slice(0, 150);
-      this.effort=chatEfforts.includes(row.payload.effort)?row.payload.effort:undefined;
+    if (row.type === "turn_context") {
+      const context = row.payload;
+      if (typeof context?.model === "string") this.model = context.model.slice(0, 150);
+      this.effort = chatEfforts.includes(context?.effort) ? context.effort : undefined;
+      this.policy = codexTurnPolicy(context);
     }
     if (row.type === "compacted") {
       if (this.usage)
@@ -154,6 +157,7 @@ export class CodexUsageLedger {
       crew: this.crew.snapshot("history"),
       model: this.model,
       ...(this.effort?{effort:this.effort}:{}),
+      ...(!loading && this.policy && {codexTurnPolicy:this.policy}),
       costUsd: this.priced ? this.cost : null,
       costSource: "api-estimate",
       costStatus: loading

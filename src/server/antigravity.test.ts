@@ -167,7 +167,9 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
     const states: string[] = [];
     let nativeApprovals = 0,
       registered = false,
+      registrationNeeded = false,
       configPending = false;
+    let registrations = 0;
     const applied: any[] = [];
     let releaseGrant: undefined | (() => void);
     const server = createServer(async (req, res) => {
@@ -185,7 +187,15 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
         if (event.harbor_acp_config) {
           const cfg = event.harbor_acp_config;
           assert.equal(cfg.nativeId, id);
-          if (cfg.op === "register") registered = true;
+          if (cfg.op === "register") {
+            if (!registrations++) {
+              res.writeHead(409);
+              res.end("{}");
+              return;
+            }
+            registered = true;
+            registrationNeeded = false;
+          }
           if (cfg.op === "claim") {
             configPending = false;
             res.end(JSON.stringify({ id, config: { effort: "low" } }));
@@ -219,6 +229,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
           JSON.stringify({
             sessionId: id,
             configPending,
+            configRegistrationRequired: registrationNeeded,
             messages:
               queued && !acked
                 ? [
@@ -278,6 +289,8 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
     proc.stderr.resume();
     try {
       await wait(() => states.includes("idle") && registered);
+      registrationNeeded = true;
+      await wait(() => !registrationNeeded);
       configPending = true;
       await wait(() => applied.length > 0);
       assert.equal(applied[0].model, "fixture-model-low");

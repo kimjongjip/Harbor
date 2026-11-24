@@ -28,7 +28,7 @@ const host: HostConfig = {
   createdAt: 0,
 };
 const noop = () => {};
-function harness(provider: "codex" | "claude" = "codex") {
+function harness(provider: "codex" | "claude" | "antigravity" = "codex") {
   const terminal: TerminalInfo = {
     id: "terminal",
     hostId: host.id,
@@ -190,6 +190,29 @@ for (const provider of ["codex", "claude"] as const) {
     assert.equal(h.terminal.exited, false);
   });
 }
+
+test("Antigravity settings follow current native values after the terminal changes the model", async t => {
+  const h = harness("antigravity");
+  t.after(() => h.chats.close());
+  h.terminal.agentState = "idle";
+  let model = "model-a";
+  let changes = 0;
+  h.dependencies.canConfigureAntigravity = () => true;
+  h.dependencies.antigravitySettings = () => ({ model, effort: "high" });
+  h.dependencies.configureAntigravity = async (_id, _nativeId, request) => {
+    changes++;
+    model = request.model ?? model;
+    return { model, effort: "high" };
+  };
+  const chat = await h.open();
+  const input = { runtimeId: chat.runtimeId, model: "model-b" };
+  assert.equal((await h.chats.settings(chat.id, input, noop)).model, "model-b");
+  model = "model-a";
+  assert.equal((await h.chats.read(chat.id, noop)).model, "model-a");
+  assert.equal((await h.chats.settings(chat.id, input, noop)).model, "model-b");
+  assert.equal(changes, 2);
+  await assert.rejects(h.chats.settings(chat.id, { runtimeId: chat.runtimeId, changedFields: ["effort"] }, noop), /선택/);
+});
 
 test("live reads coalesce, refresh native saved blocks, and preserve older loaded history", async () => {
   const h = harness();

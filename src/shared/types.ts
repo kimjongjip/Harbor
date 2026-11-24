@@ -4,6 +4,15 @@ export type SessionStatus =
 export type PermissionMode = "read-only" | "workspace-write";
 export type CliApprovalMode = "native" | "full-access";
 
+/** Version of the user's installed workspace service and its selected next release. */
+export interface WorkspaceUpdateStatus {
+  phase: "checking" | "installing" | "pending" | "current" | "error";
+  targetVersion: string;
+  runningVersion?: string;
+  stagedVersion?: string;
+  detail?: string;
+}
+
 export interface HostConfig {
   /** User-selected default for new terminals, never an instruction from a peer. */
   cliApprovalMode?: CliApprovalMode;

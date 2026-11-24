@@ -1009,7 +1009,10 @@ export class IdeChats {
       if(v.provider!=="antigravity" || input.permission && !["default","auto-accept"].includes(input.permission))
         throw new IdeChatError("이 CLI 연결에서 실행 설정을 변경할 수 없습니다.",409);
       if(input.permission && !this.dependencies.setAntigravityAutoAccept) throw new IdeChatError("승인 정책 연결을 확인하세요.",409);
-      const engineChange = (input.model !== undefined && input.model!==v.configuredModel && input.model!==v.model) ||
+      if (input.changedFields?.includes("model") && !input.model ||
+          input.changedFields?.includes("effort") && !input.effort && !input.model)
+        throw new IdeChatError("이 Antigravity 대화에서 사용할 모델 또는 추론 강도를 직접 선택하세요.",409);
+      const engineChange = (input.model !== undefined && input.model!==v.model) ||
         (input.effort !== undefined && input.effort!==v.effort);
       if(engineChange){
         const configure = this.dependencies.configureAntigravity;

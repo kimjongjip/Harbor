@@ -44,6 +44,8 @@ import { Modal } from "../Dialogs";
 import { workspaceRequest } from "./workspace-request";
 import { remoteDesktop } from "../desktop-session";
 import { WorkspaceControl } from "./WorkspaceControl";
+import { useWorkspaceUpdate } from "../WorkspaceUpdateState";
+import type { TerminalUsage } from "../../shared/terminal-usage";
 import { displayMessage } from "./display-message";
 import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from "./ManagedSideChat";
 import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
@@ -115,6 +117,7 @@ interface ChatDraft {
   cwd: string;
   model: string;
   conversation?: IdeChatConversation;
+  lastTranscript?: Pick<IdeChatConversation, "id" | "items" | "hostId" | "cwd" | "provider" | "nativeId">;
   attachment?: IdeSelection;
   createRequestId: string;
   createAttempt?: IdeChatCreate;
@@ -311,7 +314,10 @@ export default function IdeChatPanel({
   }
   const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
   const provider=currentTab ? currentTab.provider : chosenProvider;
-  const catalog=useChatModels(hostId,provider,request,active,scopeHost,useWorkspace?suppliedRequest:undefined);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const updateStatus = useWorkspaceUpdate(hostId, active && useWorkspace && folderOpen, request);
+  const catalogScope = scopeHost + (useWorkspace && updateStatus?.phase === "current" ? ":" + updateStatus.runningVersion : "");
+  const catalog=useChatModels(hostId,provider,request,active,catalogScope,useWorkspace?suppliedRequest:undefined,folderOpen);
   const scope = `${scopeHost}:${provider}`;
   function setProvider(next:IdeChatProvider) {
     if(multiTabs){
@@ -394,7 +400,6 @@ export default function IdeChatPanel({
     historyPending = useRef(false),
     resumes = useRef(new Map<string, string>());
   const [resuming, setResuming] = useState(""),
-    [folderOpen, setFolderOpen] = useState(false),
     [bottom, setBottom] = useState(true);
   const [terminalIntent, setTerminalIntent] = useState<{
     hostId: string;
@@ -599,7 +604,7 @@ export default function IdeChatPanel({
     if (!response.ok)
       throw Object.assign(
         new Error(value.error || "요청을 완료하지 못했습니다."),
-        { code: value.code },
+        { code: value.code, status: response.status },
       );
     return value;
   }
@@ -635,6 +640,7 @@ export default function IdeChatPanel({
     target.restoreId=undefined;
     target.restoreNative=undefined;
     target.conversation = conversation;
+    target.lastTranscript = undefined;
     target.connectionError = undefined;
     repaint();
   }
@@ -660,7 +666,21 @@ export default function IdeChatPanel({
         if (live && !("unchanged" in value)) accept(target, value);
       } catch (error) {
         if (live) {
-          if (isLegacyClaudeHistoryLimit(error)) {
+          if (multiTabs && (error as {status?: number}).status === 404 && target.conversation?.id === id) {
+            const previous = target.conversation;
+            target.restoreTitle = previous.title;
+            target.lastTranscript = previous;
+            target.restoreId = id;
+            target.restoreNative = previous.nativeId;
+            target.reviewOnly = target.reviewOnly || previous.reviewOnly;
+            target.conversation = undefined;
+            target.historyPaused = true;
+            target.historyRetryId = previous.nativeId;
+            target.connectionError = undefined;
+            target.notice = target.reviewOnly
+              ? "검토 연결이 끝났습니다. 본 대화에서 옆 대화를 다시 여세요."
+              : "서버 연결이 끝났습니다. 저장된 대화를 이 탭에서 다시 열 수 있습니다.";
+          } else if (isLegacyClaudeHistoryLimit(error)) {
             target.historyPaused = true;
             target.connectionError = undefined;
           } else target.connectionError = (error as Error).message;
@@ -781,6 +801,9 @@ export default function IdeChatPanel({
         resumeId: thread.id,
         requestId,
       } satisfies IdeChatCreate);
+      if (conversation.nativeId !== thread.id || conversation.provider !== provider || conversation.hostId !== hostId)
+        throw Error("요청한 대화와 서버 응답이 일치하지 않습니다.");
+      if (view.restoreNative === thread.id && !entries.current.has(view.key)) return;
       let target = [...entries.current.values()].find(
         (item) =>
           (item.conversation?.id === conversation.id || (multiTabs && item.restoreNative===thread.id && !item.conversation)) &&
@@ -815,7 +838,7 @@ export default function IdeChatPanel({
             !view.attachment &&
             selected.current === view.key))
       ) {
-        target.historyPaused=false;target.historyRetryId=undefined;target.notice=undefined;
+        target.historyPaused=false;target.historyRetryId=undefined;target.notice=undefined;target.error=undefined;
         if(multiTabs){selectedByHost.current.set(scopeHost,target.key);dirtyTabAreas.current.add(scopeHost);}
         selectedByScope.current.set(capturedScope, target.key);
         setHistoryOpen(false);
@@ -826,6 +849,7 @@ export default function IdeChatPanel({
       if (ticket === historyGeneration.current) {
         const limited = isLegacyClaudeHistoryLimit(error);
         setHistoryError(limited ? "" : (error as Error).message);
+        if (view.historyRetryId === thread.id && !limited) { view.error = (error as Error).message; repaint(); }
         if (limited) {
           view.historyPaused = true;
           view.historyRetryId = thread.id;
@@ -1174,6 +1198,7 @@ export default function IdeChatPanel({
     }
   }
   const conversation = view.conversation,
+    transcript = conversation || view.lastTranscript,
     label = agentLabel(provider),
     running = conversation?.status === "running",
     live = conversation?.live;
@@ -1403,18 +1428,19 @@ export default function IdeChatPanel({
     }
     setProvider(next);
   }
-  const [observed,setObserved]=useState<{id:string;native:string;model?:string;effort?:ChatSettingsValue["effort"]}>();
+  const [observed,setObserved]=useState<{id:string;native:string;runtime:string;model?:string;effort?:ChatSettingsValue["effort"];policy?:TerminalUsage["codexTurnPolicy"]}>();
   useEffect(()=>{
-    if(!folderOpen || !active || !conversation || (conversation.observedModel && conversation.observedEffort))return;
+    if(!folderOpen || !active || !conversation || (conversation.observedModel && conversation.observedEffort &&
+      (conversation.permission || conversation.provider !== "codex")))return;
     const target=conversation,controller=new AbortController();
     void request("/conversations/"+encodeURIComponent(target.id)+"/usage",{signal:controller.signal})
       .then(async r=>r.ok?(await r.json()).usage:undefined).then(u=>{
         if(!controller.signal.aborted && u?.provider===target.provider && u.sessionId===target.nativeId)
-          setObserved({id:target.id,native:target.nativeId,model:u.model,effort:u.effort});
+          setObserved({id:target.id,native:target.nativeId,runtime:target.runtimeId,model:u.model,effort:u.effort,policy:u.codexTurnPolicy});
       }).catch(()=>{});
     return ()=>controller.abort();
-  },[folderOpen,active,request,conversation?.id,conversation?.nativeId,conversation?.model,conversation?.effort,conversation?.observedEffort]);
-  const measurement=conversation && observed?.id===conversation.id && observed.native===conversation.nativeId ? observed : undefined;
+  },[folderOpen,active,request,conversation?.id,conversation?.nativeId,conversation?.runtimeId,conversation?.model,conversation?.effort,conversation?.observedEffort,conversation?.permission]);
+  const measurement=conversation && observed?.id===conversation.id && observed.native===conversation.nativeId && observed.runtime===conversation.runtimeId ? observed : undefined;
   const actualModel=conversation?.observedModel||measurement?.model||conversation?.model||"";
   const configuredModel = conversation
     ? conversation.live ? actualModel : conversation.configuredModel ?? actualModel
@@ -1432,6 +1458,12 @@ export default function IdeChatPanel({
   const unknown={model:!!conversation && !actualModel && conversation.configuredModel===undefined,
     effort:!!conversation && !effortSetting && !knownDefaultEffort,
     permission:!!conversation && !conversation.permission && !conversation.reviewOnly};
+  const pendingServer = useWorkspace && (updateStatus?.phase === "pending" || updateStatus?.phase === "installing");
+  let autoUnavailable = "상태 미제공";
+  if (pendingServer && catalog.supportsAutoAccept !== true) autoUnavailable = "업데이트 적용 후 사용";
+  else if (!conversation && !catalog.at) autoUnavailable = "확인 중…";
+  else if (catalog.supportsAutoAccept === false)
+    autoUnavailable = updateStatus?.phase === "current" ? "이 연결에서 미지원" : "서버 업데이트 필요";
   async function saveSettings(settings:ChatSettingsValue,engineChanged:boolean,fields?:("model"|"effort"|"permission")[]){
     const target=view;
     if(target.conversation){
@@ -1591,7 +1623,7 @@ export default function IdeChatPanel({
         </details>}
       </header>
 
-      {folderOpen && <ChatSettings key={view.key} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={!conversation && !catalog.at ? "확인 중…" : catalog.supportsAutoAccept===false ? "서버 업데이트 필요" : "상태 미제공"} onAutoAccept={async(enabled)=>{
+      {folderOpen && <ChatSettings key={view.key} workspaceUpdate={useWorkspace ? updateStatus : undefined} lastTurnPolicy={measurement?.policy} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={autoUnavailable} onAutoAccept={async(enabled)=>{
         const target=view,c=target.conversation;
         if(!c){if((!enabled || catalog.supportsAutoAccept) && !target.reviewOnly && target.permission!=="read-only"){target.autoAccept=enabled;if(multiTabs)dirtyTabAreas.current.add(target.area||scopeHost);}repaint();return;}
         if(c.autoAccept===undefined || c.reviewOnly)throw Error("이 대화의 자동 수락 상태를 확인할 수 없습니다.");
@@ -1780,7 +1812,7 @@ export default function IdeChatPanel({
             {view.loadingOlder ? "불러오는 중…" : "이전 메시지 더 보기"}
           </button>
         )}
-        {conversation && presentation === "terminal" ? <ManagedTranscript key={"transcript-"+conversation.id} items={conversation.items} hostId={conversation.hostId} cwd={conversation.cwd} provider={conversation.provider} nativeId={conversation.nativeId} running={!!running}/> : conversation?.items.map((item) => (
+        {presentation === "terminal" && transcript ? <ManagedTranscript key={"transcript-"+transcript.id} items={transcript.items} hostId={transcript.hostId} cwd={transcript.cwd} provider={transcript.provider} nativeId={transcript.nativeId} running={!!running}/> : conversation?.items.map((item) => (
           <ChatItem
             key={item.id}
             item={item}
@@ -1838,19 +1870,22 @@ export default function IdeChatPanel({
           {conversation.historyNotice}
         </div>
       )}
-      {view.historyPaused && (
+      {view.historyPaused && !(view.reviewOnly && view.restoreId && !view.conversation) && (
         <button
           type="button"
           className="ide-chat-older"
+          disabled={!!resuming}
           onClick={() => {
+            if (!view.conversation && view.historyRetryId) {
+              void resume({ id: view.historyRetryId });
+              return;
+            }
             view.historyPaused = false;
             if (view.conversation) retryHistory((value) => value + 1);
-            else if (view.historyRetryId)
-              void resume({ id: view.historyRetryId });
             repaint();
           }}
         >
-          기록 다시 불러오기
+          {view.restoreId && !view.conversation ? "이 대화 다시 연결" : "기록 다시 불러오기"}
         </button>
       )}
       {!!conversation?.queue?.length && (

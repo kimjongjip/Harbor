@@ -52,6 +52,15 @@ export function codexUsage(
   return snapshot("codex", sessionId, used, limit, null, updatedAt, source);
 }
 
+export function codexTurnPolicy(context: any): TerminalUsage["codexTurnPolicy"] {
+  const sandbox = context?.sandbox_policy?.type, approval = context?.approval_policy;
+  const policy = {
+    ...(["read-only","workspace-write","danger-full-access","external-sandbox"].includes(sandbox) && {sandbox}),
+    ...(["untrusted","on-failure","on-request","never"].includes(approval) && {approval}),
+  };
+  return Object.keys(policy).length ? policy : undefined;
+}
+
 /** Only complete JSONL records in a bounded tail are considered. */
 export function codexUsageTail(
   sessionId: string,
@@ -59,9 +68,11 @@ export function codexUsageTail(
   modified: number,
 ): TerminalUsage | null {
   let result: TerminalUsage | null = null;
+  let policy:TerminalUsage["codexTurnPolicy"];
   for (const line of text.split("\n").slice(0, -1)) {
     try {
       const row = JSON.parse(line);
+      if (row.type === "turn_context") policy = codexTurnPolicy(row.payload);
       if (row.type === "compacted") result = null;
       if (
         row.type !== "event_msg" ||
@@ -84,7 +95,7 @@ export function codexUsageTail(
       /* Truncated first/last records and non-JSON diagnostics are ignored. */
     }
   }
-  return result;
+  return result && policy ? {...result,codexTurnPolicy:policy} : result;
 }
 
 export function claudeUsageTail(

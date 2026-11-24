@@ -416,10 +416,11 @@ async function run(
   let reportSettings = false,
     lastReport = "",
     reporting = Promise.resolve();
-  function reportConfiguration() {
+  function reportConfiguration(refresh = false) {
+    if (!reportSettings || closed) return reporting;
     const effort = config("effort")?.currentValue;
     const value = JSON.stringify([model, effort]);
-    if (!model || lastReport === value) return reporting;
+    if (!refresh && lastReport === value) return reporting;
     lastReport = value;
     const snapshot = { op: "register", model, effort };
     reporting = reporting
@@ -503,19 +504,12 @@ async function run(
       }
       // An agy variant such as <model>-low selects the thought level itself.
       const level = config("effort");
-      const variants = (level?.options || [])
-        .flatMap((o) => o.options || [o])
-        .map((o) => o.value);
       const isVariant =
         desired.model && desired.model !== config("model")?.currentValue;
       if (isVariant && desired.effort && desired.effort !== level?.currentValue)
         throw Error("선택한 모델 변형의 effort와 요청한 값이 다릅니다.");
-      const keep =
-        desired.effort ||
-        (modelAttempted && !isVariant && variants.includes(oldEffort)
-          ? oldEffort
-          : undefined);
-      if (keep && keep !== level?.currentValue) await setOption("effort", keep);
+      if (desired.effort && desired.effort !== level?.currentValue)
+        await setOption("effort", desired.effort);
       if (
         !model ||
         (desired.effort && desired.effort !== config("effort")?.currentValue)
@@ -547,6 +541,7 @@ async function run(
         }).catch(() => {});
       }
       configuring = false;
+      void reportConfiguration();
       void drain();
       return;
     }
@@ -559,6 +554,7 @@ async function run(
       });
     } finally {
       configuring = false;
+      void reportConfiguration();
       void drain();
     }
   }
@@ -731,8 +727,6 @@ async function run(
       return;
     }
     if (u.sessionUpdate === "usage_update") recordUsage(u);
-    if (u.sessionUpdate === "config_option_update")
-      configuration(u.configOptions);
     if (!turn) return;
     if (
       turn.receipt &&
@@ -897,6 +891,13 @@ async function run(
           undefined,
           polling.signal,
         );
+        if (!batch?.runtime && !batch?.sessionId && batch?.reason) {
+          // On reconnect the bridge can know this terminal while still lacking its runtime.
+          status(approval ? "waiting" : turn ? "working" : "idle");
+          await reported;
+        }
+        if (batch?.sessionId === sessionId && !configuring)
+          await reportConfiguration(!!batch.configRegistrationRequired);
         if (batch?.sessionId === sessionId && batch.configPending)
           await handleConfiguration();
         if (batch?.sessionId === sessionId)
@@ -1040,8 +1041,7 @@ async function run(
     await reported;
     if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN) {
       reportSettings = true;
-      if (model) await reportConfiguration();
-      else await configEvent({ op: "register" }).catch(() => {});
+      await reportConfiguration();
     }
     out("Antigravity · Harbor\n/exit 종료 · Ctrl+C 작업 중단\n");
     editor = editorInput(process.stdin, line);
@@ -1090,6 +1090,7 @@ async function run(
             .catch((e) => line(e.message))
             .finally(() => {
               configuring = false;
+              void reportConfiguration();
               void drain();
             });
         }
