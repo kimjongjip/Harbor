@@ -131,6 +131,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     "terminal" | "ide" | "chat"
   >(initialChatWindow ? "chat" : "terminal");
   const [chatOpened, setChatOpened] = useState(initialChatWindow);
+  const [chatFolder, setChatFolder] = useState<{hostId:string; cwd:string}>();
+  const [ideChatFolder, setIdeChatFolder] = useState<{hostId:string; cwd:string}>();
   const [ideLoaded, setIdeLoaded] = useState(false);
   const [ideHeight, setIdeHeight] = useState(72);
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
@@ -744,6 +746,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const ideTerminal = active?.hostId === host?.id ? active : undefined;
   const ideNativeTerminal = !!ideTerminal && !ideNewChat;
   const canStartIdeChat = ideNativeTerminal || !ideTerminal;
+  const historyFolder = page === "terminals" && workspaceView === "chat" ? chatFolder :
+    ideMode && ideChatOpen && !ideNativeTerminal ? ideChatFolder : active;
   return (
     <PreviewProvider
       hosts={orderedHosts}
@@ -940,6 +944,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                 <CodexHistory
                   hosts={orderedHosts}
                   initialHostId={host?.id}
+                  preferredCwd={(historyFolder?.hostId === host?.id && historyFolder?.cwd) || host?.defaultCwd}
                   onResume={created}
                   onConnect={(h) => {
                     setHostId(h.id);
@@ -1416,6 +1421,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                           rememberScope={initialChatWindow ? "chat-window."+requestedChatKey : nativeWindowKey || "desktop"}
                           hostId={host?.id}
                           hostName={host?.name}
+                          onFolderChange={setChatFolder}
                           antigravityIntegration={antigravityIntegration}
                           active={
                             page === "terminals" && workspaceView === "chat"
@@ -1456,6 +1462,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                         }
                       >
                         <DesktopIdeView
+                          onFolderChange={setIdeChatFolder}
                           serverWorkspace={host?.serverWorkspace}
                           antigravityIntegration={antigravityIntegration}
                           terminalId={ideTerminal?.id || ""}

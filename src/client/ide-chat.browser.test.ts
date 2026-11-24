@@ -31,6 +31,10 @@ async function request(path,init){const body=init?.body?JSON.parse(init.body):un
  if(path.startsWith('/hosts/')){const url=new URL(path,'http://fixture');
  if(url.pathname.endsWith('/folders')){const chosen=url.searchParams.get('path')||'/fixture/home';return json({path:chosen,parent:'/fixture',folders:chosen==='/fixture/home'?[{name:'work',path:'/fixture/work'}]:[],truncated:false});}
  if(url.pathname.endsWith('/models'))return json({models:[{id:'fixture-model',name:'Fixture model',isDefault:true,efforts:['low','high'],defaultEffort:'low'}]});
+ if(url.pathname.endsWith('/history') && url.searchParams.get('provider')==='codex' && url.searchParams.has('cwd')){
+   const current=url.searchParams.get('cwd'),more=url.searchParams.has('cursor'),title=(url.searchParams.get('query')||'Recent')+' '+(more?'elsewhere':current);
+   return json({preferredCwd:current,data:[{id:more?'outside':'inside',provider:'codex',hostId:url.pathname.split('/')[2],cwd:more?'/another':current,title,preview:'',updatedAt:more?3000:1000,historyScope:more?'global':'folder'}],nextCursor:more?null:'scope-next'});
+ }
  const provider=url.searchParams.get('provider'),older=url.searchParams.has('cursor');return json({data:[{id:older?'old-thread':'history-thread',hostId:url.pathname.split('/')[2],provider,title:older?'Older history':'Saved '+provider+' conversation',preview:'이전 대화 내용',cwd:'/fixture/project',updatedAt:1700000000000,source:'cli',active:false}],nextCursor:older?null:'history-cursor'});}
  if(path==='/conversations'){if(window.created.has(body.requestId))return json(window.created.get(body.requestId));const value=conversation(body);window.created.set(body.requestId,value);window.snapshots[value.id]=value;if(window.deferResumeId&&body.resumeId===window.deferResumeId)return new Promise(resolve=>window.releaseResume=()=>{window.deferResumeId='';resolve(json(value));});return json(value);}
  const [, ,id,action]=path.split('/');const value=window.snapshots[id];if(!value)return json({error:'No such conversation'},404);
@@ -124,10 +128,26 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       await input.fill("Codex draft A");
       const folderButton=page.getByRole("button",{name:"작업 폴더 선택",exact:true});
       await folderButton.getByText("/fixture/home",{exact:true}).waitFor();
+      const historyButton = page.getByRole("button", {name:"대화 기록",exact:true});
+      await historyButton.click();
+      await page.getByRole("button",{name:/Recent \/fixture\/home/}).waitFor();
       await folderButton.click();
       await page.getByRole("dialog").getByRole("button",{name:"work",exact:true}).click();
       await page.getByRole("dialog").getByRole("button",{name:"이 폴더 선택"}).click();
       await folderButton.getByText("/fixture/work",{exact:true}).waitFor();
+      await page.getByRole("button",{name:/Recent \/fixture\/work/}).waitFor();
+      assert.equal(await page.getByRole("button",{name:/Recent \/fixture\/home/}).count(),0);
+      const historyRegion = page.getByRole("region",{name:"Codex 대화 기록"});
+      await historyRegion.getByLabel("대화 기록 검색").fill("needle");
+      await historyRegion.getByRole("button",{name:/needle \/fixture\/work/}).waitFor();
+      await historyRegion.getByRole("button",{name:"기록 더 보기"}).click();
+      await historyRegion.getByRole("button",{name:/needle elsewhere/}).waitFor();
+      assert.deepEqual(await historyRegion.getByRole("heading").allTextContents(),["선택한 폴더","다른 폴더"]);
+      assert.equal(await page.evaluate(()=>(window as any).calls.filter((c:any)=>{
+        const params=new URL(c.path,"http://fixture").searchParams;
+        return params.get("cwd")==="/fixture/work" && params.get("query")==="needle" && params.get("cursor")==="scope-next";
+      }).length),1);
+      await historyButton.click();
       assert.equal(await input.inputValue(),"Codex draft A");
       await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
       await page.getByLabel("AI 모델",{exact:true}).selectOption("fixture-model");

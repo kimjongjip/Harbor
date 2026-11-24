@@ -30,6 +30,7 @@ export default function DesktopIdeView({
   newConversation = false,
   newChatRequest,
   onNewChatHandled,
+  onFolderChange,
   ...props
 }: {
   serverWorkspace?: boolean;
@@ -46,6 +47,7 @@ export default function DesktopIdeView({
   newConversation?: boolean;
   newChatRequest?: number;
   onNewChatHandled?: (id: number) => void;
+  onFolderChange?: (folder: {hostId:string; cwd:string}) => void;
   onFocusTerminal: (id: string) => void;
   onShowTerminal: () => void;
   onShowChat?: () => void;
@@ -153,6 +155,7 @@ export default function DesktopIdeView({
               hostName={props.hostLabel}
               newChatRequest={newChatRequest}
               onNewChatHandled={onNewChatHandled}
+              onFolderChange={onFolderChange}
               active={props.visible && chatOpen && !nativeTerminal}
               onFocusTerminal={onFocusTerminal}
               onShowTerminal={onShowTerminal}

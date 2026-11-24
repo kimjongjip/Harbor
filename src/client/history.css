@@ -156,6 +156,10 @@
   overscroll-behavior: contain;
   padding: 0 6px 8px;
 }
+.history-list .history-scope-heading {
+  margin: 8px 8px 2px;
+  font-size: inherit;
+}
 .history-row {
   display: flex;
   flex-direction: row;

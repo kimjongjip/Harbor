@@ -1,5 +1,6 @@
 import { providerName as agentLabel } from "../../shared/agent-provider";
 import {
+  Fragment,
   memo,
   useEffect,
   useLayoutEffect,
@@ -56,6 +57,7 @@ import {ChatFolderPicker,loadChatFolders} from "./ChatFolderPicker";
 import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSettingsValue} from "./ChatSettings";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
+import { absoluteHistoryFolder, HistoryScopeHeading } from "../history-scope";
 import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
 import { readDraft, saveDraft } from "../mobile/draft-storage";
 import {ManagedChatTabs} from "./ManagedChatTabs";
@@ -219,6 +221,7 @@ export default function IdeChatPanel({
   active,
   newChatRequest,
   onNewChatHandled,
+  onFolderChange,
   request: suppliedRequest = localRequest,
   rememberScope,
   renderMarkdown,
@@ -238,6 +241,7 @@ export default function IdeChatPanel({
   active: boolean;
   newChatRequest?: number;
   onNewChatHandled?: (id:number) => void;
+  onFolderChange?: (folder: {hostId: string; cwd: string}) => void;
   onFocusTerminal?: (id: string) => void;
   onShowTerminal?: () => void;
   labRequest?: <T>(path: string, body?: unknown, method?: string) => Promise<T>;
@@ -360,6 +364,10 @@ export default function IdeChatPanel({
   const actionMenu=useRef<HTMLDetailsElement>(null);
   const defaultPath=defaultDirectory?.scope===scopeHost ? defaultDirectory.path : "";
   const chosenPath=view.conversation?.cwd || view.cwd || defaultPath;
+  const historyCwd = provider === "codex" ? absoluteHistoryFolder(chosenPath) : undefined;
+  useEffect(() => {
+    if (active && hostId) onFolderChange?.({hostId, cwd: chosenPath});
+  }, [active, hostId, chosenPath, onFolderChange]);
   useEffect(()=>{
     if(!active || !hostId || view.conversation || view.cwd || defaultPath)return;
     const c=new AbortController();
@@ -383,11 +391,17 @@ export default function IdeChatPanel({
     [history, setHistory] = useState<HistoryThread[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null),
     [historyQuery, setHistoryQuery] = useState("");
+  const historySearch = historyQuery.trim();
+  const historyPath = `/hosts/${encodeURIComponent(hostId)}/history?${new URLSearchParams({
+    provider,
+    ...(historyCwd ? {cwd: historyCwd} : {}),
+    ...(historySearch ? {query: historySearch} : {}),
+  })}`;
   const [historyBusy, setHistoryBusy] = useState(false),
     [historyError, setHistoryError] = useState(""),
     [historyVersion, reloadHistory] = useState(0);
   const historyGeneration = useRef(0),
-    historyPending = useRef(false),
+    historyPending = useRef<number | null>(null),
     resumes = useRef(new Map<string, string>());
   const [resuming, setResuming] = useState(""),
     [bottom, setBottom] = useState(true);
@@ -795,17 +809,16 @@ export default function IdeChatPanel({
     if (!historyOpen || !active || !hostId) return;
     const ticket = ++historyGeneration.current,
       controller = new AbortController();
+    historyPending.current = null;
+    setHistory([]);
+    setHistoryCursor(null);
     setHistoryBusy(true);
     setHistoryError("");
     const timer = setTimeout(
       async () => {
         try {
-          const query = new URLSearchParams({
-            provider,
-            ...(historyQuery.trim() ? { query: historyQuery.trim() } : {}),
-          });
           const result = await call<IdeChatHistory>(
-            `/hosts/${encodeURIComponent(hostId)}/history?${query}`,
+            historyPath,
             undefined,
             AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]),
           );
@@ -823,27 +836,22 @@ export default function IdeChatPanel({
           if (ticket === historyGeneration.current) setHistoryBusy(false);
         }
       },
-      historyQuery ? 250 : 0,
+      historySearch ? 250 : 0,
     );
     return () => {
       controller.abort();
       clearTimeout(timer);
       if (historyGeneration.current === ticket) historyGeneration.current++;
     };
-  }, [historyOpen, active, scope, historyQuery, historyVersion, request]);
+  }, [historyOpen, active, scope, historyPath, historyVersion, request]);
   async function moreHistory() {
-    if (!historyCursor || historyBusy || historyPending.current) return;
+    if (!historyCursor || historyBusy || historyPending.current !== null) return;
     const ticket = historyGeneration.current;
-    historyPending.current = true;
+    historyPending.current = ticket;
     setHistoryBusy(true);
     try {
-      const query = new URLSearchParams({
-        provider,
-        cursor: historyCursor,
-        ...(historyQuery.trim() ? { query: historyQuery.trim() } : {}),
-      });
       const result = await call<IdeChatHistory>(
-        `/hosts/${encodeURIComponent(hostId)}/history?${query}`,
+        historyPath + "&cursor=" + encodeURIComponent(historyCursor),
       );
       if (ticket === historyGeneration.current) {
         setHistory((old) => [
@@ -857,7 +865,7 @@ export default function IdeChatPanel({
       if (ticket === historyGeneration.current)
         setHistoryError((error as Error).message);
     } finally {
-      historyPending.current = false;
+      if (historyPending.current === ticket) historyPending.current = null;
       if (ticket === historyGeneration.current) setHistoryBusy(false);
     }
   }
@@ -1859,13 +1867,14 @@ export default function IdeChatPanel({
           </div>
           <div className="ide-chat-history-list">
             {historyError && <p role="alert">{historyError}</p>}
-            {!historyBusy && !history.length && !historyError && (
+            {!historyBusy && !history.length && !historyCursor && !historyError && (
               <p>저장된 대화가 없습니다.</p>
             )}
-            {history.map((thread) => (
+            {history.map((thread, i) => (
+              <Fragment key={thread.id}>
+              <HistoryScopeHeading folder={historyCwd} scope={thread.historyScope} previous={history[i-1]?.historyScope} />
               <button
                 className="ide-chat-history-row"
-                key={thread.id}
                 disabled={!!resuming}
                 onClick={() => void resume(thread)}
                 title={`${thread.title}\n${thread.cwd}`}
@@ -1882,6 +1891,7 @@ export default function IdeChatPanel({
                   {new Date(thread.updatedAt).toLocaleDateString()}
                 </small>
               </button>
+              </Fragment>
             ))}
             {historyBusy && <p>기록 불러오는 중…</p>}
             {historyCursor && (

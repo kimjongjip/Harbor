@@ -3,8 +3,9 @@ import { Router, type Request, type Response } from "express";
 import type { HostConfig } from "../shared/types.js";
 import type { RemoteWorkspaces } from "./remote-workspaces.js";
 import type { IdeChatUsage } from "../shared/ide-chat.js";
-import type { HistoryDetail } from "../shared/history.js";
+import type { HistoryDetail, HistoryPage, HistoryThread } from "../shared/history.js";
 import { WorkspaceActivity, type ActivityView } from "./workspace-activity.js";
+import { visibleHistoryPage } from "./history-visibility.js";
 import { z } from "zod";
 
 const legacyBinding = z.object({
@@ -67,7 +68,8 @@ export function relayChatRequest(
     req.path === "/hosts/" + encodeURIComponent(hostId) + "/history"
   ) {
     const params = new URLSearchParams();
-    for (const k of ["provider", "cursor", "query"]) {
+    for (const k of ["provider", "cursor", "query", "cwd"]) {
+      if (k==="cwd" && req.query.provider!=="codex") continue;
       const value = req.query[k];
       if (typeof value === "string") params.set(k, value);
     }
@@ -127,6 +129,8 @@ export function workspaceChatRouter(
   ) => { kind: "host" | "desktop" | "mobile"; id: string },
   legacyUsage?: LegacyUsage,
   legacyActivity?: (host:HostConfig,binding:Binding)=>Promise<HistoryDetail>,
+  legacyFolderHistory?: (host:HostConfig,options:{cwd:string;cursor?:string;search?:string;managed?:HistoryThread[]})=>Promise<HistoryPage>,
+  historyVisible?: (host:HostConfig,provider:"codex"|"claude"|"antigravity",id:string)=>boolean,
 ) {
   const router = Router({ mergeParams: true });
   // Only metadata is retained. Old workers support conditional conversation
@@ -160,7 +164,18 @@ export function workspaceChatRouter(
       return;
     }
     const operation = relayChatRequest(id, req);
-    const { path } = operation;
+    let { path } = operation;
+    const folderQuery = req.method === "GET" && req.path === "/hosts/"+encodeURIComponent(id)+"/history" &&
+      req.query.provider === "codex" && req.query.cwd !== undefined
+      ? z.object({cwd:z.string().min(1).max(4096).regex(/^[^\0\r\n]+$/),cursor:z.string().max(8192).optional(),query:z.string().max(300).optional()}).parse(req.query)
+      : undefined;
+    const legacyCursor = folderQuery?.cursor?.startsWith("lh1.") ? folderQuery.cursor.slice(4) : undefined;
+    if (legacyCursor !== undefined) {
+      // This cursor belongs to the PC reader. An older worker still authorizes the ordinary list read.
+      const url=new URL(path,"http://workspace.local");
+      url.searchParams.delete("cursor");
+      path=url.pathname+url.search;
+    }
     const scope = createHash("sha256").update(JSON.stringify([
       destination.id, destination.address, destination.port, destination.username, destination.identityFile,
     ])).digest("hex");
@@ -194,6 +209,17 @@ export function workspaceChatRouter(
         revision: conversationId ? activity.conditional(activityKey, requested) : undefined,
       },
     );
+    if (folderQuery && legacyFolderHistory && result.status===200 && Array.isArray(result.value?.data) &&
+        (legacyCursor !== undefined || result.value.preferredCwd !== folderQuery.cwd)) {
+      sameActor();
+      const managed = result.value.data.filter((t: HistoryThread) => t?.hostId === "local" && t.source === "Harbor IDE")
+        .map((t:HistoryThread) => ({...t,provider:"codex" as const,hostId:destination.id}));
+      const ranked = await legacyFolderHistory(destination, {
+        cwd:folderQuery.cwd, cursor:legacyCursor ?? folderQuery.cursor, search:folderQuery.query, managed,
+      });
+      sameActor();
+      result={status:200,value:{...ranked,nextCursor:ranked.nextCursor ? "lh1."+ranked.nextCursor : null}};
+    }
     if (conversationId && legacyActivity && result.status===200 && !result.value?.unchanged) {
       const nativeView=(value:any):ActivityView|undefined=>{
         const binding=legacyBinding.safeParse(value).data;
@@ -281,6 +307,30 @@ export function workspaceChatRouter(
     }
     if (result.status === 200 && result.value?.runtimeId && (path === "/hosts/local/runtime" || result.value?.hostId === "local"))
       result.value.reconnectScope = scope;
+    if (historyVisible && result.status === 200 && req.method === "GET" &&
+        req.path === "/hosts/" + encodeURIComponent(id) + "/history" && Array.isArray(result.value?.data)) {
+      const provider = z.enum(["codex","claude","antigravity"]).default("codex").parse(req.query.provider);
+      const keep = (row: {id:string}) => historyVisible(destination, provider, row.id);
+      if (req.query.cwd) {
+        // Folder pages can carry a cursor issued by the PC for a legacy worker.
+        result.value = {...result.value, data:result.value.data.filter(keep)};
+      } else {
+        const first = result.value;
+        const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+        result.value = await visibleHistoryPage(cursor, async next => {
+          if (next === cursor) return first;
+          sameActor();
+          const url = new URL(path,"http://workspace.invalid");
+          url.searchParams.set("cursor",next!);
+          const following = await workspaces.chat(destination,pass,actor,"GET",
+            url.pathname + url.search,undefined,undefined,sameActor);
+          sameActor();
+          if (following.status !== 200 || !Array.isArray(following.value?.data))
+            deny("서버의 대화 기록을 불러올 수 없습니다.",following.status === 200 ? 502 : following.status);
+          return following.value;
+        },keep);
+      }
+    }
     if (result.value?.hostId === "local") result.value.hostId = id;
     if (Array.isArray(result.value?.members))
       for (const m of result.value.members)

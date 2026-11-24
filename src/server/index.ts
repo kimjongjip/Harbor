@@ -47,6 +47,9 @@ import { ViewConnections, viewConnectionEvent } from "./view-connections.js";
 import { startRuntimeDiagnostics } from "./runtime-diagnostics.js";
 import { Hub, errorText } from "./hub.js";
 import { AntigravityHistory, findAntigravity } from "./antigravity.js";
+import { HistoryVisibility, visibleHistoryPage } from "./history-visibility.js";
+import type { AgentProvider } from "../shared/agent-provider.js";
+import type { HostConfig } from "../shared/types.js";
 import { Terminals } from "./terminals.js";
 import { disconnectCategory } from "./durable-ssh.js";
 import { Credentials } from "./credentials.js";
@@ -123,6 +126,7 @@ const workspaceAccess = workspaceSocket
   : undefined;
 const remoteWorkspaces = new RemoteWorkspaces(store.directory);
 const workspaceRollout = new WorkspaceRollout(store.directory, remoteWorkspaces, () => store.data.hosts, passwordFor);
+const historyVisibility = new HistoryVisibility(store.directory);
 const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
   workspaceChatRouter(
     remoteWorkspaces,
@@ -140,6 +144,8 @@ const relayChat = (authorize: Parameters<typeof workspaceChatRouter>[3]) =>
         ? history.readLatestActivity(host,password,b.nativeId)
         : claudeHistory.read(host,password,b.nativeId,undefined,{includeActivity:true});
     },
+    (host,options) => listVisibleHistory(host,"codex",{...options,includeAutomation:true}),
+    (host,provider,id) => historyVisibility.visible(host,provider,id),
   );
 const runtimeDiagnostics = startRuntimeDiagnostics(store.directory);
 const hub = new Hub(store);
@@ -165,13 +171,26 @@ const historyProvider = z
   .default("codex");
 const historySnapshots = new TerminalHistorySnapshots();
 const historyReader = (
-  provider: import("../shared/agent-provider.js").AgentProvider,
+  provider: AgentProvider,
 ) =>
   provider === "antigravity"
     ? antigravityHistory
     : provider === "claude"
       ? claudeHistory
       : history;
+async function listVisibleHistory(
+  host: HostConfig, provider: AgentProvider,
+  options: NonNullable<Parameters<History["list"]>[2]>,
+) {
+  const password = await passwordFor(host.id);
+  const {cwd, managed, ...rest} = options;
+  return visibleHistoryPage(options.cursor, cursor =>
+    provider === "codex"
+      ? history.list(host, password, {...rest,cwd,managed,cursor})
+      : historyReader(provider).list(host, password, {...rest,cursor}),
+    row => historyVisibility.visible(host,provider,row.id),
+  );
+}
 const notices = new TerminalNotices();
 const requests = new Requests(store.directory, {
   terminal: (id) => terminals.list().find((item) => item.id === id),
@@ -876,8 +895,9 @@ const ideChats = new IdeChats({
     const v=await files.list(hub.host(id),path);
     return {path:v.path,parent:v.parent,folders:v.entries.filter(e=>e.kind==="directory").map(({name,path})=>({name,path})),truncated:v.truncated};
   },
-  historyList: async (id, provider, options) =>
-    historyReader(provider).list(hub.host(id), await passwordFor(id), {
+  historyVisible: (id, provider, nativeId) => historyVisibility.visible(hub.host(id),provider,nativeId),
+  historyList: (id, provider, options) =>
+    listVisibleHistory(hub.host(id), provider, {
       ...options,
       includeAutomation: true,
     }),
@@ -1646,7 +1666,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.10" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.11" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -2529,7 +2549,8 @@ app.get("/api/hosts/:id/history", async (req, res) => {
   const host = hub.host(String(req.params.id));
   const input = z
     .object({
-      cursor: z.string().max(4000).optional(),
+      cursor: z.string().max(10000).optional(),
+      cwd: z.string().min(1).max(4096).regex(/^[^\0\r\n]+$/).optional(),
       search: z.string().max(200).optional(),
       includeAutomation: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
@@ -2537,7 +2558,7 @@ app.get("/api/hosts/:id/history", async (req, res) => {
     })
     .parse(req.query);
   res.json(
-    await historyReader(input.provider).list(host, await passwordFor(host.id), {
+    await listVisibleHistory(host, input.provider, {
       ...input,
       includeAutomation: input.includeAutomation === "true",
       archived: input.archived === "true",

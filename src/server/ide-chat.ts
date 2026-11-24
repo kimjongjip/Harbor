@@ -24,6 +24,7 @@ import type {
   IdeChatSend,
 } from "../shared/ide-chat.js";
 import { expandTimeline, type HistoryDetail, type HistoryPage } from "../shared/history.js";
+import type { HistoryListOptions } from "./folder-history.js";
 import type { Approval, HostConfig, MessageItem, SessionView } from "../shared/types.js";
 import type { Hub } from "./hub.js";
 import {
@@ -73,10 +74,11 @@ export interface IdeChatDependencies {
   host(id: string): HostConfig;
   password(hostId: string): string | undefined | Promise<string | undefined>;
   resolveCwd(hostId: string, cwd?: string): Promise<string>;
+  historyVisible?(hostId:string, provider:IdeChatProvider, id:string):boolean;
   historyList(
     hostId: string,
     provider: IdeChatProvider,
-    options: { cursor?: string; search?: string },
+    options: HistoryListOptions,
   ): Promise<HistoryPage>;
   historyRead(
     hostId: string,
@@ -602,23 +604,28 @@ export class IdeChats {
   async list(
     hostId: string,
     provider: IdeChatProvider,
-    options: { cursor?: string; search?: string },
+    options: { cursor?: string; search?: string; cwd?:string },
     guard: Guard,
   ): Promise<HistoryPage> {
     idSchema.parse(hostId);
     providerSchema.parse(provider);
     await guard();
     this.dependencies.host(hostId);
-    const page = await this.dependencies.historyList(hostId, provider, options);
-    await guard();
-    if (options.cursor) return page;
-    const merged = new Map(page.data.map((thread) => [thread.id, thread]));
+    const scoped=provider==="codex" && !!options.cwd;
+    const page = !scoped ? await this.dependencies.historyList(hostId, provider, options) : undefined;
+    if (page) {
+      await guard();
+      if (options.cursor) return page;
+    }
+    const merged = new Map(page?.data.map((thread) => [thread.id, thread]));
     const search = options.search?.toLocaleLowerCase();
     for (const managed of this.conversations.values()) {
       if (
         managed.view.hostId !== hostId ||
         managed.view.provider !== provider ||
-        !managed.receipts.size
+        !managed.receipts.size ||
+        managed.hostKey !== hostKey(this.dependencies.host(hostId)) ||
+        this.dependencies.historyVisible?.(hostId,provider,managed.view.nativeId) === false
       )
         continue;
       this.sync(managed);
@@ -649,6 +656,13 @@ export class IdeChats {
         source: existing?.source || "Harbor IDE",
         active: view.status === "running" || view.status === "waiting",
       });
+    }
+    if (!page) {
+      const ranked = await this.dependencies.historyList(hostId, provider, {
+        ...options, managed:[...merged.values()],
+      });
+      await guard();
+      return ranked;
     }
     return {
       ...page,
@@ -1973,12 +1987,13 @@ export function createIdeChatRouter(
     route(async (req) => {
       const hostId = idSchema.parse(req.params.hostId);
       const provider = providerSchema.parse(req.query.provider);
-      const cursor = z.string().max(2048).optional().parse(req.query.cursor);
+      const cursor = z.string().max(8192).optional().parse(req.query.cursor);
       const search = z.string().max(300).optional().parse(req.query.query);
+      const cwd = provider === "codex" ? z.string().min(1).max(4096).regex(/^[^\0\r\n]+$/).optional().parse(req.query.cwd) : undefined;
       return chats.list(
         hostId,
         provider,
-        { cursor, search },
+        { cursor, search, ...(cwd && {cwd}) },
         guard(req, hostId, false),
       );
     }),

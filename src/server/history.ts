@@ -3,6 +3,7 @@ import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { historyItem } from "./history-items.js";
 import { historyActivities } from "./history-activity.js";
+import { listFolderHistory, type HistoryListOptions } from "./folder-history.js";
 import type { HostConfig, MessageItem } from "../shared/types.js";
 import { researchEfforts } from "../shared/research.js";
 import type { ResearchEffort, ResearchModel } from "../shared/research.js";
@@ -273,35 +274,38 @@ export class History {
   async list(
     host: HostConfig,
     password?: string,
-    options: {
-      cursor?: string;
-      search?: string;
-      includeAutomation?: boolean;
-      archived?: boolean;
-    } = {},
+    options: HistoryListOptions = {},
   ): Promise<HistoryPage> {
     return this.using(host, password, async (client) => {
-      const result = await client.call(
-        "thread/list",
-        {
-          limit: 50,
-          cursor: options.cursor || null,
-          sortKey: "updated_at",
-          sourceKinds: options.includeAutomation
-            ? ["cli", "vscode", "appServer", "exec"]
-            : ["cli", "vscode"],
-          archived: !!options.archived,
-          ...(options.search ? { searchTerm: options.search } : {}),
-          // Deliberately omit cwd: listing covers all project directories.
-        },
-        25000,
-      );
-      return {
-        data: (result.data || []).map((raw: any) =>
-          historyThread(host.id, raw),
-        ),
-        nextCursor: result.nextCursor || null,
+      const read = async (
+        cursor: string | null,
+        cwd?: string,
+      ): Promise<HistoryPage> => {
+        const result = await client.call(
+          "thread/list",
+          {
+            limit: 50,
+            cursor,
+            sortKey: "updated_at",
+            sourceKinds: options.includeAutomation
+              ? ["cli", "vscode", "appServer", "exec"]
+              : ["cli", "vscode"],
+            archived: !!options.archived,
+            ...(options.search ? { searchTerm: options.search } : {}),
+            ...(cwd ? { cwd } : {}),
+          },
+          25000,
+        );
+        return {
+          data: (result.data || []).map((raw: any) =>
+            historyThread(host.id, raw),
+          ),
+          nextCursor: result.nextCursor || null,
+        };
       };
+      return options.cwd
+        ? listFolderHistory(host, { ...options, cwd: options.cwd }, read)
+        : read(options.cursor || null);
     });
   }
   async read(

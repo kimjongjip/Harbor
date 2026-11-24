@@ -31,7 +31,12 @@ window.fetch=async(input,options={})=>{const url=new URL(String(input),location.
 window.historyRequests.push({path:url.pathname,cursor,provider,includeActivity:url.searchParams.get('includeActivity'),method:options.method,body:options.body?JSON.parse(options.body):null});
 if(url.pathname.includes('/activity/')){const text='Ran rg --files\\nFIRST ORIGINAL TOOL LINE\\nSECOND ORIGINAL TOOL LINE\\nLAST ORIGINAL TOOL LINE',offset=Number(url.searchParams.get('offset')||0),end=Math.min(offset+48,text.length);return response({text:text.slice(offset,end),offset,nextOffset:end<text.length?end:null,total:text.length});}
 if(url.pathname.endsWith('/resume'))return response({id:'resumed-terminal',hostId});
-if(url.pathname.endsWith('/history'))return response({data:[thread(hostId)],nextCursor:null});
+if(url.pathname.endsWith('/history')){
+  const row=thread(hostId),cwd=url.searchParams.get('cwd');
+  if(provider==='codex' && cwd==='/home/fixture/project')
+    return response({data:[{...row,historyScope:'folder'},{...row,id:'global',cwd:'/other',title:'Other project',updatedAt:9000,historyScope:'global'}],nextCursor:null});
+  return response({data:[row],nextCursor:null});
+}
 const base={thread:thread(hostId),items:[],nextCursor:null};
 if(hostId==='local')return response({...base,items:[{id:'local-q',kind:'user',text:'LOCAL QUESTION'}]});
 if(provider==='codex')return response({...base,items:[{id:'codex-q',kind:'user',text:'CODEX QUESTION'},{id:'codex-a',kind:'assistant',text:'CODEX ANSWER'}]});
@@ -40,7 +45,7 @@ if(cursor==='latest-bounded-page')return response({...base,items:[{id:'q2',kind:
 if(cursor==='older-page')return response({...base,items:[{id:'q1',kind:'user',text:'EARLIEST QUESTION'},{id:'a1',kind:'assistant',text:'EARLIEST ANSWER'},{id:'a3',kind:'assistant',text:'STALE PARTIAL ANSWER'}]});
 throw Error('Unexpected request '+url);};
 const hosts=[{id:'remote',name:'Fixture remote',kind:'ssh',status:'connected'},{id:'local',name:'Fixture local',kind:'local',status:'connected'}];
-function Fixture(){const[provider,setProvider]=useState('claude');window.setHistoryProvider=setProvider;return <div style={{width:350,height:740,display:'flex'}}><CodexHistory hosts={hosts} provider={provider} onResume={terminal=>window.resumed.push(terminal)} onConnect={()=>{throw Error('Unexpected connection')}}/></div>;}
+function Fixture(){const[provider,setProvider]=useState('claude');window.setHistoryProvider=setProvider;return <div style={{width:350,height:740,display:'flex'}}><CodexHistory hosts={hosts} provider={provider} initialHostId={provider==='codex'?'remote':undefined} preferredCwd="/home/fixture/project" onResume={terminal=>window.resumed.push(terminal)} onConnect={()=>{throw Error('Unexpected connection')}}/></div>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "history-preview-fixture.tsx",
@@ -342,6 +347,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       assert.equal(resume.body.provider, "claude");
       assert.equal(resume.body.sshSessionMode, "tmux");
       await page.evaluate(() => (window as any).setHistoryProvider("codex"));
+      await page.getByRole("heading",{name:"선택한 폴더",exact:true}).waitFor();
+      assert.deepEqual(await page.locator(".history-row-main > b").allTextContents(), ["Investigate task", "Other project"]);
+      assert.deepEqual(await page.locator(".history-list h4").allTextContents(), ["선택한 폴더", "다른 폴더"]);
       await page.waitForFunction(() =>
         (window as any).historyRequests.some(
           (request: any) =>

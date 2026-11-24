@@ -1,5 +1,6 @@
 import type { MessageItem } from "./types.js";
 export interface HistoryThread {
+  historyScope?: "folder" | "global";
   provider?: import("./agent-provider.js").AgentProvider;
   id: string;
   hostId: string;
@@ -11,6 +12,7 @@ export interface HistoryThread {
   active: boolean;
 }
 export interface HistoryPage {
+  preferredCwd?: string;
   data: HistoryThread[];
   nextCursor: string | null;
 }
