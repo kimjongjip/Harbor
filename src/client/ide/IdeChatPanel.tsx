@@ -57,7 +57,6 @@ import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSet
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
 import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
-import { WorktreeReview } from "./WorktreeReview";
 import { readDraft, saveDraft } from "../mobile/draft-storage";
 import {ManagedChatTabs} from "./ManagedChatTabs";
 import "./chat.css";
@@ -1896,15 +1895,6 @@ export default function IdeChatPanel({
           renderMessage={presentation !== "terminal" && conversation ? (item) => (
             <ChatItem key={item.kind + ":" + item.id} item={item} conversation={conversation} renderMarkdown={renderMarkdown} />
           ) : undefined}/>}
-        {conversation && !conversation.reviewOnly && (
-          <WorktreeReview
-            key={conversation.id}
-            id={conversation.id}
-            runtimeId={conversation.runtimeId}
-            terminalId={conversation.live?.terminalId}
-            request={request}
-          />
-        )}
         {running && conversation && <ManagedActivity items={conversation.items} cwd={conversation.cwd}/>}
         {conversation?.approvals.map((approval) => (
           <ApprovalCard

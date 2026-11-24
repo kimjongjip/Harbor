@@ -125,23 +125,6 @@
 .managed-chat-surface .terminal-crew { padding-top: 7px; margin-bottom: 8px; }
 .managed-chat-surface .crew-stage > .crew-art { width: calc(156px * var(--crew-scale)); }
 
-.worktree-review {
-  padding: 8px 12px;
-  border-block: 1px solid var(--border);
-}
-.worktree-review summary {
-  cursor: pointer;
-}
-.worktree-review > div {
-  display: grid;
-  gap: 6px;
-  justify-items: start;
-}
-.worktree-review pre {
-  max-height: 20rem;
-  max-width: 100%;
-  overflow: auto;
-}
 .chat-actions,
 .chat-reservations li,
 .chat-reservations form {
