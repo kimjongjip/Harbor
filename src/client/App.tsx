@@ -320,7 +320,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
     const id = pendingSelection.current;
     if (id && state.terminals.some((terminal) => terminal.id === id)) {
       pendingSelection.current = null;
-      void focus(id);
+      if (id !== startupTerminalId.current) void focus(id);
     }
   }, [state.terminals]);
   const host =
@@ -1181,7 +1181,10 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   {!popoutId && (
                     <button
                       aria-pressed={workspaceView === "chat"}
+                      disabled={!ready}
                       onClick={() => {
+                        ++focusRequest.current;
+                        pendingSelection.current = null;
                         setChatOpened(true);
                         setWorkspaceView("chat");
                       }}

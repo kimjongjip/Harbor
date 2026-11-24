@@ -608,6 +608,35 @@ test(
         ).length,
         1,
       );
+      // The HTTP response can precede the WS inventory. Neither background
+      // completion should steal an explicit selection made after startup.
+      await page.route("**/api/bootstrap",async route=>{
+        const original=await route.fetch(),boot=await original.json();
+        await route.fulfill({response:original,json:{...boot,state:{...boot.state,terminals:[]}}});
+      });
+      let permitReply!:()=>void;
+      const held=new Promise<void>(resolve=>{permitReply=resolve;});
+      await page.route("**/api/terminals",async route=>{
+        if(route.request().method()!=="POST")return route.continue();
+        assert.equal(route.request().postDataJSON().startupPlaceholder,true);
+        await held;
+        await route.fulfill({json:{...terminals[0],startupPlaceholder:true}});
+      });
+      const startup=page.waitForRequest(r=>r.method()==="POST" && new URL(r.url()).pathname==="/api/terminals");
+      await page.reload();
+      await startup;
+      await page.getByRole("button",{name:"AI 대화",exact:true}).click();
+      await composer.fill("Keep typing while the startup terminal connects");
+      const replied=page.waitForResponse(r=>r.request().method()==="POST" && new URL(r.url()).pathname==="/api/terminals");
+      permitReply();
+      await replied;
+      await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r()))));
+      assert.equal(await managed.isVisible(),true,"background POST completion preserves managed chat");
+      for(const socket of sockets.clients) socket.send(JSON.stringify({type:"state",state:{...state,terminals:[{...terminals[0],startupPlaceholder:true}]}}));
+      await page.waitForFunction(()=>!!document.querySelector('[data-terminal-id="one"]'));
+      await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r()))));
+      assert.equal(await managed.isVisible(),true,"delayed socket inventory preserves managed chat");
+      assert.equal(await composer.inputValue(),"Keep typing while the startup terminal connects");
       assert.deepEqual(errors, []);
     } finally {
       await desktop
