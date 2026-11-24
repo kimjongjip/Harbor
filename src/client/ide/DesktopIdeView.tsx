@@ -28,6 +28,8 @@ export default function DesktopIdeView({
   chatOpen,
   nativeTerminal = false,
   newConversation = false,
+  newChatRequest,
+  onNewChatHandled,
   ...props
 }: {
   serverWorkspace?: boolean;
@@ -42,6 +44,8 @@ export default function DesktopIdeView({
   chatOpen: boolean;
   nativeTerminal?: boolean;
   newConversation?: boolean;
+  newChatRequest?: number;
+  onNewChatHandled?: (id: number) => void;
   onFocusTerminal: (id: string) => void;
   onShowTerminal: () => void;
   onShowChat?: () => void;
@@ -147,6 +151,8 @@ export default function DesktopIdeView({
                 newConversation || nativeTerminal ? undefined : terminal
               }
               hostName={props.hostLabel}
+              newChatRequest={newChatRequest}
+              onNewChatHandled={onNewChatHandled}
               active={props.visible && chatOpen && !nativeTerminal}
               onFocusTerminal={onFocusTerminal}
               onShowTerminal={onShowTerminal}

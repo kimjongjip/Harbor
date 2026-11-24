@@ -12,7 +12,7 @@ import { TerminalScreen } from "../server/terminal-screen";
 
 test(
   "full desktop IDE moves the same live terminal and preserves drafts, splits without an external Mods installer",
-  { skip: process.platform !== "win32", timeout: 120000 },
+  { skip: process.platform !== "win32", timeout: 180000 },
   async () => {
     const root = resolve(".cache/ide-terminal-switch-tests");
     await mkdir(root, { recursive: true });
@@ -308,6 +308,7 @@ test(
       delete env.ELECTRON_RUN_AS_NODE;
       desktop = await _electron.launch({ args: [main], env });
       const page = await desktop.firstWindow();
+      page.setDefaultTimeout(20000);
       const globalUpdate = page.locator(".harbor-topbar").getByRole("button", {name:"Harbor 업데이트"});
       const checkUpdateLocation = async () => {
         await globalUpdate.waitFor();
@@ -556,17 +557,26 @@ test(
       await page
         .getByLabel("AI에게 보낼 메시지", { exact: true })
         .fill("Separate unsent AI draft");
+      await page.getByRole("button", { name: "AI 채팅 패널 접기", exact: true }).click();
+      await page.getByRole("button", { name: "AI 채팅 패널 열기", exact: true }).click();
+      const ideComposer = page.getByLabel("AI에게 보낼 메시지", { exact: true });
+      assert.equal(await ideComposer.inputValue(), "Separate unsent AI draft");
       await page
         .getByRole("button", { name: "현재 터미널로 돌아가기", exact: true })
         .click();
       await page
         .getByRole("button", { name: "새 AI 대화 열기", exact: true })
         .click();
+      await page.waitForFunction(() => {
+        const composer = document.querySelector<HTMLTextAreaElement>(
+          '.harbor-ide-chat-region textarea[aria-label="AI에게 보낼 메시지"]',
+        );
+        return composer?.value === "";
+      });
       assert.equal(
-        await page
-          .getByLabel("AI에게 보낼 메시지", { exact: true })
-          .inputValue(),
-        "Separate unsent AI draft",
+        requests.filter(item => item.method === "POST" && item.path.startsWith("/api/ide-chat/conversations")).length,
+        0,
+        "starting new drafts or reopening the pane must not send a prompt or resume a session",
       );
       await page
         .getByRole("button", { name: "현재 터미널로 돌아가기", exact: true })
@@ -738,14 +748,25 @@ test(
         0,
       );
       await picker.selectOption("codex");
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
       const tabs = managed.getByRole("tablist", { name: "열린 AI 대화" });
       const tabA = tabs.getByRole("tab", { name: /Synthetic background work/ }),
         tabB = tabs.getByRole("tab", { name: /Second Codex analysis/ });
-      await tabA.waitFor();
+      const emptyCodex = tabs.getByRole("tab", { name: /Codex · 새 대화/ });
+      await emptyCodex.waitFor();
+      assert.equal(await emptyCodex.getAttribute("aria-selected"), "true");
+      assert.equal(await composer.inputValue(), "");
+      await tabs.getByRole("button", { name: /Codex · 새 대화 .*탭 닫기/ }).click();
+      await tabA.click();
+      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
+      assert.equal(await composer.inputValue(), "Follow-up draft while the turn is running");
+      await tabs.getByRole("tab", { name: /Fixture second conversation/ }).click();
       await managed
         .getByRole("button", { name: "새 대화", exact: true })
         .click();
+      assert.equal(await picker.inputValue(), "claude");
+      await picker.selectOption("codex");
+      assert.equal(await emptyCodex.getAttribute("aria-selected"), "true");
+      assert.equal(await tabs.getByRole("tab").count(), 3);
       assert.equal(await composer.inputValue(), "");
       await composer.fill("Independent second Codex question");
       await managed

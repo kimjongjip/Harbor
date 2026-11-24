@@ -136,6 +136,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const [ideTerminalOpen, setIdeTerminalOpen] = useState(false);
   const [ideChatOpen, setIdeChatOpen] = useState(true);
   const [ideNewChat, setIdeNewChat] = useState(false);
+  const ideChatSequence = useRef(0);
+  const [ideChatRequest, setIdeChatRequest] = useState<{ id: number; hostId: string }>();
   const [ideEditorWidth, setIdeEditorWidth] = useState(52);
   const workbenchRef = useRef<HTMLDivElement>(null);
   const [terminalControlTarget, setTerminalControlTarget] =
@@ -741,6 +743,7 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
   const ideMode = page === "terminals" && workspaceView === "ide";
   const ideTerminal = active?.hostId === host?.id ? active : undefined;
   const ideNativeTerminal = !!ideTerminal && !ideNewChat;
+  const canStartIdeChat = ideNativeTerminal || !ideTerminal;
   return (
     <PreviewProvider
       hosts={orderedHosts}
@@ -1243,14 +1246,20 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                   <button
                     className="icon-button"
                     aria-label={
-                      ideNativeTerminal
+                      canStartIdeChat
                         ? "새 AI 대화 열기"
                         : "현재 터미널로 돌아가기"
                     }
-                    title={ideNativeTerminal ? "새 AI 대화" : "현재 터미널"}
-                    aria-pressed={ideNativeTerminal}
+                    title={canStartIdeChat ? "새 AI 대화" : "현재 터미널"}
+                    disabled={!host}
                     onClick={() => {
-                      setIdeNewChat((value) => !value);
+                      if (canStartIdeChat && host) {
+                        setIdeChatRequest({ id: ++ideChatSequence.current, hostId: host.id });
+                        setIdeNewChat(true);
+                      } else {
+                        setIdeChatRequest(undefined);
+                        setIdeNewChat(false);
+                      }
                       setIdeChatOpen(true);
                     }}
                   >
@@ -1458,6 +1467,8 @@ export default function App({ startup }: { startup?: WorkspaceStartup } = {}) {
                           chatOpen={ideChatOpen}
                           nativeTerminal={ideNativeTerminal}
                           newConversation={ideNewChat}
+                          newChatRequest={ideNewChat && ideChatRequest?.hostId === host?.id ? ideChatRequest?.id : undefined}
+                          onNewChatHandled={id => setIdeChatRequest(current => current?.id === id ? undefined : current)}
                           onShowTerminal={() => setIdeTerminalOpen(true)}
                           onShowChat={() => setIdeChatOpen(true)}
                           visible={

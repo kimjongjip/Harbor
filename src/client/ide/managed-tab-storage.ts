@@ -1,6 +1,7 @@
 import type { ChatEffort, IdeChatProvider } from "../../shared/ide-chat";
 
 export interface SavedManagedTab {
+  newChat?: boolean;
   /** Draft only. A bound conversation reads its policy from its host. */
   autoAccept?: true;
   permission?: import("../../shared/ide-chat").ChatPermission;
@@ -55,6 +56,7 @@ function normalize(raw: unknown): SavedTabs | undefined {
         /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-\[\]]{0,159}$/.test(tab.model) && { model: tab.model }),
       ...(id(tab.conversationId) && { conversationId: tab.conversationId }),
       ...(id(tab.nativeId) && { nativeId: tab.nativeId }),
+      ...(!tab.conversationId && !tab.nativeId && tab.newChat === true && {newChat: true as const}),
       ...(id(tab.runtimeId) && { runtimeId: tab.runtimeId }),
       ...(typeof tab.reconnectScope === "string" && /^[a-f0-9]{64}$/.test(tab.reconnectScope) && { reconnectScope: tab.reconnectScope }),
       ...(id(tab.parentKey) && { parentKey: tab.parentKey }),
