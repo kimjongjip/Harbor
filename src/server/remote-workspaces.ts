@@ -259,7 +259,12 @@ export class RemoteWorkspaces {
                     payload.includes('id="root"') &&
                     payload.includes("/assets/")) ||
                     (status === 404 &&
-                      payload.includes("Cannot GET " + signedPath)))
+                      (payload.includes("Cannot GET " + signedPath) ||
+                        (/<!doctype html>/i.test(payload) &&
+                          payload.includes("<title>Error</title>") &&
+                          /<pre>NotFoundError: Not Found(?:<br\s*\/?>|<\/pre>)/i.test(
+                            payload,
+                          )))))
                 ) {
                   done({
                     status: 404,

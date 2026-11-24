@@ -257,6 +257,20 @@ test("remote account keeps one workspace across desktop client shutdown; ticket,
   const denied = await signedRead("00000000-0000-4000-a000-000000000002");
   assert.equal(denied.status, 403);
   assert.equal(denied.unsupportedUsage, undefined);
+  app.get(
+    "/_workspace/chat/conversations/00000000-0000-4000-a000-000000000003/usage",
+    (_req, res) =>
+      res
+        .status(404)
+        .type("html")
+        .send(
+          "<!DOCTYPE html><html><title>Error</title><pre>NotFoundError: Not Found<br></pre></html>",
+        ),
+  );
+  assert.equal(
+    (await signedRead("00000000-0000-4000-a000-000000000003")).unsupportedUsage,
+    true,
+  );
   const http = (
     url: URL,
     path: string,
