@@ -74,10 +74,16 @@ export const ManagedTranscript = memo(function ManagedTranscript({
             {turn.sections.map((section) => {
               if (section.kind === "work") {
                 const key = turn.id + ":" + section.key;
+                const files = [...new Set(section.items.flatMap(item => {
+                  if (item.kind === "change") return item.text.split("\n");
+                  if (item.kind === "tool" && /^(Edit|Write|MultiEdit)$/.test(item.text) && item.detail) return [item.detail.split("\n")[0]];
+                  return [];
+                }).filter(Boolean).map(path=>path.split(/[\\/]/).pop() || path))];
                 return (
                   <WorkGroup
                     key={section.key}
                     items={section.items}
+                    changeSummary={files.length ? files.slice(0,3).join(", ").slice(0,110)+(files.length>3 ? " 외 "+(files.length-3)+"개" : "") : undefined}
                     state={state}
                     busy={live && running}
                     open={folds[key] ?? live}

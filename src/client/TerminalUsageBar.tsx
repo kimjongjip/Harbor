@@ -412,7 +412,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             crew={usage?.crew}
             unavailable={current?.unavailable}
           />
-          {managedRequest ? (current?.work && <TerminalWorkDisplay data={current.work}/>) : terminalId && <TerminalWorkList
+          {managedRequest ? (<TerminalWorkDisplay data={current?.work} showEmpty/>) : terminalId && <TerminalWorkList
             terminalId={terminalId}
             active={active && !collapsed}
           />}

@@ -15,7 +15,8 @@ test("the Antigravity manual approval hook is private and scoped to the waiting 
   const {mailbox,terminals,resolver}=await fixture(t);
   const terminal=terminals[0],session=randomUUID();
   Object.assign(terminal,{program:"antigravity",agentSessionId:session,exited:false});
-  const bridge=new AgentBridge(mailbox,{terminals:()=>terminals,host:resolver.host});
+  let enabled=false;
+  const bridge=new AgentBridge(mailbox,{terminals:()=>terminals,host:resolver.host,autoAcceptAcp:(id,native)=>enabled && id===terminal.id && native===session});
   const credential=bridge.issue(terminal.id);
   bridge.peers.setRuntime(terminal.id,{kind:"antigravity",sessionId:session,state:"waiting",delivery:"automatic"});
   const http=createServer(express().use("/permission",bridge.permissionHandle)).listen(0,"127.0.0.1");
@@ -26,6 +27,10 @@ test("the Antigravity manual approval hook is private and scoped to the waiting 
     body:JSON.stringify({harbor_acp_manual:{session:id,title:"명령 실행",detail:"fixture command"}})});
   assert.equal((await offer(credential.token,session)).status,401);
   assert.equal((await offer(credential.hookToken,randomUUID())).status,409);
+  enabled=true;
+  assert.deepEqual(await (await offer(credential.hookToken,session)).json(),{approved:true});
+  assert.equal((await offer(credential.hookToken,randomUUID())).status,409);
+  enabled=false;
   const pending=offer(credential.hookToken,session);
   for(let i=0;i<100&&!bridge.acpManual.pending(terminal.id,session).length;i++)await new Promise(r=>setTimeout(r,10));
   const [card]=bridge.acpManual.pending(terminal.id,session);

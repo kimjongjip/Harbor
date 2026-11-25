@@ -452,7 +452,7 @@ export const TerminalWorkList = memo(function TerminalWorkList({
   return <TerminalWorkDisplay data={data} error={error}/>;
 });
 
-export function TerminalWorkDisplay({data,error}:{data?:TerminalWorkSnapshot;error?:string}) {
+export function TerminalWorkDisplay({data,error,showEmpty=false}:{data?:TerminalWorkSnapshot;error?:string;showEmpty?:boolean}) {
   const labels = {
     gpu: "GPU 작업",
     simulator: "시뮬레이터",
@@ -460,12 +460,13 @@ export function TerminalWorkDisplay({data,error}:{data?:TerminalWorkSnapshot;err
     background: "백그라운드",
   };
   const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-  if (data && !error && !data.error && !jobs.length) return null;
+  if (!showEmpty && data && !error && !data.error && !jobs.length) return null;
   return (
     <section className="terminal-work-list" aria-label="백그라운드 작업">
       <h4>
         <Activity size={14} /> 백그라운드 작업
       </h4>
+      {showEmpty && !jobs.length && !error && !data?.error && <p>{data ? "실행 중인 작업 없음" : "작업 정보 미수집"}</p>}
       {(error || data?.error) && (
         <p className="insights-warning">{error || data?.error}</p>
       )}

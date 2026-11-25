@@ -6,7 +6,7 @@ const { realpathSync, lstatSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const { PassThrough } = require("node:stream");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { stripVTControlCharacters } = require("node:util");
 const token = process.env.HARBOR_SESSION_TOKEN;
 const bridge = process.env.HARBOR_AGY_BRIDGE;
@@ -309,6 +309,7 @@ async function run(
     "HARBOR_AGY_CONFIG",
   ])
     delete env[key];
+  if (token) env.HARBOR_WORK_SCOPE = createHash("sha256").update(token).digest("hex");
   const agent = spawn(exe, args, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -442,21 +443,38 @@ async function run(
         .filter(Boolean)
         .join("\n");
     }
-    if (Array.isArray(update.content)) {
+    if (Array.isArray(update.content) && update.content.length) {
       call.output = update.content
         .slice(0, 16)
         .map((block) => {
           if (block?.type === "content" && block.content?.type === "text")
             return clean(block.content.text).slice(-4096);
           if (block?.type === "diff" && typeof block.path === "string")
-            return clean(block.path).slice(0, 512);
+            return [clean(block.path).slice(0,512), ...["oldText","newText"].flatMap(key =>
+              typeof block[key] === "string" ? clean(block[key]).slice(0,1600).split("\n").map(line=>(key==="oldText"?"- ":"+ ")+line) : [])].join("\n");
           return "";
         })
         .filter(Boolean)
         .join("\n")
         .slice(-4096);
     }
-    item.detail = [call.locations, call.output].filter(Boolean).join("\n");
+    if (item.kind === "change") {
+      const raw = update.rawInput || {};
+      const edits = Array.isArray(raw.ReplacementChunks) ? raw.ReplacementChunks : [raw];
+      const changes = edits.slice(0,12).flatMap(e => {
+        if (!e || typeof e !== "object") return [];
+        const before = e.TargetContent ?? e.old_string, after = e.ReplacementContent ?? e.FileContents ?? e.CodeContent ?? e.new_string;
+        if (typeof after !== "string" && typeof before !== "string") return [];
+        return [[before,"- "],[after,"+ "]].flatMap(([value,prefix]) => typeof value === "string" && value.length ? clean(value).slice(0,2000).split("\n").map(line=>prefix+line) : []);
+      });
+      if (changes.length) call.editPreview = changes.join("\n").slice(0,4096);
+      const patch = update.content?.find?.(block=>block?.type==="diff" && (typeof block.newText==="string" || typeof block.oldText==="string"));
+      if (patch) call.editPreview = call.output;
+      const file = patch?.path || raw.TargetFile || raw.file_path || call.locations?.split("\n")[0];
+      if (typeof file === "string" && file) call.file = clean(file).slice(0,512);
+      if (call.file) item.text = call.file;
+    }
+    item.detail = [call.locations, call.editPreview || call.output].filter(Boolean).join("\n");
     publishProgress(tx);
     return item;
   }
@@ -711,7 +729,7 @@ async function run(
           setTimeout(showApproval,500).unref();
         else showApproval();
         const choices = captured.options.filter(o => o?.kind === "allow_once" && typeof o.optionId === "string");
-        const detail = JSON.stringify(toolCall.rawInput ?? toolCall.locations ?? {});
+        const detail = JSON.stringify(toolCall.rawInput ?? toolCall.locations ?? {}).slice(0,8000);
         if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN && activeTurn && choices.length === 1 && choices[0].optionId &&
             captured.options.filter(o=>o.optionId===choices[0].optionId).length===1 && detail.length <= 8000) {
           void (async () => {

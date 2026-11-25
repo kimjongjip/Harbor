@@ -75,44 +75,27 @@ test("side questions fork only through a completed Codex turn and never send a p
   assert.equal(calls.filter((c) => c.method === "thread/fork").length, 1);
 });
 
-test("managed Claude auto toggle handles only the real pending check and cannot grant after disable or a forced human rule",async t=>{
-  const results:any[]=[];let releaseCheck!:()=>void,checks=0;
-  const slow=new Promise<void>(ok=>{releaseCheck=ok;});
+test("managed Claude approves each pending tool once when enabled",async t=>{
+  const results:any[]=[];
   const sdk=((invocation:any)=>Object.assign((async function*(){
     const session_id=invocation.options.sessionId;
     const signal=new AbortController().signal;
     yield {type:"system",subtype:"init",session_id};
     for(const context of [{signal},{signal},{signal,matchedAskRule:{source:"user",toolName:"Read"}},{signal,defaultToNo:true}])
-      results.push(await invocation.options.canUseTool("Read",{file_path:"note.txt"},context));
+      results.push(await invocation.options.canUseTool("Bash",{command:"echo fixture"},context));
     yield {type:"result",subtype:"success",session_id,result:"fixture complete"};
   })(),{close(){},async interrupt(){}})) as unknown as ClaudeQuery;
-  const {chats}=harness({claude:createClaudeChatFactory({query:sdk}),approveWorkspaceTargets:async()=>{
-    if(++checks===2)await slow;
-    return true;
-  }});
+  const {chats}=harness({claude:createClaudeChatFactory({query:sdk}),approveWorkspaceTargets:async()=>false});
   t.after(()=>chats.close());
   const v=await create(chats,"claude");await send(chats,v.id);
   await until(()=>chats.snapshot(v.id).approvals.length===1);
   await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:true},guard);
-  await until(()=>checks===2);
-  assert.deepEqual(results.map(r=>r.behavior),["allow"]);
-  assert.equal(results[0].updatedPermissions,undefined);
-  await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:false},guard);releaseCheck();
-  await new Promise<void>(ok=>setImmediate(ok));
-  assert.equal(results.length,1);
-  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
-  await until(()=>results.length===2&&chats.snapshot(v.id).approvals.length===1);
-  await chats.setAutoAcceptance(v.id,{runtimeId:v.runtimeId,enabled:true},guard);
-  assert.equal(checks,2);assert.equal(results.length,2);
-  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
-  await until(()=>results.length===3&&chats.snapshot(v.id).approvals.length===1);
-  assert.equal(checks,2,"defaultToNo must always wait for the user");
-  await chats.answer(v.id,chats.snapshot(v.id).approvals[0].id,{runtimeId:v.runtimeId,approved:false},guard);
   await until(()=>results.length===4);
-  assert.deepEqual(results.map(r=>r.behavior),["allow","deny","deny","deny"]);
+  assert.deepEqual(results.map(r=>r.behavior),["allow","allow","allow","allow"]);
+  assert.ok(results.every(r=>!r.updatedPermissions));
 });
 
-test("managed Codex auto acceptance acts only on matching, bounded native file edits and disables on disconnect",async t=>{
+test("managed Codex auto acceptance handles commands and file approvals in the selected conversation and disables on disconnect",async t=>{
   const checked:string[]=[];
   const {chats,hub,client,replies,calls}=harness({approveWorkspaceTargets:async(h,cwd,targets)=>{
     assert.equal(h,host.id);checked.push(...targets.map(t=>t.file));return targets.every(t=>t.file==="fixture.ts");
@@ -130,14 +113,15 @@ test("managed Codex auto acceptance acts only on matching, bounded native file e
   };
   emit(first,231);emit(second,232);emit(first,233,{grantRoot:"/other"});
   (hub as any).request(host.id,client,{id:234,method:"item/commandExecution/requestApproval",params:{threadId:first.nativeId,command:"fixture"}});
-  await until(()=>replies.some(r=>r.id===231));
-  assert.deepEqual(replies.map(r=>[r.id,r.result]),[[231,{decision:"accept"}]]);
-  assert.deepEqual(checked,["fixture.ts"]);
+  await until(()=>[231,233,234].every(id=>replies.some(r=>r.id===id)));
+  assert.ok(!replies.some(r=>r.id===232));
+  assert.ok(replies.every(r=>r.result.decision==="accept"));
+  assert.deepEqual(checked,[]);
   assert.equal(calls.find(c=>c.method==="turn/start")?.params.sandboxPolicy.type,"workspaceWrite");
   assert.equal(calls.find(c=>c.method==="turn/start")?.params.approvalPolicy,"on-request");
   await chats.setAutoAcceptance(second.id,{enabled:true,runtimeId:second.runtimeId},guard);
   await until(()=>replies.some(r=>r.id===232));
-  assert.ok(!replies.some(r=>r.id===233||r.id===234));
+  assert.equal(replies.length,4);
   hub.emit("host-closed",host.id);assert.equal(chats.snapshot(first.id).autoAccept,false);
   await assert.rejects(()=>create(chats,"claude",{reviewOnly:true,autoAccept:true}),/읽기 전용/);
 });

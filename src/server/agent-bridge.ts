@@ -40,6 +40,7 @@ import {
 } from "../shared/requests.js";
 
 interface BridgeOptions {
+  autoAcceptAcp?(terminalId:string,nativeId:string):boolean;
   annotations?: TerminalAnnotations;
   research?(): ResearchLabs | undefined;
   manager?(): ResearchLabManager | undefined;
@@ -1060,6 +1061,7 @@ export class AgentBridge {
           r?.kind==="antigravity" && r.sessionId===input.data.session && r.state==="waiting";
       };
       if(!input.success || !current()){res.sendStatus(409);return;}
+      if(this.options.autoAcceptAcp?.(credential.terminalId,input.data.session)){res.json({approved:true});return;}
       const abort=new AbortController(), close=()=>abort.abort();
       res.once("close",close);
       try {

@@ -156,7 +156,7 @@ const send=v=>{
   if(v.method==='session/request_permission'){
     update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Checking the fixture'}});
     update({sessionUpdate:'tool_call',toolCallId:'edit-1',kind:'edit',title:'Edit fixture',locations:[{path:'fixture-edit.txt'}]});
-    update({sessionUpdate:'tool_call_update',toolCallId:'edit-1',content:[{type:'content',content:{type:'text',text:'Preparing the replacement'}}]});
+    update({sessionUpdate:'tool_call_update',toolCallId:'edit-1',content:[{type:'content',content:{type:'text',text:'Preparing the replacement'}},{type:'diff',path:'fixture-edit.txt',oldText:'before edit',newText:'after edit'}]});
   }
   console.log(JSON.stringify({jsonrpc:'2.0',...v}));
 };
@@ -325,7 +325,7 @@ else if(m.id===901){fs.appendFileSync('trace',JSON.stringify(['permission',m.res
         const {items} = await openHistory.read({id:"local",kind:"local"} as HostConfig, undefined, id);
         const progress = items.filter(i => i.turnStatus === "inProgress");
         return progress.some(i => i.text === "Checking the fixture" && i.phase === "commentary") &&
-          progress.filter(i => i.text === "Edit fixture" && i.detail?.includes("Preparing the replacement") &&
+          progress.filter(i => i.text === "fixture-edit.txt" && i.detail?.includes("- before edit") && i.detail.includes("+ after edit") &&
             i.detail.includes("fixture-edit.txt")).length === 1;
       });
       await wait(()=>!!inlineAnswer);

@@ -39,8 +39,9 @@ export interface IdeChatConversation {
   supportsSideFork?: boolean;
   /** Opaque binding to the account/host that produced this conversation. */
   reconnectScope?: string;
-  /** Harbor answers eligible workspace-only pending tool approvals in this conversation. */
+  /** Harbor answers pending tool and permission approvals in this conversation. */
   autoAccept?: boolean;
+  handlesAllApprovals?: boolean;
   /** Supports scoped settings updates without replacing other selected fields. */
   supportsPartialSettings?: boolean;
   observedEffort?: ChatEffort;

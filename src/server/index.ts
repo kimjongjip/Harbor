@@ -378,6 +378,7 @@ async function flushPeerMessages(id: string) {
   }
 }
 const bridge = new AgentBridge(mailbox, {
+  autoAcceptAcp:(id,native)=>{const policy=autoApproval.state(id);return policy.enabled && policy.sessionId===native;},
   manager: () => researchManager,
   annotations: terminalAnnotations,
   onRichRequest: (id, input) => richTerminals.request(id, input),
@@ -830,7 +831,10 @@ const ideChats = new IdeChats({
     const terminal = connectedApprovalTerminal(terminalId, nativeId);
     if (!terminal)
       throw new IdeChatError("연결된 터미널과 현재 AI 대화를 다시 확인하세요.", 409);
-    autoApproval.set(terminalId, enabled, terminal.agentKind !== "antigravity");
+    autoApproval.set(terminalId, enabled);
+    if(enabled && terminal.agentKind==="antigravity"){
+      for(const card of bridge.acpManual.pending(terminalId,nativeId)) bridge.acpManual.answer(terminalId,nativeId,card.id,true);
+    }
   },
   antigravityAutoAccept:(terminalId,nativeId)=>{
     const policy=autoApproval.state(terminalId);
@@ -1656,7 +1660,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.17" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.18" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

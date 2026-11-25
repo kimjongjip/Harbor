@@ -1314,6 +1314,31 @@ export default function IdeChatPanel({
       ),
     );
   }
+  // A running older worker can serve individual approval cards until it updates.
+  const legacyApproval = view.conversation;
+  const pendingLegacyCard = active && useWorkspace && !mobileWorkspace && !remoteDesktop &&
+    legacyApproval?.autoAccept && !legacyApproval.handlesAllApprovals && !legacyApproval.reviewOnly &&
+    legacyApproval.permission !== "read-only" && legacyApproval.approvals.find(a =>
+      ["command", "file", "permissions"].includes(a.kind) && !a.questions?.length);
+  const attemptedLegacy = useRef("");
+  useEffect(() => {
+    if (!legacyApproval || !pendingLegacyCard) { attemptedLegacy.current = ""; return; }
+    const c = legacyApproval, card = pendingLegacyCard;
+    const identity = JSON.stringify([hostId,c.runtimeId,c.id,card.id]);
+    const abort = new AbortController();
+    if (attemptedLegacy.current !== identity) {
+      void (async () => {
+        const latest = await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id),undefined,abort.signal);
+        if (abort.signal.aborted || latest.id !== c.id || latest.runtimeId !== c.runtimeId || latest.nativeId !== c.nativeId ||
+            latest.hostId !== c.hostId || latest.live?.terminalId !== c.live?.terminalId ||
+            latest.handlesAllApprovals || !latest.autoAccept || latest.reviewOnly || latest.permission === "read-only" ||
+            !latest.approvals.some(a => a.id === card.id && a.kind === card.kind && !a.questions?.length)) return;
+        attemptedLegacy.current = identity;
+        await answer(card.id,{approved:true});
+      })().catch(()=>{ /* The card remains available if input control or the request changed. */ });
+    }
+    return () => abort.abort();
+  }, [hostId, view.key, legacyApproval?.runtimeId, legacyApproval?.id, pendingLegacyCard && pendingLegacyCard.id]);
   async function stop() {
     const target = view,
       conversation = target.conversation;

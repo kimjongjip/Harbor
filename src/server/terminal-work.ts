@@ -52,6 +52,7 @@ export function workKind(
   if (/monitor|watch|tail|nvidia-smi|tensorboard/i.test(task)) return "monitor";
   if (/simulat|ramulator|gem5|gpgpu|accel.?sim|verilator|vvp/i.test(task))
     return "simulator";
+  if (/^(?:ninja|cmake|make|cargo|pytest|tsc)(?:\.exe)?(?:$| · )/i.test(task)) return "background";
   if (/ · -m |\.py\b|\.sh\b|\.ps1\b|train|benchmark|torch|jupyter/i.test(task))
     return "background";
   return null;
@@ -66,6 +67,28 @@ try:
   p,m=[x.strip() for x in line.split(',')[:2]]
   if p.isdigit() and m.isdigit(): gpu[int(p)]=gpu.get(int(p),0)+int(m)
 except Exception: pass
+# Older ACP adapters scrub credentials from child environments. Walk the actual
+# parent chain until a verified terminal scope is found; a different scope stops it.
+owners={}
+def terminal_owner(pid,env):
+ chain=[]; matched=False
+ while pid.isdigit() and pid not in chain and len(chain)<64:
+  if pid in owners: matched=owners[pid]; break
+  chain.append(pid)
+  try:
+   root="/proc/"+pid
+   if os.stat(root).st_uid!=os.getuid(): break
+   if env is None:
+    with open(root+"/environ","rb") as f: env=f.read(131072).split(b"\\0")
+   marker=next((x.split(b"=",1)[1] for x in env if x.startswith(b"HARBOR_WORK_SCOPE=")),None)
+   token=next((x.split(b"=",1)[1] for x in env if x.startswith(b"HARBOR_SESSION_TOKEN=")),None)
+   if token or marker:
+    matched=(hashlib.sha256(token).hexdigest()==scope if token else marker==scope.encode("ascii")); break
+   with open(root+"/stat") as f: pid=f.read().rsplit(")",1)[1].split()[1]
+   env=None
+  except (OSError,ValueError,IndexError): break
+ for key in chain: owners[key]=matched
+ return matched
 jobs=[]
 for p in [x for x in os.listdir('/proc') if x.isdigit()][:16384]:
  try:
@@ -75,8 +98,10 @@ for p in [x for x in os.listdir('/proc') if x.isdigit()][:16384]:
   with open(root+'/environ','rb') as f: env=f.read(131072).split(b'\\0')
   if mode=='claude':
    if b'HARBOR_CLAUDE_WORK_ID='+scope.encode('ascii') not in env: continue
+  elif mode=='terminal':
+   if not terminal_owner(p,env): continue
   else:
-   key=b'CODEX_THREAD_ID=' if mode=='codex' else b'HARBOR_SESSION_TOKEN='
+   key=b'CODEX_THREAD_ID='
    token=next((x[len(key):] for x in env if x.startswith(key)),None)
    if not token or hashlib.sha256(token).hexdigest()!=scope: continue
   with open(root+'/cmdline','rb') as f: args=f.read(8192).decode('utf-8','replace').split('\\0')

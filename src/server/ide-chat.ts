@@ -1,5 +1,5 @@
 import {chatEfforts, chatPermissions, type ChatPermission, type ChatEffort} from "../shared/ide-chat.js";
-import {pendingTargets,type ApprovalTarget} from "./managed-auto-accept.js";
+import {type ApprovalTarget} from "./managed-auto-accept.js";
 import type {ResearchModel} from "../shared/research.js";
 import { validateImages } from "./images.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
@@ -430,6 +430,7 @@ export class IdeChats {
   }
   private sync(managed: Managed) {
     if(managed.view.reviewOnly || managed.view.permission==="read-only" || managed.autoPolicy && managed.autoPolicy.cwd!==managed.view.cwd)delete managed.autoPolicy;
+    managed.view.handlesAllApprovals=true;
     managed.view.autoAccept=managed.view.reviewOnly||managed.view.permission==="read-only"||!this.dependencies.approveWorkspaceTargets?undefined:!!managed.autoPolicy;
     if (managed.liveBinding && this.dependencies.live) {
       delete managed.autoPolicy;
@@ -1330,11 +1331,11 @@ export class IdeChats {
     return this.snapshot(id);
   }
   private considerApprovals(m:Managed,approvals:Approval[]){
-    const policy=m.autoPolicy, verify=this.dependencies.approveWorkspaceTargets;
-    if(!policy || !verify || m.liveBinding || m.view.reviewOnly || m.view.permission==="read-only")return;
+    const policy=m.autoPolicy;
+    if(!policy || m.liveBinding || m.view.reviewOnly || m.view.permission==="read-only")return;
     for(const approval of approvals){
-      const targets=pendingTargets(approval);
-      if(!targets || policy.checked.has(approval))continue;
+      const actionable = ["command","file","permissions"].includes(approval.kind);
+      if(!actionable || policy.checked.has(approval))continue;
       policy.checked.add(approval);
       void (async()=>{
         const v=m.view,cwd=v.cwd;
@@ -1346,8 +1347,6 @@ export class IdeChats {
           const s=this.dependencies.hub.session(m.hubId);
           return s.threadId===v.nativeId && s.cwd===cwd && s.permission!=="read-only" && s.approvals.includes(approval);
         };
-        await policy.guard();
-        if(!eligible() || !await verify(v.hostId,cwd,targets))return;
         await policy.guard();
         if(!eligible())return;
         if(m.hubId)await this.dependencies.hub.answer(m.hubId,approval.id,{approved:true});

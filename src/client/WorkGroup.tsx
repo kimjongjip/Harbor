@@ -7,6 +7,7 @@ export const WorkGroup = memo(function WorkGroup({
   items,
   state,
   busy = false,
+  changeSummary,
   open,
   onToggle,
   props,
@@ -15,6 +16,7 @@ export const WorkGroup = memo(function WorkGroup({
   state: "live" | "done" | "saved";
   /** The CLI is visibly working on this turn (not merely unverified). */
   busy?: boolean;
+  changeSummary?: string;
   open: boolean;
   onToggle(open: boolean): void;
   props: Omit<TranscriptItemsProps, "items">;
@@ -60,6 +62,7 @@ export const WorkGroup = memo(function WorkGroup({
             ? "작업 과정"
             : "저장된 작업"}
         {count ? ` · ${count}개` : ""}
+        {changeSummary && <span title={changeSummary}> · 수정 {changeSummary}</span>}
       </summary>
       {open && !!items.length && (
         <TranscriptItems items={items} {...props} stepsOpen />

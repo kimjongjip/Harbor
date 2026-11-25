@@ -375,11 +375,7 @@ export function ChatSettings({
               {(autoAccept !== undefined || isReadOnly) && <p>
                 {isReadOnly
                   ? "읽기 전용 대화"
-                  : provider === "antigravity"
-                    ? "작업 폴더의 파일 요청과 Linux의 메모리·디렉터리 목록 조회를 이번만 허용합니다. 그 밖의 실행은 대화에서 확인합니다."
-                    : bound
-                    ? "원본 터미널과 같은 승인 설정을 사용합니다."
-                    : "작업 폴더 안 파일 요청만 건별로 허용합니다. 명령·질문·권한 확대는 직접 확인합니다."}
+                  : "이 대화의 명령 실행·파일 변경·권한 요청을 자동 승인합니다. 답변이 필요한 질문은 직접 응답합니다."}
               </p>}
             </div>
             {autoAccept === undefined && !isReadOnly ? (
