@@ -781,9 +781,9 @@ export default function IdeChatPanel({
             ? cached.pollRevision || cached.runtimeId + ":" + cached.contentRevision
             : undefined,
         );
-        if (live && !("unchanged" in value)) accept(target, value);
+        if (live && target.conversation?.id === id && !("unchanged" in value)) accept(target, value);
       } catch (error) {
-        if (live) {
+        if (live && target.conversation?.id === id) {
           if (multiTabs && (error as {status?: number}).status === 404 && target.conversation?.id === id) {
             const previous = target.conversation;
             target.restoreTitle = previous.title;
@@ -890,6 +890,30 @@ export default function IdeChatPanel({
       if (ticket === historyGeneration.current) setHistoryBusy(false);
     }
   }
+  async function resumeOffline(target: ChatDraft) {
+    const old = target.conversation;
+    if (!old?.live || old.status !== "offline" || old.provider !== "antigravity" || target.sending || target.reviewOnly || old.reviewOnly) return;
+    target.sending = true;
+    target.error = undefined;
+    repaint();
+    try {
+      const next = await call<IdeChatConversation>("/conversations", {
+        hostId: old.hostId, provider: old.provider, resumeId: old.nativeId, requestId: crypto.randomUUID(),
+      } satisfies IdeChatCreate);
+      if (entries.current.get(target.key) !== target || target.conversation?.id !== old.id) return;
+      if (next.hostId !== old.hostId || next.nativeId !== old.nativeId || next.provider !== old.provider ||
+          (old.reconnectScope && next.reconnectScope !== old.reconnectScope) || next.status === "offline")
+        throw Error("원래 대화의 실행 연결을 복원하지 못했습니다.");
+      target.conversation = undefined;
+      accept(target, next);
+      target.historyPaused = false;
+    } catch (error) {
+      target.error = (error as Error).message;
+    } finally {
+      target.sending = false;
+      repaint();
+    }
+  }
   async function resume(
     thread: Pick<HistoryThread, "id">,
     expectedTerminalKey?: string,
@@ -898,7 +922,7 @@ export default function IdeChatPanel({
     if (resuming) return;
     if(multiTabs && !automatic && !expectedTerminalKey){
       const open=tabs.find(t=>(t.conversation?.nativeId===thread.id || (t.restoreNative===thread.id && !t.historyPaused)) && t.provider===provider);
-      if(open){activateTab(open);return;}
+      if(open){activateTab(open);if(open.conversation?.status==="offline") await resumeOffline(open);return;}
       if(!tabs.some(t=>t.restoreNative===thread.id && t.provider===provider) && !canOpenTab())return;
     }
     const expectedTerminalId = expectedTerminalKey ? currentTerminal?.id : undefined;
@@ -2236,6 +2260,10 @@ export default function IdeChatPanel({
 
           {inputRestriction ? <div className="ide-chat-input-state" role="status">
             <span>{inputRestriction}</span>
+            {conversation?.status === "offline" && live && provider === "antigravity" && !conversation.reviewOnly &&
+              <button type="button" disabled={view.sending} onClick={() => void resumeOffline(view)}>
+                {view.sending ? "연결 중…" : "이 대화 이어가기"}
+              </button>}
             {active && useWorkspace && !mobileWorkspace && !remoteDesktop && !window.harborDesktop?.inlineApproval && !location.hostname.startsWith("harbor-") &&
               conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
               <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}

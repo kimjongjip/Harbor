@@ -110,7 +110,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     platform: process.platform,
     ...(activation ? { awaitWorkspaceActivation: () => activation } : {}),
-    version: "2.0.16",
+    version: "2.0.17",
     workspaceApprovalWindow: true,
     inlineApproval: (key, bounds, entry) => ipcRenderer.invoke("harbor:inline-approval",key,bounds,entry),
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
