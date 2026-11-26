@@ -136,7 +136,7 @@ test(
       const page = await desktop.firstWindow();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.locator("summary").getByText("75%", { exact: true }).waitFor();
+      await page.locator(".quota-window").getByText("75%", { exact: true }).waitFor();
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
       const panel = page.locator(".account-usage-panel");
@@ -146,17 +146,12 @@ test(
         "quota fills sidebar width",
       );
       assert.ok(
-        (await panel.boundingBox())!.height < 132,
+        (await panel.boundingBox())!.height < 175,
         "quota panel must leave room for servers",
       );
-      const rows=panel.locator(".quota-summary");
-      await rows.nth(2).waitFor();
-      assert.equal(await panel.locator("details[open]").count(),0);
-      assert.match(await rows.nth(2).innerText(),/20%/);
-      await rows.nth(2).focus();await page.keyboard.press("Enter");
       await panel.getByText("Model A",{exact:true}).waitFor();
-      await rows.nth(2).click();await rows.nth(1).click();
-      await panel.getByText("7일 Fable 한도", { exact: true }).waitFor();
+      await panel.getByText("Model B",{exact:true}).waitFor();
+      await panel.getByText("Fable", { exact: true }).waitFor();
       assert.equal(
         await panel.getByText("5시간 한도", { exact: true }).count(),
         0,
@@ -169,8 +164,8 @@ test(
       await refreshRequest;
       await panel.getByText("미제공", { exact: true }).waitFor();
       assert.equal(
-        await panel.locator("details[open] progress").count(),
-        1,
+        await panel.locator("progress").count(),
+        4,
         "missing Fable must never show an invented percentage",
       );
       assert.match(

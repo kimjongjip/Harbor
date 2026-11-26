@@ -7,8 +7,7 @@
   border-radius: 0;
   background: var(--panel);
   font-size: 12px;
-  max-height: 30vh;
-  overflow: auto;
+
 }
 .account-usage-panel header,
 .quota-window > div {
@@ -33,30 +32,14 @@
   color: var(--muted);
   font-size: 11px;
 }
-.account-quota {
-  margin: 0;
-  border-top: 1px solid var(--border);
-}
-.quota-account-heading strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.quota-account-heading > small {
-  flex-shrink: 0;
-}
+.account-quota { display:grid; grid-template-columns: 64px minmax(0,1fr); align-items:start; gap:3px 8px; padding:5px 0; border-top:1px solid var(--border); }
+.quota-provider { line-height:1.4; }.quota-provider small { display:block; font-weight:400; }
+.quota-limits { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(78px,100%),1fr)); gap:5px 9px; }
+.quota-window > div { align-items:baseline; gap:3px; }.quota-window span { overflow-wrap:anywhere; }.quota-window b { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.quota-reset { display:block; line-height:1.2; }
+.account-quota .insights-warning { grid-column:1/-1; }
 .quota-server { margin-left:auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .account-usage-panel .insights-heading { flex-shrink:0; }
-.quota-summary { display:flex; align-items:center; gap:5px; min-height:27px; cursor:pointer; list-style:none; }
-.quota-summary::-webkit-details-marker { display:none; }
-.quota-summary > svg { flex:none; transform:rotate(-90deg); color:var(--muted); }
-.account-quota[open] > .quota-summary > svg { transform:none; }
-.quota-numbers { margin-left:auto; min-width:0; display:flex; align-items:baseline; justify-content:flex-end; gap:5px; font-variant-numeric:tabular-nums; }
-.quota-numbers > span { display:flex; min-width:0; align-items:baseline; gap:3px; }
-.quota-numbers small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.quota-numbers b { white-space:nowrap; }
-.account-quota[open] { padding-bottom:6px; }
 .account-usage-panel > header .icon-button {
   width: 24px;
   height: 24px;
@@ -72,7 +55,7 @@
   font-weight: 400;
 }
 .quota-window {
-  margin: 5px 0 0;
+  margin: 0;
   line-height: 1.35;
 }
 .quota-window progress {
@@ -80,7 +63,7 @@
   width: 100%;
   display: block;
   margin: 3px 0 1px;
-  height: 5px;
+  height: 3px;
   border: 0;
   border-radius: 8px;
   overflow: hidden;

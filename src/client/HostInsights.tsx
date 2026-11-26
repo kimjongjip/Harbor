@@ -84,24 +84,27 @@ function displayedWindows(account: AccountQuota) {
       },
   );
 }
-function QuotaSummary({ account }: { account: AccountQuota }) {
+function AccountQuotaRow({ account }: { account: AccountQuota }) {
+  const name = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" }[account.provider];
   const windows = displayedWindows(account);
-  const name = {codex:"Codex", claude:"Claude", antigravity:"Antigravity"}[account.provider];
-  const known = windows.filter(w => w.remaining !== null);
-  const minimum = known.reduce<typeof windows[number] | undefined>((lowest, w) =>
-    !lowest || w.remaining! < lowest.remaining! ? w : lowest, undefined);
-  const aggregate = windows.length > 2 || account.provider === "antigravity";
-  const shown = aggregate ? (minimum ? [minimum] : []) : windows;
-  return <summary className="quota-summary">
-    <strong>{name}</strong>
-    <span className="quota-numbers">
-      {account.stale && known.length > 0 && <small>이전</small>}
-      {shown.length ? shown.map(w => {
-        const label = aggregate ? (windows.length > 1 ? "최저" : "잔여") : w.label.replace(/^codex\s+/i, "").replace(/ 한도$/, "").replace("7일 Fable", "Fable");
-        return <span key={w.label} title={w.label}><small>{label}</small><b>{w.remaining === null ? "—" : Math.round(w.remaining)+"%"}</b></span>;
-      }) : <small>{account.error ? "확인 불가" : "미제공"}</small>}
-    </span><ChevronDown aria-hidden="true" size={12}/>
-  </summary>;
+  const measured = new Date(account.updatedAt).toLocaleTimeString("ko-KR");
+  return <article className="account-quota" aria-label={name}>
+    <strong className="quota-provider" title={[account.account, account.plan, measured].filter(Boolean).join(" · ")}>
+      {name}{account.stale && <small>이전 수치</small>}
+    </strong>
+    <div className="quota-limits">
+      {windows.map((w,i) => <div className="quota-window" key={w.label+i}>
+        <div><span title={w.label}>{w.label.replace(/^codex\s+/i, "").replace(/ 한도$/, "").replace("7일 Fable","Fable")}</span>
+          <b>{w.remaining === null ? (account.error ? "확인 불가" : "미제공") : Math.round(w.remaining)+"%"}</b></div>
+        {w.remaining !== null && <progress aria-label={w.label+" 남은 비율"} max={100} value={w.remaining} className={w.remaining<10?"critical":w.remaining<30?"low":undefined}/>}
+        {w.resetsAt && <small className="quota-reset" title={new Date(w.resetsAt).toLocaleString("ko-KR")}>
+          {new Intl.DateTimeFormat("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(w.resetsAt)} 초기화
+        </small>}
+      </div>)}
+      {!windows.length && !account.error && <small>미제공</small>}
+    </div>
+    {account.error && <p className="insights-warning">{account.error}</p>}
+  </article>;
 }
 export const AccountUsagePanel = memo(function AccountUsagePanel({
   hostId,
@@ -144,85 +147,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
         <>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
-          {accounts.map((account) => (
-            <details key={account.provider} className="account-quota">
-              <QuotaSummary account={account}/>
-              <header
-                className="quota-account-heading"
-                title={`${account.account || "CLI 로그인 계정"} · ${new Date(account.updatedAt).toLocaleString("ko-KR")} 확인`}
-              >
-                <strong>
-                  {account.account || "CLI 계정"}{" "}
-                  <small>{account.plan}</small>
-                </strong>
-                <small>
-                  {new Date(account.updatedAt).toLocaleTimeString("ko-KR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false,
-                  })}
-                </small>
-              </header>
-              {displayedWindows(account).map((w, i) => (
-                <div className="quota-window" key={i}>
-                  <div>
-                    <span>{w.label}</span>
-                    <b
-                      title={
-                        w.remaining === null && !account.error
-                          ? "현재 계정의 Claude 응답에 이 한도가 제공되지 않았습니다."
-                          : undefined
-                      }
-                      className={
-                        w.remaining === null ? "quota-unavailable" : undefined
-                      }
-                    >
-                      {w.remaining === null
-                        ? account.error
-                          ? "확인 불가"
-                          : "미제공"
-                        : `${Math.round(w.remaining)}% 남음`}
-                    </b>
-                  </div>
-                  {w.remaining !== null && (
-                    <>
-                      <progress
-                        className={
-                          w.remaining < 10
-                            ? "critical"
-                            : w.remaining < 30
-                              ? "low"
-                              : ""
-                        }
-                        max={100}
-                        value={w.remaining}
-                        aria-label={`${w.label} 남은 비율`}
-                      />
-                      {w.resetsAt && (
-                        <small>
-                          {new Date(w.resetsAt).toLocaleString("ko-KR", {
-                            month: "numeric",
-                            day: "numeric",
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}{" "}
-                          초기화
-                        </small>
-                      )}
-                    </>
-                  )}
-                </div>
-              ))}
-              {account.error && (
-                <p className="insights-warning">
-                  {account.stale && account.windows.length
-                    ? "이전 수치 · "
-                    : ""}
-                  {account.error}
-                </p>
-              )}
-            </details>
-          ))}
+          {accounts.map(account => <AccountQuotaRow key={account.provider} account={account}/>)}
         </>
       )}
     </section>
