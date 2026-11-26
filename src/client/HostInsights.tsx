@@ -147,7 +147,9 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
         <>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
-          {accounts.map(account => <AccountQuotaRow key={account.provider} account={account}/>)}
+          <div className="quota-accounts">
+            {accounts.map(account => <AccountQuotaRow key={account.provider} account={account}/>)}
+          </div>
         </>
       )}
     </section>

@@ -66,7 +66,7 @@ test(
         ],
       }),
     );
-    app.get("/api/hosts/fixture/antigravity-quota", (_req,res) => res.json({provider:"antigravity",updatedAt:Date.now(),windows:[{label:"Model A",remaining:65},{label:"Model B",remaining:20}]}));
+    app.get("/api/hosts/fixture/antigravity-quota", (_req,res) => res.json({provider:"antigravity",updatedAt:Date.now(),windows:[{label:"Gemini · 5시간",remaining:65},{label:"Claude · GPT · 7일",remaining:20}]}));
     app.get("/api/hosts/fixture/codex-context", (_req, res) =>
       res.json(context),
     );
@@ -149,8 +149,20 @@ test(
         (await panel.boundingBox())!.height < 175,
         "quota panel must leave room for servers",
       );
-      await panel.getByText("Model A",{exact:true}).waitFor();
-      await panel.getByText("Model B",{exact:true}).waitFor();
+      await panel.getByText("Gemini · 5시간",{exact:true}).waitFor();
+      await panel.getByText("Claude · GPT · 7일",{exact:true}).waitFor();
+      const agy = panel.getByRole("article",{name:"Antigravity"});
+      for (const width of [240, 290, 360]) {
+        await panel.evaluate((el,w)=>{el.style.width=w+"px";el.style.boxSizing="border-box";},width);
+        const layout = await agy.evaluate(el=>{
+          const rects=[...el.querySelectorAll(".quota-provider, .quota-window span")].map(node=>{
+            const range=document.createRange();range.selectNodeContents(node);return Array.from(range.getClientRects());
+          });
+          return {providerLines:rects[0].length,groupLines:rects.slice(1).map(r=>r.length),offset:Math.abs(rects[0][0].bottom-rects[1][0].bottom),overflow:el.scrollWidth-el.clientWidth};
+        });
+        assert.equal(layout.providerLines,1);assert.deepEqual(layout.groupLines,[1,1]);assert.ok(layout.offset<=2,JSON.stringify(layout));assert.ok(layout.overflow<=1);
+      }
+      await panel.evaluate(el=>el.style.removeProperty("width"));
       await panel.getByText("Fable", { exact: true }).waitFor();
       assert.equal(
         await panel.getByText("5시간 한도", { exact: true }).count(),
