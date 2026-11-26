@@ -49,31 +49,9 @@ test(
       app = await electron.launch({ args: [process.cwd()], env });
       let main = await app.firstWindow();
       main.setDefaultTimeout(8000);
-      // Fresh profile and an empty real backend, before creating any fixture tabs.
-      await main.getByRole("button", { name: "터미널", exact: true, pressed: true }).waitFor();
-      await main.locator(".harbor-workbench").waitFor({ state: "visible" });
-      await main.locator(".terminal-tabs").waitFor({ state: "attached" });
-      assert.equal(await main.locator(".managed-chat-workspace:visible").count(), 0);
+      await main.locator(".terminal-tabs").waitFor();
       const boot = async () => (await fetch(base + "/api/bootstrap")).json();
       const initial = await boot();
-      const switcher = main.getByRole("group",{name:"작업 보기"});
-      await switcher.getByRole("button",{name:"AI 대화",exact:true}).click();
-      const currentDraft=main.locator(".managed-chat-workspace").getByLabel("AI에게 보낼 메시지");
-      await currentDraft.fill("source window draft");
-      const opening=app.waitForEvent("window");
-      await main.getByRole("button",{name:"새 AI 창",exact:true}).click();
-      const aiWindow=await opening;
-      await aiWindow.getByRole("button",{name:"AI 대화",exact:true,pressed:true}).waitFor();
-      const query=new URL(aiWindow.url()).searchParams;
-      assert.match(query.get("chatWindow"),/^[a-f0-9-]{36}$/);
-      assert.equal(query.get("chatHost"),"local");
-      const otherDraft=aiWindow.locator(".managed-chat-workspace").getByLabel("AI에게 보낼 메시지");
-      assert.equal(await otherDraft.inputValue(),"");
-      await otherDraft.fill("independent synthetic draft");
-      assert.equal(await currentDraft.inputValue(),"source window draft");
-      assert.deepEqual((await boot()).state.terminals.map(t=>t.id).sort(),initial.state.terminals.map(t=>t.id).sort());
-      await aiWindow.close();
-      await switcher.getByRole("button",{name:"터미널",exact:true}).click();
       const create = async (title) => {
         const r = await fetch(base + "/api/terminals", {
           method: "POST",

@@ -118,9 +118,6 @@ export class Requests extends EventEmitter {
       "앱이 다시 시작되어 이전 질문 연결이 종료되었습니다.",
     );
   }
-  cancelPermissions(terminalId:string, sessionId:string){
-    this.cancelWhere(r=>r.terminal.terminalId===terminalId && r.kind==="permission" && r.permission?.sessionId===sessionId,"원래 승인 요청의 세션 연결이 종료되었습니다.");
-  }
   list(): HarborRequest[] {
     return structuredClone(this.requests).reverse();
   }

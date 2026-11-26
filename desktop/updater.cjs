@@ -268,19 +268,10 @@ async function validatePrepared(directory, version) {
   );
   if (pkg.name !== "codex-harbor" || pkg.version !== version)
     throw new Error("업데이트 버전 검증 실패");
-  const worker = path.join(directory, "dist", "worker-manifest");
-  const manifest = JSON.parse(await fs.readFile(path.join(worker, "package.json"), "utf8"));
-  const lock = JSON.parse(await fs.readFile(path.join(worker, "package-lock.json"), "utf8"));
-  if (manifest.name !== pkg.name || manifest.version !== version ||
-      lock.name !== pkg.name || lock.version !== version || lock.packages?.[""]?.version !== version)
-    throw new Error("PC와 서버의 업데이트 파일 버전이 일치하지 않습니다.");
   for (const file of [
     "dist/server.mjs",
-    "dist/pty-worker.mjs",
     "dist/client/index.html",
     "desktop/main.cjs",
-    "desktop/antigravity.cjs",
-    "scripts/harbor-image.py",
     "node_modules/electron/dist/electron.exe",
   ])
     await fs.access(path.join(directory, file));

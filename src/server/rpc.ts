@@ -40,15 +40,6 @@ export class RpcClient extends EventEmitter {
   private socket?: WebSocket;
   private closeTransport?: () => void;
   alive = false;
-  /** A worker may replace itself between turns while its own stdio transport is idle. */
-  get idleChildPid() {
-    return this.alive &&
-      this.pending.size === 0 &&
-      this.child?.exitCode === null &&
-      this.child.signalCode === null
-      ? this.child.pid
-      : undefined;
-  }
   /** codex app-server proxy carries raw WebSocket bytes on its stdio stream. */
   async startProxy(stream: Duplex) {
     const socket = new WebSocket("ws://localhost/", {

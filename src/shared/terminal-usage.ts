@@ -15,11 +15,6 @@ export interface TerminalUsage {
   updatedAt: number;
   source: "native" | "history";
   model?: string;
-  effort?: import("./ide-chat").ChatEffort;
-  codexTurnPolicy?: {
-    sandbox?: "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox";
-    approval?: "untrusted" | "on-failure" | "on-request" | "never";
-  };
   contextEstimated?: boolean;
   compactLimit?: number;
   costSource?: "native" | "api-estimate";

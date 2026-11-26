@@ -9,7 +9,6 @@ import type { Terminals } from "./terminals.js";
 type Provider = "codex" | "claude" | "antigravity";
 interface ResumeOptions {
   provider: Provider;
-  managedChatAdapter?: true;
   colors?: TerminalColors;
   sshSessionMode?: "direct" | "tmux";
 }
@@ -53,7 +52,8 @@ export class HistoryResumer {
               : terminal.program?.startsWith("claude")
                 ? "claude"
                 : "codex")) === provider &&
-          (terminal.agentSessionId || terminal.resumeThreadId) === threadId &&
+          (terminal.resumeThreadId === threadId ||
+            terminal.agentSessionId === threadId) &&
           !terminal.exited,
       );
     if (existing) {
@@ -79,7 +79,6 @@ export class HistoryResumer {
                 ? "claude-resume"
                 : "resume",
           title: thread.title.slice(0, 100),
-          ...(provider === "antigravity" && options.managedChatAdapter && { managedChatAdapter: true as const }),
           resumeThreadId: threadId,
           ...(provider !== "codex" ? { resumeCwd: cwd } : {}),
           colors,

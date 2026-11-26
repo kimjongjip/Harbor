@@ -1,10 +1,8 @@
 import { providerName as agentLabel } from "../../shared/agent-provider";
 import {
-  Fragment,
   memo,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -17,17 +15,14 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Square,
   X,
   FileCode2,
   FolderOpen,
-  MoreHorizontal,
-  SlidersHorizontal,
-  ImagePlus,
   TerminalSquare,
 } from "lucide-react";
-import { ApprovalCard } from "./ChatApproval";
-import type { MessageItem, TerminalInfo } from "../../shared/types";
+import type { Approval, MessageItem, TerminalInfo } from "../../shared/types";
 import type { HistoryThread } from "../../shared/history";
 import type {
   IdeChatAnswer,
@@ -39,37 +34,11 @@ import type {
   IdeChatSend,
 } from "../../shared/ide-chat";
 import type { IdeSelection } from "./types";
-import { api, apiHeaders } from "../api";
-import { LabQuestions } from "../LabQuestions";
-import { Modal } from "../Dialogs";
-import { workspaceRequest } from "./workspace-request";
-import { remoteDesktop } from "../desktop-session";
-import { WorkspaceControl } from "./WorkspaceControl";
-import { useWorkspaceUpdate } from "../WorkspaceUpdateState";
-import type { TerminalUsage } from "../../shared/terminal-usage";
-import { displayMessage } from "./display-message";
-import { ManagedSideRail, newSideChat, sideStorageKey, type SideChatState } from "./ManagedSideChat";
-import {sideSettings,withParentActivity} from "./side-parent";
-import { WorkspaceApprovalLink } from "./WorkspaceApprovalLink";
-import {readManagedTabDraft,writeManagedTabDraft,readDraftFolder,writeDraftFolder} from "./managed-tab-drafts";
-import { readManagedTabs, writeManagedTabs, maxManagedTabs, type SavedManagedTab } from "./managed-tab-storage";
-import { ManagedTranscript } from "./ManagedTranscript";
-import { chatTerminalTarget } from "./chat-terminal";
-import { ManagedActivity } from "./ManagedActivity";
-import {ChatFolderPicker,loadChatFolders} from "./ChatFolderPicker";
-import {ChatSettings,useChatModels,chatModelOption,permissionLabels,type ChatSettingsValue} from "./ChatSettings";
+import { apiHeaders } from "../api";
 import { Markdown } from "../RichMarkdown";
 import { isLegacyClaudeHistoryLimit } from "../history-errors";
-import { absoluteHistoryFolder, HistoryScopeHeading } from "../history-scope";
-import { typedPrompt, userMessageView, userOriginLabel } from "../user-origin";
-import { readDraft, saveDraft } from "../mobile/draft-storage";
-import {ManagedChatTabs} from "./ManagedChatTabs";
+import { userMessageView, userOriginLabel } from "../user-origin";
 import "./chat.css";
-import {
-  ImageAttachments,
-  readImages,
-  type AttachedImage,
-} from "../ImageAttachments";
 
 export type IdeChatRequest = (
   path: string,
@@ -84,19 +53,6 @@ const localRequest: IdeChatRequest = (path, init) =>
       ...init?.headers,
     },
   });
-const desktopFolders:IdeChatRequest = async (path,init)=>{
-  const response=await localRequest(path,init);
-  const url=new URL(path,location.origin);
-  const match=/^\/hosts\/([A-Za-z0-9_-]+)\/folders$/.exec(url.pathname);
-  if(response.status!==404 || !match)return response;
-  // An already-running desktop backend can still serve its authorized file
-  // explorer until a normal restart loads the folder-only route.
-  const listing=await fetch("/api/hosts/"+match[1]+"/files?"+new URLSearchParams({path:url.searchParams.get("path")||""}),{headers:apiHeaders(),signal:init?.signal});
-  if(!listing.ok)return listing;
-  const value=await listing.json();
-  const folders=url.searchParams.get("list")==="0"?[]:value.entries.filter((e:{kind:string})=>e.kind==="directory").map(({name,path}:{name:string;path:string})=>({name,path}));
-  return Response.json({path:value.path,parent:value.parent,folders,truncated:!!value.truncated});
-};
 export interface IdeChatAttachment {
   id: string;
   selection: IdeSelection;
@@ -106,19 +62,6 @@ type RenderChatMarkdown = (
   location: { hostId: string; cwd: string },
 ) => ReactNode;
 interface ChatDraft {
-  newChat?: boolean;
-  autoAccept?: boolean;
-  sideChat?:SideChatState;
-  area?: string;
-  restoreId?: string;
-  restoreNative?: string;
-  restoreRuntime?: string;
-  reconnectScope?: string;
-  failedRecoveryRuntime?: string;
-  restoreTitle?: string;
-  migrateLegacy?: boolean;
-  images?: AttachedImage[];
-  readingImages?: boolean;
   key: string;
   hostId: string;
   provider: IdeChatProvider;
@@ -126,19 +69,11 @@ interface ChatDraft {
   cwd: string;
   model: string;
   conversation?: IdeChatConversation;
-  lastTranscript?: Pick<IdeChatConversation, "id" | "items" | "hostId" | "cwd" | "provider" | "nativeId">;
   attachment?: IdeSelection;
   createRequestId: string;
   createAttempt?: IdeChatCreate;
   attempt?: IdeChatSend;
-  attemptedQuestion?: string;
   sending: boolean;
-  parentKey?: string;
-  displacedKey?: string;
-  reviewOnly?: boolean;
-  permission?: ChatSettingsValue["permission"];
-  effort?: IdeChatCreate["effort"];
-  historyIndex?: number;
   loadingOlder?: boolean;
   stopping?: boolean;
   error?: string;
@@ -150,6 +85,32 @@ interface ChatDraft {
 function selectionPrompt(text: string, selection?: IdeSelection) {
   if (!selection) return text;
   return `${text}\n\n<editor_selection>\n${JSON.stringify({ path: selection.path, startLine: selection.startLine, endLine: selection.endLine, unsaved: selection.unsaved, text: selection.text }, null, 2)}\n</editor_selection>`;
+}
+function displayMessage(item: MessageItem): {
+  text: string;
+  selection?: Pick<
+    IdeSelection,
+    "path" | "startLine" | "endLine" | "unsaved" | "text"
+  >;
+} {
+  if (item.kind !== "user") return { text: item.text };
+  const match = item.text.match(
+    /\n\n<editor_selection>\n([\s\S]+)\n<\/editor_selection>$/,
+  );
+  if (!match) return { text: item.text };
+  try {
+    const selection = JSON.parse(match[1]);
+    if (
+      typeof selection.path !== "string" ||
+      typeof selection.text !== "string" ||
+      !Number.isInteger(selection.startLine) ||
+      !Number.isInteger(selection.endLine)
+    )
+      return { text: item.text };
+    return { text: item.text.slice(0, match.index), selection };
+  } catch {
+    return { text: item.text };
+  }
 }
 const ChatItem = memo(
   function ChatItem({
@@ -171,6 +132,24 @@ const ChatItem = memo(
         </article>
       );
     const displayed = displayMessage(item);
+    if (item.kind !== "user" && item.kind !== "assistant")
+      return (
+        <details className="ide-chat-tool">
+          <summary>
+            {item.kind === "command"
+              ? "명령 실행"
+              : item.kind === "change"
+                ? "파일 변경"
+                : "작업 기록"}{" "}
+            · {item.text.slice(0, 90)}{" "}
+            {item.status === "inProgress" ? "· 실행 중" : ""}
+          </summary>
+          <pre>
+            {item.text}
+            {item.detail ? `\n${item.detail}` : ""}
+          </pre>
+        </details>
+      );
     return (
       <article className={`ide-chat-message ${item.kind}`}>
         <strong>
@@ -214,196 +193,156 @@ const ChatItem = memo(
     before.item.imageCount === after.item.imageCount,
 );
 
+function ApprovalCard({
+  approval,
+  onAnswer,
+}: {
+  approval: Approval;
+  onAnswer: (answer: Omit<IdeChatAnswer, "runtimeId">) => Promise<void>;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  async function answer(value: Omit<IdeChatAnswer, "runtimeId">) {
+    setBusy(true);
+    setError("");
+    try {
+      await onAnswer(value);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="ide-chat-approval" aria-label="AI 확인 요청">
+      <strong>
+        <ShieldCheck size={15} />
+        {approval.title}
+      </strong>
+      {approval.detail && <pre>{approval.detail}</pre>}
+      {approval.kind === "question" &&
+        approval.questions?.map((question) => (
+          <div className="ide-chat-question" key={question.id}>
+            <span>{question.question}</span>
+            <div>
+              {question.options?.map((option) => (
+                <button
+                  type="button"
+                  key={option.label}
+                  title={option.description}
+                  aria-pressed={answers[question.id] === option.label}
+                  onClick={() =>
+                    setAnswers((old) => ({
+                      ...old,
+                      [question.id]: option.label,
+                    }))
+                  }
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <input
+              aria-label={question.question}
+              value={answers[question.id] || ""}
+              onChange={(event) =>
+                setAnswers((old) => ({
+                  ...old,
+                  [question.id]: event.target.value,
+                }))
+              }
+            />
+          </div>
+        ))}
+      {error && <p role="alert">{error}</p>}
+      <div className="ide-chat-approval-actions">
+        {approval.kind !== "question" && (
+          <button
+            disabled={busy}
+            onClick={() => void answer({ approved: false })}
+          >
+            거절
+          </button>
+        )}
+        <button
+          disabled={
+            busy ||
+            approval.kind === "unsupported" ||
+            (approval.kind === "question" &&
+              !!approval.questions?.some(
+                (question) => !answers[question.id]?.trim(),
+              ))
+          }
+          onClick={() =>
+            void answer(
+              approval.kind === "question" ? { answers } : { approved: true },
+            )
+          }
+        >
+          {busy
+            ? "전송 중…"
+            : approval.kind === "question"
+              ? "답변 보내기"
+              : "이번만 허용"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export default function IdeChatPanel({
-  presentation,
-  serverWorkspace = false,
-  mobileWorkspace = false,
   antigravityIntegration,
   hostId: suppliedHostId,
   hostName,
   terminal,
-  terminalInventory,
   active,
-  newChatRequest,
-  workspaceRequest: tabRequest,
-  onWorkspaceRequestHandled,
-  onNewChatHandled,
-  onFolderChange,
-  request: suppliedRequest = localRequest,
-  rememberScope,
+  request = localRequest,
   renderMarkdown,
   attachment,
   onAttachmentConsumed,
   onFocusTerminal,
   onShowTerminal,
-  labRequest = api,
 }: {
-  presentation?: "terminal";
-  serverWorkspace?: boolean;
-  mobileWorkspace?: boolean;
   antigravityIntegration?: boolean;
   hostId?: string;
   hostName?: string;
   terminal?: TerminalInfo;
-  terminalInventory?: TerminalInfo[];
   active: boolean;
-  workspaceRequest?: import("./managed-tab-storage").WorkspaceChatRequest;
-  onWorkspaceRequestHandled?: () => void;
-  newChatRequest?: number;
-  onNewChatHandled?: (id:number) => void;
-  onFolderChange?: (folder: {hostId: string; cwd: string}) => void;
   onFocusTerminal?: (id: string) => void;
   onShowTerminal?: () => void;
-  labRequest?: <T>(path: string, body?: unknown, method?: string) => Promise<T>;
   request?: IdeChatRequest;
-  rememberScope?: string;
   renderMarkdown?: RenderChatMarkdown;
   attachment?: IdeChatAttachment;
   onAttachmentConsumed?: (id: string) => void;
 }) {
   const hostId = suppliedHostId || terminal?.hostId || "";
-  const useWorkspace = serverWorkspace && !terminal;
-  const folderRequest=suppliedRequest===localRequest ? desktopFolders : suppliedRequest;
-  const hasGemini =
-    useWorkspace || (antigravityIntegration && hostId === "local");
-  const request = useMemo(
-    () =>
-      useWorkspace
-        ? workspaceRequest(hostId, mobileWorkspace)
-        : suppliedRequest,
-    [useWorkspace, hostId, mobileWorkspace, suppliedRequest],
-  );
-  const remembered = () => (useWorkspace ? localStorage : sessionStorage);
-  const [chosenProvider, setChosenProvider] = useState<IdeChatProvider>(() => {
-      if (rememberScope && !rememberScope.startsWith("chat-window."))
-        try {
-          const saved = remembered().getItem(
-            "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
-          );
-          if (saved === "claude" || (saved === "antigravity" && hasGemini))
-            return saved;
-        } catch {}
-      return "codex";
-    }),
+  const [provider, setProvider] = useState<IdeChatProvider>("codex"),
     [, update] = useState(0);
   const [historyRetry, retryHistory] = useState(0);
   const entries = useRef(new Map<string, ChatDraft>()),
     selectedByScope = useRef(new Map<string, string>()),
     mounted = useRef(true);
-  const scopeHost = `${useWorkspace ? "durable" : "direct"}:${hostId}`;
-  const multiTabs = presentation === "terminal" && !mobileWorkspace;
-  const selectedByHost = useRef(new Map<string,string>());
-  const loadedTabs = useRef(new Set<string>());
-  const writtenTabs = useRef(new Map<string,string>());
-  const dirtyTabAreas=useRef(new Set<string>());
-  const tabStoreKey=(area:string)=>JSON.stringify([rememberScope,area]);
-  if(multiTabs && rememberScope && hostId && !loadedTabs.current.has(scopeHost)){
-    loadedTabs.current.add(scopeHost);
-    const saved=readManagedTabs(tabStoreKey(scopeHost));
-    if(saved){
-      for(const t of saved.tabs){
-        const legacy=JSON.stringify(["chat",scopeHost,t.provider,t.nativeId || "tab:"+t.key]);
-        const persisted=readManagedTabDraft(tabStoreKey(scopeHost),t.key);
-        const fallback=persisted===undefined ? readDraft(rememberScope,legacy) : "";
-        if(fallback && writeManagedTabDraft(tabStoreKey(scopeHost),t.key,fallback)) saveDraft(rememberScope,legacy,undefined,"");
-        const target:ChatDraft={key:t.key,area:scopeHost,hostId,provider:t.provider,createRequestId:crypto.randomUUID(),sending:false,
-          cwd:t.nativeId||t.conversationId ? "" : readDraftFolder(tabStoreKey(scopeHost),t.key),model:t.model||"",draft:persisted ?? fallback,
-          restoreId:t.conversationId,restoreNative:t.nativeId,restoreRuntime:t.runtimeId,reconnectScope:t.reconnectScope,restoreTitle:t.title,parentKey:t.parentKey,reviewOnly:t.reviewOnly,effort:t.effort,permission:t.permission,autoAccept:t.autoAccept,newChat:t.newChat};
-        entries.current.set(t.key,target);
-        selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
-      }
-      selectedByHost.current.set(scopeHost,saved.selected);
-      const current=entries.current.get(saved.selected);if(current)selectedByScope.current.set(scopeHost+":"+current.provider,current.key);
-    }
-  }
-  const currentTab=multiTabs && entries.current.get(selectedByHost.current.get(scopeHost)||"");
-  const requestedProvider = tabRequest && tabRequest.hostId === hostId && "provider" in tabRequest ? tabRequest.provider : undefined;
-  const provider=currentTab ? currentTab.provider : requestedProvider || chosenProvider;
-  const [folderOpen, setFolderOpen] = useState(false);
-  const updateStatus = useWorkspaceUpdate(hostId, active && useWorkspace && folderOpen, request);
-  const catalogScope = scopeHost + (useWorkspace && updateStatus?.phase === "current" ? ":" + updateStatus.runningVersion : "");
-  const catalog=useChatModels(hostId,provider,request,active,catalogScope,useWorkspace?suppliedRequest:undefined,folderOpen);
-  const scope = `${scopeHost}:${provider}`;
-  function setProvider(next:IdeChatProvider) {
-    if(multiTabs){
-      dirtyTabAreas.current.add(scopeHost);
-      const remembered=entries.current.get(selectedByScope.current.get(scopeHost+":"+next)||"");
-      if(!remembered && !canOpenTab())return;
-      selectedByHost.current.set(scopeHost,remembered?.area===scopeHost ? remembered.key : fresh(next).key);
-    }
-    setChosenProvider(next);
-    repaint();
-  }
-  useEffect(() => {
-    if (provider === "antigravity" && !hasGemini) setProvider("codex");
-  }, [provider, hasGemini]);
-  function draftKey(p: IdeChatProvider, nativeId?: string, tabKey?:string) {
-    return JSON.stringify(["chat", scopeHost, p, nativeId || (multiTabs && tabKey ? "tab:"+tabKey : "new")]);
-  }
-  function fresh(destination = provider, restoreDraft = false): ChatDraft {
+  const scope = `${hostId}:${provider}`;
+  function fresh(): ChatDraft {
     const key = crypto.randomUUID();
     const value: ChatDraft = {
       key,
-      area:scopeHost,
-      migrateLegacy:restoreDraft && !rememberScope?.startsWith("chat-window."),
       hostId,
-      provider: destination,
-      draft:
-        rememberScope && restoreDraft
-          ? readDraft(rememberScope, draftKey(destination))
-          : "",
+      provider,
+      draft: "",
       cwd: "",
       model: "",
       createRequestId: crypto.randomUUID(),
       sending: false,
     };
-    if (multiTabs && rememberScope && restoreDraft && value.draft) {
-      if(writeManagedTabDraft(tabStoreKey(scopeHost),key,value.draft))saveDraft(rememberScope,draftKey(destination),undefined,"");
-    }
     entries.current.set(key, value);
-    selectedByScope.current.set(`${scopeHost}:${destination}`, key);
-    if(multiTabs){selectedByHost.current.set(scopeHost,key);dirtyTabAreas.current.add(scopeHost);}
+    selectedByScope.current.set(scope, key);
     return value;
   }
-  const handledWorkspace = useRef<typeof tabRequest>(undefined);
-  function initialTab() {
-    if (!tabRequest || tabRequest.hostId !== hostId || !("provider" in tabRequest)) return fresh(provider, true);
-    const tab = fresh(tabRequest.provider);
-    tab.newChat = true;
-    tab.cwd = tabRequest.cwd;
-    if (tab.cwd && rememberScope) writeDraftFolder(tabStoreKey(scopeHost), tab.key, tab.cwd);
-    handledWorkspace.current = tabRequest;
-    return tab;
-  }
-  const view = currentTab ||
-    entries.current.get(selectedByScope.current.get(scope) || "") ||
-    initialTab();
+  const view =
+    entries.current.get(selectedByScope.current.get(scope) || "") || fresh();
   const selected = useRef(view.key);
-  const [defaultDirectory,setDefaultDirectory]=useState<{scope:string;path:string}>();
-  const [pickingFolder,setPickingFolder]=useState<string>();
-  const [actionKey,setActionKey]=useState<string>();
-  const actionMenu=useRef<HTMLDetailsElement>(null);
-  const defaultPath=defaultDirectory?.scope===scopeHost ? defaultDirectory.path : "";
-  const chosenPath=view.conversation?.cwd || view.cwd || defaultPath;
-  const historyCwd = provider === "codex" ? absoluteHistoryFolder(chosenPath) : undefined;
-  useEffect(() => {
-    if (active && hostId) onFolderChange?.({hostId, cwd: chosenPath});
-  }, [active, hostId, chosenPath, onFolderChange]);
-  useEffect(()=>{
-    if(!active || !hostId || view.conversation || view.cwd || defaultPath)return;
-    const c=new AbortController();
-    void loadChatFolders(folderRequest,hostId,"",false,c.signal).then(f=>{
-      if(!c.signal.aborted)setDefaultDirectory({scope:scopeHost,path:f.path});
-    }).catch(()=>{if(!c.signal.aborted)setDefaultDirectory({scope:scopeHost,path:""});});
-    return ()=>c.abort();
-  },[active,hostId,scopeHost,folderRequest,defaultPath,view.key,view.conversation?.id,view.cwd]);
-  useEffect(()=>{
-    if(!actionKey)return;
-    function outside(e:PointerEvent){if(!actionMenu.current?.contains(e.target as Node))setActionKey(undefined);}
-    function escape(e:KeyboardEvent){if(e.key==="Escape"){setActionKey(undefined);actionMenu.current?.querySelector("summary")?.focus();}}
-    document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape);
-    return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape);};
-  },[actionKey]);
   selected.current = view.key;
   const repaint = () => {
     if (mounted.current) update((value) => value + 1);
@@ -412,19 +351,14 @@ export default function IdeChatPanel({
     [history, setHistory] = useState<HistoryThread[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null),
     [historyQuery, setHistoryQuery] = useState("");
-  const historySearch = historyQuery.trim();
-  const historyPath = `/hosts/${encodeURIComponent(hostId)}/history?${new URLSearchParams({
-    provider,
-    ...(historyCwd ? {cwd: historyCwd} : {}),
-    ...(historySearch ? {query: historySearch} : {}),
-  })}`;
   const [historyBusy, setHistoryBusy] = useState(false),
     [historyError, setHistoryError] = useState(""),
     [historyVersion, reloadHistory] = useState(0);
   const historyGeneration = useRef(0),
-    historyPending = useRef<number | null>(null),
+    historyPending = useRef(false),
     resumes = useRef(new Map<string, string>());
   const [resuming, setResuming] = useState(""),
+    [folderOpen, setFolderOpen] = useState(false),
     [bottom, setBottom] = useState(true);
   const [terminalIntent, setTerminalIntent] = useState<{
     hostId: string;
@@ -435,7 +369,7 @@ export default function IdeChatPanel({
   }>();
   const currentTerminal =
     terminal?.hostId === hostId &&
-    !terminal.exited && terminal.connectionState === "connected" && terminal.agentConnected &&
+    !terminal.exited &&
     terminal.agentKind &&
     terminal.agentSessionId
       ? terminal
@@ -455,210 +389,6 @@ export default function IdeChatPanel({
   const scroll = useRef<HTMLDivElement>(null),
     following = useRef(true),
     prepend = useRef<{ height: number; top: number } | undefined>(undefined);
-  const tabs=[...entries.current.values()].filter(t=>t.area===scopeHost);
-  function canOpenTab(){
-    if(!multiTabs || [...entries.current.values()].filter(t=>t.area===scopeHost).length<maxManagedTabs)return true;
-    view.notice="열린 AI 대화가 "+maxManagedTabs+"개입니다. 탭을 닫은 뒤 새 대화를 여세요.";repaint();return false;
-  }
-  function storeText(t:ChatDraft,text:string) {
-    if(!rememberScope)return;
-    if(multiTabs)writeManagedTabDraft(tabStoreKey(t.area || scopeHost),t.key,text);
-    else saveDraft(rememberScope,draftKey(t.provider,t.conversation?.nativeId),undefined,text);
-  }
-  const restored = useRef(new Set<string>());
-  useEffect(()=>{
-    if(!multiTabs || !rememberScope || !dirtyTabAreas.current.size)return;
-    for(const area of dirtyTabAreas.current){
-      if(!loadedTabs.current.has(area))continue;
-      const open=[...entries.current.values()].filter(t=>t.area===area);
-      const data={selected:selectedByHost.current.get(area)||open[0]?.key||"",tabs:open.map((t):SavedManagedTab=>({
-        key:t.key,provider:t.provider,title:t.conversation?.title?.trim().slice(0,160)||t.restoreTitle,conversationId:t.conversation?.id||t.restoreId,nativeId:t.conversation?.nativeId||t.restoreNative,
-        runtimeId:t.conversation?.runtimeId||t.restoreRuntime,reconnectScope:t.conversation?.reconnectScope||t.reconnectScope,
-        parentKey:t.parentKey,reviewOnly:t.conversation?.reviewOnly||t.reviewOnly,effort:t.effort,permission:t.conversation?.permission??t.permission,
-        ...(!t.conversation&&!t.restoreId ? {model:t.model,newChat:t.newChat,...(!t.createAttempt && !t.sending && t.autoAccept ? {autoAccept:true as const} : {})} : {})}))};
-      const signature=JSON.stringify(data);
-      if(writtenTabs.current.get(area)!==signature){writtenTabs.current.set(area,signature);writeManagedTabs(tabStoreKey(area),data);}
-    }
-    dirtyTabAreas.current.clear();
-  });
-  useEffect(()=>{
-    if(!active || !multiTabs || !view.restoreId || view.conversation || view.historyPaused)return;
-    const target=view, expectedId=view.restoreId, expectedNative=view.restoreNative, controller=new AbortController();
-    void call<IdeChatConversation>("/conversations/"+encodeURIComponent(expectedId),undefined,controller.signal).then(c=>{
-      if(controller.signal.aborted || !entries.current.has(target.key) || target.restoreId!==expectedId || target.conversation)return;
-      if(c.id!==expectedId || (expectedNative && c.nativeId!==expectedNative))throw Error("복원할 대화 ID가 달라졌습니다.");
-      if ((target.reviewOnly && !c.reviewOnly) || (target.permission === "read-only" && !c.reviewOnly && c.permission !== "read-only") ||
-          (target.reconnectScope && c.reconnectScope !== target.reconnectScope)) throw Error("원래 탭의 권한 또는 서버 연결이 변경되었습니다.");
-      accept(target,c);
-    }).catch(()=>{
-      if(controller.signal.aborted || !entries.current.has(target.key) || target.restoreId!==expectedId || target.conversation)return;
-      target.historyRetryId=expectedNative; target.historyPaused=true;
-      target.notice="연결을 복원하려면 기록 다시 불러오기를 누르세요.";
-      repaint();
-    });
-    return ()=>controller.abort();
-  },[active,multiTabs,view.key,view.restoreId,view.historyPaused,request]);
-  // Reattach handles after a new worker starts. Closed tabs, another host and in-flight
-  // submissions can't adopt a late response. Reconnect never includes drafts or grants.
-  const recoverTabs = useRef<() => void>(() => {});
-  useEffect(() => {
-    if (!multiTabs || !active || !hostId) return;
-    const controller = new AbortController();
-    let checking = false;
-    const pollSignal = () => AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
-    const inspect = async () => {
-      if (checking || controller.signal.aborted || document.hidden) return;
-      checking = true;
-      try {
-        const tabs = [...entries.current.values()].filter(t => t.area === scopeHost && (t.conversation || t.restoreNative));
-        if (!tabs.length) return;
-        const route = "/hosts/" + encodeURIComponent(hostId);
-        const runtime = await call<{runtimeId:string;reconnectScope:string}>(route + "/runtime", undefined, pollSignal());
-        if (!/^[\w-]{1,160}$/.test(runtime?.runtimeId || "") || !/^[a-f0-9]{64}$/.test(runtime?.reconnectScope || "")) return;
-        // Prioritize the visible tab, then recover the remaining saved tabs sequentially.
-        tabs.sort((a,b) => Number(b.key === selected.current) - Number(a.key === selected.current));
-        for (const target of tabs) {
-          if (controller.signal.aborted) break;
-          const previous = target.conversation;
-          const oldId = previous?.id || target.restoreId, nativeId = previous?.nativeId || target.restoreNative;
-          const previousRuntimeId = previous?.runtimeId || target.restoreRuntime;
-          const reconnectScope = previous?.reconnectScope || target.reconnectScope;
-          if (!oldId || !nativeId || target.sending || target.stopping || previousRuntimeId === runtime.runtimeId ||
-              target.failedRecoveryRuntime === runtime.runtimeId || (reconnectScope && reconnectScope !== runtime.reconnectScope)) continue;
-          const stillOpen = () => !controller.signal.aborted && entries.current.get(target.key) === target &&
-            (target.conversation?.id || target.restoreId) === oldId && !target.sending && !target.stopping;
-          if (!stillOpen()) continue;
-          const reviewOnly = !!(previous?.reviewOnly || target.reviewOnly);
-          const readOnly = reviewOnly || (previous?.permission ?? target.permission) === "read-only";
-          try {
-            // Older desktops persisted just the handle + native ID. Confirm the old
-            // handle is absent; an authentication or transient failure is not a restart.
-            if (!previousRuntimeId) {
-              try {
-                const old = await call<IdeChatConversation>("/conversations/"+encodeURIComponent(oldId), undefined, pollSignal());
-                if (old.id === oldId && old.nativeId === nativeId && old.provider === target.provider &&
-                    old.hostId === hostId && (!reviewOnly || old.reviewOnly) && (!readOnly || old.permission === "read-only" || old.reviewOnly) && stillOpen()) {
-                  target.historyPaused = false; target.historyRetryId = undefined; target.notice = undefined;
-                  accept(target, old);
-                }
-                continue;
-              } catch (error) {
-                if ((error as {status?:number}).status !== 404 || !stillOpen()) throw error;
-              }
-            }
-            const next = await call<IdeChatConversation>(route+"/reconnect", {
-              conversationId:oldId, nativeId, provider:target.provider, previousRuntimeId,
-              runtimeId:runtime.runtimeId, reconnectScope:runtime.reconnectScope, reviewOnly, readOnly,
-            }, pollSignal());
-            if (!stillOpen()) continue;
-            if (next.hostId !== hostId || next.provider !== target.provider || next.nativeId !== nativeId ||
-                next.runtimeId !== runtime.runtimeId || next.reconnectScope !== runtime.reconnectScope ||
-                (reviewOnly && !next.reviewOnly) || (readOnly && !next.reviewOnly && next.permission !== "read-only"))
-              throw Object.assign(Error("원래 대화의 연결 정보가 다릅니다."),{status:409});
-            target.conversation = undefined;
-            target.historyPaused = false; target.historyRetryId = undefined; target.notice = undefined;
-            target.error = undefined; target.attempt = undefined; target.createAttempt = undefined;
-            accept(target, next);
-          } catch (error) {
-            if (!stillOpen()) continue;
-            const status = (error as {status?:number}).status;
-            if (status && [400,403,404,409].includes(status)) {
-              target.failedRecoveryRuntime = runtime.runtimeId;
-              target.notice = (error as Error).message || "대화 기록에서 이전 연결을 확인하세요.";
-              repaint();
-            }
-          }
-        }
-      } catch { /* Older workers and temporarily disconnected hosts keep their normal recovery path. */ }
-      finally { checking = false; }
-    };
-    recoverTabs.current = inspect;
-    void inspect();
-    const timer = setInterval(inspect, 30000);
-    document.addEventListener("visibilitychange", inspect);
-    window.addEventListener("harbor-workspace-updated", inspect);
-    return () => {
-      recoverTabs.current = () => {};
-      controller.abort(); clearInterval(timer);
-      document.removeEventListener("visibilitychange", inspect);
-      window.removeEventListener("harbor-workspace-updated", inspect);
-    };
-  }, [active,hostId,multiTabs,request,scopeHost]);
-  useEffect(() => {
-    if (!rememberScope || !hostId || !active || (multiTabs && !view.migrateLegacy)) return;
-    const target = view;
-    const key = [
-      "harbor.chat",
-      useWorkspace ? "server" : rememberScope,
-      hostId,
-      provider,
-    ].join(".");
-    try {
-      if (!multiTabs) remembered().setItem(
-        "harbor.chat.provider." + (useWorkspace ? hostId : rememberScope),
-        provider,
-      );
-      if (target.conversation) {
-        if (multiTabs) return;
-        remembered().setItem(key, target.conversation.id);
-        remembered().setItem(key + ".native", target.conversation.nativeId);
-        return;
-      }
-      if (target.newChat || newChatRequest || restored.current.has(key)) return;
-      const saved = remembered().getItem(key);
-      if (!saved) {
-        restored.current.add(key);
-        return;
-      }
-      const controller = new AbortController();
-      void call<IdeChatConversation>(
-        "/conversations/" + encodeURIComponent(saved),
-        undefined,
-        controller.signal,
-      )
-        .then((c) => {
-          if (
-            !controller.signal.aborted &&
-            !target.newChat && target.provider === provider &&
-            !target.draft &&
-            !target.images?.length &&
-            !target.readingImages &&
-            !target.conversation &&
-            !target.sending
-          )
-            accept(target, c);
-        })
-        .catch(() => {
-          if (
-            !controller.signal.aborted &&
-            !target.newChat && target.provider === provider &&
-            !target.conversation &&
-            !target.sending
-          ) {
-            target.historyRetryId =
-              remembered().getItem(key + ".native") || undefined;
-            if (target.historyRetryId) {
-              target.historyPaused = true;
-              target.notice =
-                "서버 연결이 바뀌었습니다. 기록 다시 불러오기로 같은 대화를 확인하세요.";
-              repaint();
-            }
-          }
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) restored.current.add(key);
-        });
-      return () => controller.abort();
-    } catch {}
-  }, [
-    rememberScope,
-    hostId,
-    provider,
-    useWorkspace,
-    active,
-    view.key,
-    view.conversation?.id,
-  ]);
   const consumed = useRef(new Set<string>());
   useEffect(() => {
     mounted.current = true;
@@ -698,7 +428,6 @@ export default function IdeChatPanel({
     body?: unknown,
     signal?: AbortSignal,
     terminalId?: string,
-    cacheVersion?: string,
   ): Promise<T> {
     const response = await request(path, {
       ...(body === undefined
@@ -711,16 +440,13 @@ export default function IdeChatPanel({
             },
             body: JSON.stringify(body),
           }),
-      ...(cacheVersion
-        ? { headers: { "X-Harbor-Chat-Revision": cacheVersion } }
-        : {}),
       signal: signal || AbortSignal.timeout(45000),
     });
     const value = await response.json();
     if (!response.ok)
       throw Object.assign(
         new Error(value.error || "요청을 완료하지 못했습니다."),
-        { code: value.code, status: response.status },
+        { code: value.code },
       );
     return value;
   }
@@ -748,17 +474,7 @@ export default function IdeChatPanel({
           : target.conversation?.items || [],
       };
     }
-    if (rememberScope && !target.conversation && !target.draft)
-      target.draft = (multiTabs ? readManagedTabDraft(tabStoreKey(target.area||scopeHost),target.key) : undefined)
-        ?? readDraft(rememberScope,draftKey(conversation.provider, conversation.nativeId));
-    if(multiTabs && rememberScope && !target.conversation && target.draft)storeText(target,target.draft);
-    if(multiTabs && target.area && (target.conversation?.id!==conversation.id || target.conversation?.title!==conversation.title || target.conversation?.nativeId!==conversation.nativeId || target.conversation.permission!==conversation.permission || target.conversation.reconnectScope!==conversation.reconnectScope))dirtyTabAreas.current.add(target.area);
-    target.restoreId=undefined;
-    target.restoreNative=undefined;
-    target.restoreRuntime=undefined;target.failedRecoveryRuntime=undefined;target.reconnectScope=conversation.reconnectScope;
     target.conversation = conversation;
-    target.newChat = undefined;
-    target.lastTranscript = undefined;
     target.connectionError = undefined;
     repaint();
   }
@@ -771,36 +487,15 @@ export default function IdeChatPanel({
     const controller = new AbortController();
     async function poll() {
       try {
-        const cached = target.conversation;
-        const value = await call<IdeChatConversation | { unchanged: true }>(
+        const value = await call<IdeChatConversation>(
           `/conversations/${encodeURIComponent(id)}`,
           undefined,
           AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
-          undefined,
-          cached && cached.contentRevision !== undefined
-            ? cached.pollRevision || cached.runtimeId + ":" + cached.contentRevision
-            : undefined,
         );
-        if (live && target.conversation?.id === id && !("unchanged" in value)) accept(target, value);
+        if (live) accept(target, value);
       } catch (error) {
-        if (live && target.conversation?.id === id) {
-          if (multiTabs && (error as {status?: number}).status === 404 && target.conversation?.id === id) {
-            const previous = target.conversation;
-            target.restoreTitle = previous.title;
-            target.lastTranscript = previous;
-            target.restoreId = id;
-            target.restoreNative = previous.nativeId;
-            target.restoreRuntime = previous.runtimeId;
-            target.reconnectScope = previous.reconnectScope;
-            target.permission = previous.permission;
-            target.reviewOnly = target.reviewOnly || previous.reviewOnly;
-            target.conversation = undefined;
-            target.historyPaused = true;
-            target.historyRetryId = previous.nativeId;
-            target.connectionError = undefined;
-            target.notice = target.reviewOnly ? "읽기 전용 대화의 기존 서버 연결이 종료됐습니다." : "저장된 대화의 기존 서버 연결이 종료됐습니다.";
-            void recoverTabs.current();
-          } else if (isLegacyClaudeHistoryLimit(error)) {
+        if (live) {
+          if (isLegacyClaudeHistoryLimit(error)) {
             target.historyPaused = true;
             target.connectionError = undefined;
           } else target.connectionError = (error as Error).message;
@@ -830,16 +525,17 @@ export default function IdeChatPanel({
     if (!historyOpen || !active || !hostId) return;
     const ticket = ++historyGeneration.current,
       controller = new AbortController();
-    historyPending.current = null;
-    setHistory([]);
-    setHistoryCursor(null);
     setHistoryBusy(true);
     setHistoryError("");
     const timer = setTimeout(
       async () => {
         try {
+          const query = new URLSearchParams({
+            provider,
+            ...(historyQuery.trim() ? { query: historyQuery.trim() } : {}),
+          });
           const result = await call<IdeChatHistory>(
-            historyPath,
+            `/hosts/${encodeURIComponent(hostId)}/history?${query}`,
             undefined,
             AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]),
           );
@@ -857,22 +553,27 @@ export default function IdeChatPanel({
           if (ticket === historyGeneration.current) setHistoryBusy(false);
         }
       },
-      historySearch ? 250 : 0,
+      historyQuery ? 250 : 0,
     );
     return () => {
       controller.abort();
       clearTimeout(timer);
       if (historyGeneration.current === ticket) historyGeneration.current++;
     };
-  }, [historyOpen, active, scope, historyPath, historyVersion, request]);
+  }, [historyOpen, active, scope, historyQuery, historyVersion, request]);
   async function moreHistory() {
-    if (!historyCursor || historyBusy || historyPending.current !== null) return;
+    if (!historyCursor || historyBusy || historyPending.current) return;
     const ticket = historyGeneration.current;
-    historyPending.current = ticket;
+    historyPending.current = true;
     setHistoryBusy(true);
     try {
+      const query = new URLSearchParams({
+        provider,
+        cursor: historyCursor,
+        ...(historyQuery.trim() ? { query: historyQuery.trim() } : {}),
+      });
       const result = await call<IdeChatHistory>(
-        historyPath + "&cursor=" + encodeURIComponent(historyCursor),
+        `/hosts/${encodeURIComponent(hostId)}/history?${query}`,
       );
       if (ticket === historyGeneration.current) {
         setHistory((old) => [
@@ -886,32 +587,8 @@ export default function IdeChatPanel({
       if (ticket === historyGeneration.current)
         setHistoryError((error as Error).message);
     } finally {
-      if (historyPending.current === ticket) historyPending.current = null;
+      historyPending.current = false;
       if (ticket === historyGeneration.current) setHistoryBusy(false);
-    }
-  }
-  async function resumeOffline(target: ChatDraft) {
-    const old = target.conversation;
-    if (!old?.live || old.status !== "offline" || old.provider !== "antigravity" || target.sending || target.reviewOnly || old.reviewOnly) return;
-    target.sending = true;
-    target.error = undefined;
-    repaint();
-    try {
-      const next = await call<IdeChatConversation>("/conversations", {
-        hostId: old.hostId, provider: old.provider, resumeId: old.nativeId, requestId: crypto.randomUUID(),
-      } satisfies IdeChatCreate);
-      if (entries.current.get(target.key) !== target || target.conversation?.id !== old.id) return;
-      if (next.hostId !== old.hostId || next.nativeId !== old.nativeId || next.provider !== old.provider ||
-          (old.reconnectScope && next.reconnectScope !== old.reconnectScope) || next.status === "offline")
-        throw Error("원래 대화의 실행 연결을 복원하지 못했습니다.");
-      target.conversation = undefined;
-      accept(target, next);
-      target.historyPaused = false;
-    } catch (error) {
-      target.error = (error as Error).message;
-    } finally {
-      target.sending = false;
-      repaint();
     }
   }
   async function resume(
@@ -920,15 +597,8 @@ export default function IdeChatPanel({
     automatic = false,
   ) {
     if (resuming) return;
-    if(multiTabs && !automatic && !expectedTerminalKey){
-      const open=tabs.find(t=>(t.conversation?.nativeId===thread.id || (t.restoreNative===thread.id && !t.historyPaused)) && t.provider===provider);
-      if(open){activateTab(open);if(open.conversation?.status==="offline") await resumeOffline(open);return;}
-      if(!tabs.some(t=>t.restoreNative===thread.id && t.provider===provider) && !canOpenTab())return;
-    }
-    const expectedTerminalId = expectedTerminalKey ? currentTerminal?.id : undefined;
-    if (expectedTerminalKey && (!expectedTerminalId || expectedTerminalKey !== terminalBinding.current)) return;
     const capturedScope = scope,
-      key = JSON.stringify([scope, thread.id, expectedTerminalId]),
+      key = `${scope}:${thread.id}`,
       ticket = historyGeneration.current;
     const requestId = resumes.current.get(key) || crypto.randomUUID();
     resumes.current.set(key, requestId);
@@ -940,24 +610,16 @@ export default function IdeChatPanel({
         provider,
         resumeId: thread.id,
         requestId,
-      } satisfies IdeChatCreate, undefined, expectedTerminalId);
-      if (conversation.nativeId !== thread.id || conversation.provider !== provider || conversation.hostId !== hostId)
-        throw Error("요청한 대화와 서버 응답이 일치하지 않습니다.");
-      if (expectedTerminalId && conversation.live?.terminalId !== expectedTerminalId)
-        throw Error("선택한 터미널의 대화가 바뀌었습니다. 현재 대화를 다시 확인하세요.");
-      if (view.restoreNative === thread.id && !entries.current.has(view.key)) return;
+      } satisfies IdeChatCreate);
       let target = [...entries.current.values()].find(
         (item) =>
-          (item.conversation?.id === conversation.id || (multiTabs && item.restoreNative===thread.id && !item.conversation)) &&
-          (!multiTabs || item.area===scopeHost) &&
+          item.conversation?.id === conversation.id &&
           item.hostId === hostId &&
           item.provider === provider,
       );
       if (!target) {
-        if(!canOpenTab())return;
         target = {
           key: crypto.randomUUID(),
-          area:scopeHost,
           hostId,
           provider,
           draft: "",
@@ -974,14 +636,8 @@ export default function IdeChatPanel({
         (!expectedTerminalKey ||
           terminalBinding.current === expectedTerminalKey) &&
         (!automatic ||
-          (!view.draft &&
-            !view.images?.length &&
-            !view.readingImages &&
-            !view.attachment &&
-            selected.current === view.key))
+          (!view.draft && !view.attachment && selected.current === view.key))
       ) {
-        target.historyPaused=false;target.historyRetryId=undefined;target.notice=undefined;target.error=undefined;
-        if(multiTabs){selectedByHost.current.set(scopeHost,target.key);dirtyTabAreas.current.add(scopeHost);}
         selectedByScope.current.set(capturedScope, target.key);
         setHistoryOpen(false);
         following.current = true;
@@ -991,7 +647,6 @@ export default function IdeChatPanel({
       if (ticket === historyGeneration.current) {
         const limited = isLegacyClaudeHistoryLimit(error);
         setHistoryError(limited ? "" : (error as Error).message);
-        if (view.historyRetryId === thread.id && !limited) { view.error = (error as Error).message; repaint(); }
         if (limited) {
           view.historyPaused = true;
           view.historyRetryId = thread.id;
@@ -1010,7 +665,7 @@ export default function IdeChatPanel({
     }
   }
   useEffect(() => {
-    if (!terminalIntent || !active || newChatRequest) return;
+    if (!terminalIntent || !active) return;
     if (
       terminalIntent.hostId !== hostId ||
       terminalIntent.terminalId !== currentTerminal?.id ||
@@ -1038,13 +693,12 @@ export default function IdeChatPanel({
   useEffect(() => {
     if (
       !active ||
-      view.newChat || newChatRequest ||
       !currentTerminal ||
       automaticAttachments.current.has(currentTerminalKey)
     )
       return;
     automaticAttachments.current.add(currentTerminalKey);
-    const targetScope = `${scopeHost}:${currentTerminal.agentKind}`;
+    const targetScope = `${hostId}:${currentTerminal.agentKind}`;
     const retained = entries.current.get(
       selectedByScope.current.get(targetScope) || "",
     );
@@ -1053,15 +707,11 @@ export default function IdeChatPanel({
       freshScopes.current.has(scope) ||
       view.conversation ||
       view.draft ||
-      view.images?.length ||
-      view.readingImages ||
       view.attachment ||
       view.sending ||
       (retained &&
         (retained.conversation ||
           retained.draft ||
-          retained.images?.length ||
-          retained.readingImages ||
           retained.attachment ||
           retained.sending))
     )
@@ -1083,12 +733,8 @@ export default function IdeChatPanel({
         scroll.current.scrollHeight -
         prepend.current.height;
       prepend.current = undefined;
-    } else if (following.current) {
-      const selection = scroll.current.ownerDocument.getSelection();
-      if (presentation === "terminal" && selection && !selection.isCollapsed &&
-          scroll.current.contains(selection.anchorNode)) return;
+    } else if (following.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
-    }
   }, [view.conversation, view.key, active, historyOpen]);
   async function older() {
     const target = view,
@@ -1117,91 +763,38 @@ export default function IdeChatPanel({
       repaint();
     }
   }
-  const imageFile = useRef<HTMLInputElement>(null);
-  const directImages = provider !== "antigravity" && !view.conversation?.live;
-  const hasContent = Boolean(view.draft.trim() || view.images?.length);
-  async function attachImages(files: File[]) {
-    const target = view;
-    if (
-      !directImages ||
-      !files.length ||
-      target.readingImages ||
-      target.sending
-    )
-      return;
-    target.readingImages = true;
-    target.error = undefined;
-    repaint();
-    try {
-      target.images = [
-        ...(target.images || []),
-        ...(await readImages(files, target.images || [])),
-      ];
-    } catch (e) {
-      target.error = (e as Error).message;
-    } finally {
-      target.readingImages = false;
-      repaint();
-    }
-  }
-  async function send(delivery?: IdeChatSend["delivery"]) {
+  async function send() {
     const target = view;
     if (
       !hostId ||
-      (!target.conversation && !!target.restoreId) ||
-      !hasContent ||
-      target.readingImages ||
+      !target.draft.trim() ||
       target.sending ||
       target.conversation?.live?.canSend === false ||
-      (!delivery &&
-        !target.conversation?.live &&
+      (!target.conversation?.live &&
         ["running", "waiting"].includes(target.conversation?.status || ""))
     )
       return;
-    if (!target.conversation && target.autoAccept && catalog.supportsAutoAccept!==true){
-      target.error=catalog.supportsAutoAccept===false?"이 초안은 Harbor 자동 수락을 요청했습니다. 서버를 업데이트하거나 대화 설정에서 예약을 해제하세요.":"이 초안의 Harbor 자동 수락 지원 여부를 확인한 뒤 다시 보내세요.";
-      repaint();return;
-    }
     const draft = target.draft,
       selection = target.attachment,
-      text = selectionPrompt(draft, selection),
-      attached = target.images,
-      images = attached?.map((image) => image.url);
-    if (images?.length && (!directImages || delivery === "next" || delivery==="reset")) {
-      target.error = directImages
-        ? "이미지는 답변 완료 후 보내거나 현재 Codex 턴에 반영해 주세요."
-        : "이 대화는 이미지 첨부를 지원하지 않습니다.";
-      repaint();
-      return;
-    }
+      text = selectionPrompt(draft, selection);
     if (text.length > 32000) {
       target.error =
         "선택한 코드와 질문이 너무 깁니다. 선택 범위를 줄여주세요.";
       repaint();
       return;
     }
-    if(multiTabs && rememberScope && target.autoAccept && !target.conversation){
-      const key=tabStoreKey(target.area || scopeHost),saved=readManagedTabs(key);
-      if(saved?.tabs.some(t=>t.key===target.key&&t.autoAccept))
-        writeManagedTabs(key,{...saved,tabs:saved.tabs.map(t=>t.key===target.key?{...t,autoAccept:undefined}:t)});
-      dirtyTabAreas.current.add(target.area || scopeHost);
-    }
     target.sending = true;
     target.error = undefined;
     target.notice = undefined;
     repaint();
     try {
-      const parent = target.reviewOnly && target.parentKey ? entries.current.get(target.parentKey)?.conversation : undefined;
-      if (parent && parent.hostId !== target.hostId)
-        throw Error("본 대화의 서버를 확인하세요.");
       if (!target.conversation) {
-        const cwd = target.cwd.trim() || defaultPath || undefined,
+        const cwd = target.cwd.trim() || undefined,
           model = target.model.trim() || undefined;
         if (
           target.createAttempt &&
           (target.createAttempt.cwd !== cwd ||
-            target.createAttempt.model !== model ||
-            target.createAttempt.effort !== target.effort || target.createAttempt.autoAccept !== (target.autoAccept && catalog.supportsAutoAccept && !target.reviewOnly && target.permission!=="read-only" ? true : undefined) || target.createAttempt.permission !== (target.permission==="default" ? undefined : target.permission))
+            target.createAttempt.model !== model)
         )
           target.createRequestId = crypto.randomUUID();
         target.createAttempt = {
@@ -1210,11 +803,6 @@ export default function IdeChatPanel({
           requestId: target.createRequestId,
           ...(cwd ? { cwd } : {}),
           ...(model ? { model } : {}),
-          ...(target.effort ? { effort: target.effort } : {}),
-          ...(target.permission && target.permission!=="default" && !target.reviewOnly ? { permission: target.permission } : {}),
-          ...(target.autoAccept && catalog.supportsAutoAccept && !target.reviewOnly && target.permission!=="read-only" ? {autoAccept:true} : {}),
-          ...(target.reviewOnly ? { reviewOnly: true } : {}),
-          ...(parent && sideSettings(parent,target.provider)),
         };
         accept(
           target,
@@ -1226,22 +814,15 @@ export default function IdeChatPanel({
       }
       const conversation = target.conversation!;
       const input: IdeChatSend =
-        target.attempt && (target.attemptedQuestion ?? target.attempt.text) === text &&
-        target.attempt.delivery === delivery &&
-        (target.attempt.images?.length || 0) === (images?.length || 0) &&
-        (!images ||
-          images.every((url, i) => url === target.attempt?.images?.[i])) &&
+        target.attempt?.text === text &&
         target.attempt.runtimeId === conversation.runtimeId
           ? target.attempt
           : {
               runtimeId: conversation.runtimeId,
               requestId: crypto.randomUUID(),
-              text: parent ? await withParentActivity(request,parent,text) : text,
-              ...(images?.length ? { images } : {}),
-              ...(delivery ? { delivery } : {}),
+              text,
             };
       target.attempt = input;
-      target.attemptedQuestion = text;
       const receipt = await call<IdeChatReceipt>(
         `/conversations/${encodeURIComponent(conversation.id)}/messages`,
         input,
@@ -1252,35 +833,12 @@ export default function IdeChatPanel({
         target.notice =
           "전송 확인이 지연되고 있습니다. 대화 갱신을 기다려주세요. 같은 내용의 재시도는 중복 전송되지 않습니다.";
       else {
-        if (target.draft === draft) {
-          if(multiTabs && rememberScope) storeText(target,"");
-          else if (rememberScope) {
-            saveDraft(
-              rememberScope,
-              draftKey(target.provider, conversation.nativeId),
-              undefined,
-              "",
-            );
-            if (target.createAttempt)
-              saveDraft(
-                rememberScope,
-                draftKey(target.provider,undefined,target.key),
-                undefined,
-                "",
-              );
-          }
-          target.draft = "";
-          target.historyIndex = undefined;
-        }
+        if (target.draft === draft) target.draft = "";
         if (target.attachment === selection) target.attachment = undefined;
-        if (target.images === attached) target.images = undefined;
         target.attempt = undefined;
         if (selected.current === target.key) following.current = true;
         if (receipt.status === "queued")
-          target.notice =
-            delivery === "reset" ? "한도 초기화 후 전송으로 예약했습니다." : delivery === "next"
-              ? "다음 턴으로 예약했습니다."
-              : "열린 대화에 전달했습니다. AI가 순서대로 처리합니다.";
+          target.notice = "열린 대화에 전달했습니다. AI가 순서대로 처리합니다.";
       }
       accept(
         target,
@@ -1314,31 +872,6 @@ export default function IdeChatPanel({
       ),
     );
   }
-  // A running older worker can serve individual approval cards until it updates.
-  const legacyApproval = view.conversation;
-  const pendingLegacyCard = active && useWorkspace && !mobileWorkspace && !remoteDesktop &&
-    legacyApproval?.autoAccept && !legacyApproval.handlesAllApprovals && !legacyApproval.reviewOnly &&
-    legacyApproval.permission !== "read-only" && legacyApproval.approvals.find(a =>
-      ["command", "file", "permissions"].includes(a.kind) && !a.questions?.length);
-  const attemptedLegacy = useRef("");
-  useEffect(() => {
-    if (!legacyApproval || !pendingLegacyCard) { attemptedLegacy.current = ""; return; }
-    const c = legacyApproval, card = pendingLegacyCard;
-    const identity = JSON.stringify([hostId,c.runtimeId,c.id,card.id]);
-    const abort = new AbortController();
-    if (attemptedLegacy.current !== identity) {
-      void (async () => {
-        const latest = await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id),undefined,abort.signal);
-        if (abort.signal.aborted || latest.id !== c.id || latest.runtimeId !== c.runtimeId || latest.nativeId !== c.nativeId ||
-            latest.hostId !== c.hostId || latest.live?.terminalId !== c.live?.terminalId ||
-            latest.handlesAllApprovals || !latest.autoAccept || latest.reviewOnly || latest.permission === "read-only" ||
-            !latest.approvals.some(a => a.id === card.id && a.kind === card.kind && !a.questions?.length)) return;
-        attemptedLegacy.current = identity;
-        await answer(card.id,{approved:true});
-      })().catch(()=>{ /* The card remains available if input control or the request changed. */ });
-    }
-    return () => abort.abort();
-  }, [hostId, view.key, legacyApproval?.runtimeId, legacyApproval?.id, pendingLegacyCard && pendingLegacyCard.id]);
   async function stop() {
     const target = view,
       conversation = target.conversation;
@@ -1371,392 +904,33 @@ export default function IdeChatPanel({
     }
   }
   const conversation = view.conversation,
-    transcript = conversation || view.lastTranscript,
     label = agentLabel(provider),
     running = conversation?.status === "running",
     live = conversation?.live;
-  const inventory = terminalInventory ?? (terminal ? [terminal] : []);
-  const navigation = useRef({inventory, active, useWorkspace, currentId:currentTerminal?.id});
-  navigation.current = {inventory, active, useWorkspace, currentId:currentTerminal?.id};
-  const openingTerminal = useRef(0);
-  const sourceTerminal = !view.connectionError && onFocusTerminal
-    ? chatTerminalTarget(conversation, inventory, currentTerminal?.id, useWorkspace) : undefined;
-  const inputRestriction = !live || live.canSend ? "" : conversation?.status === "offline"
-    ? "현재 입력을 받을 수 없어 저장된 대화를 표시합니다."
-    : conversation?.status === "waiting" && conversation.approvals.length ? "위 승인 요청에 응답하세요."
-    : conversation?.status === "waiting" && useWorkspace && window.harborDesktop?.inlineApproval
-      ? "실행 승인 대기"
-    : conversation?.status === "waiting"
-      ? useWorkspace ? "이 서버의 작업 공간에서 승인 또는 질문을 확인하세요." : "승인 또는 답변을 기다리고 있습니다."
-      : useWorkspace ? "이 서버의 대화 입력 연결을 사용할 수 없습니다."
-        : "이 대화의 입력 연결을 사용할 수 없습니다.";
-  const [resetOffer,setResetOffer]=useState<{id:string;time:number}>();
-  const resetChat=active && conversation && !conversation.live && conversation.provider!=="antigravity" &&
-    (view.draft.trim() || conversation.status==="error") ? conversation.id : undefined;
-  useEffect(()=>{
-    if(!resetChat)return;
-    let cancelled=false;
-    const controller=new AbortController();
-    const refresh=async()=>{
-      try{
-        const response=await request("/conversations/"+encodeURIComponent(resetChat)+"/rate-reset",{signal:controller.signal});
-        if(!response.ok)throw Error("unavailable");
-        const value=await response.json();
-        if(!cancelled)setResetOffer(Number.isSafeInteger(value.notBefore)&&value.notBefore>Date.now()?{id:resetChat,time:value.notBefore}:undefined);
-      }catch{if(!cancelled)setResetOffer(undefined);}
-    };
-    void refresh();
-    const timer=setInterval(()=>{if(document.visibilityState!=="hidden")void refresh();},120000);
-    return ()=>{cancelled=true;controller.abort();clearInterval(timer);};
-  },[resetChat,request]);
-  const [handoffOpen, setHandoffOpen] = useState(false);
-  const [labQuote, setLabQuote] = useState<{
-    text: string;
-    sessionId: string;
-  } | null>(null);
-  function tabTitle(t:ChatDraft,index:number){
-    const actual=t.conversation?.title?.trim() || t.restoreTitle;
-    return agentLabel(t.provider)+" · "+(actual && actual!=="새 대화"?actual:(t.conversation?.items.find(typedPrompt)?.text.trim().split("\n",1)[0]?.slice(0,56) || (t.restoreId ? "저장된 대화 " : "새 대화 ")+(index+1)));
+  function showLiveTerminal() {
+    if (!live?.terminalId) return;
+    onShowTerminal?.();
+    onFocusTerminal?.(live.terminalId);
   }
-  function activateTab(t:ChatDraft){
-    if(t.area!==scopeHost || !entries.current.has(t.key))return;
-    historyGeneration.current++;
-    setTerminalIntent(undefined);
-    setResuming("");
-    setHistoryOpen(false);setHandoffOpen(false);setLabQuote(null);setFolderOpen(false);
-    dirtyTabAreas.current.add(scopeHost);
-    selectedByHost.current.set(scopeHost,t.key);
-    selectedByScope.current.set(scopeHost+":"+t.provider,t.key);
-    setChosenProvider(t.provider);
-    repaint();
-  }
-  function closeTab(t:ChatDraft){
-    if(t.sending || t.readingImages)return;
-    const sideNative=t.conversation?.nativeId||t.restoreNative;
-    const sideScope=rememberScope && sideNative && sideStorageKey(rememberScope,scopeHost,t.provider,sideNative);
-    if((t.draft || t.images?.length || t.attachment || t.sideChat?.draft || (sideScope&&readManagedTabDraft(sideScope,"side"))) &&
-       !window.confirm("작성 중인 초안과 첨부를 지우고 이 탭을 닫을까요?"))return;
-    if(rememberScope){storeText(t,"");writeDraftFolder(tabStoreKey(scopeHost),t.key,"");}
-    if(sideScope)writeManagedTabDraft(sideScope,"side","");
-    const index=tabs.findIndex(entry=>entry.key===t.key);
-    entries.current.delete(t.key);
-    dirtyTabAreas.current.add(scopeHost);
-    const others=tabs.filter(entry=>entry!==t);
-    for(const child of others){
-      if(child.parentKey===t.key)child.parentKey=undefined;
-      if(child.displacedKey===t.key)child.displacedKey=undefined;
-    }
-    const group=scopeHost+":"+t.provider;
-    if(selectedByScope.current.get(group)===t.key){
-      const fallback=others.filter(o=>o.provider===t.provider).at(-1);
-      if(fallback)selectedByScope.current.set(group,fallback.key);
-      else selectedByScope.current.delete(group);
-    }
-    if(t.key===view.key)activateTab(others[Math.min(index,others.length-1)] || fresh(provider));
-    else repaint();
-  }
-  function selectedPassage() {
-    const selection = scroll.current?.ownerDocument.getSelection();
-    return selection?.anchorNode &&
-      selection.focusNode &&
-      scroll.current?.contains(selection.anchorNode) &&
-      scroll.current.contains(selection.focusNode)
-      ? selection.toString().trim()
-      : "";
-  }
-  function startRelated(destination: IdeChatProvider, review: boolean) {
-    if (!conversation) return;
-    const quote = selectedPassage();
-    const messages = conversation.items.filter(
-      (item) =>
-        typedPrompt(item) ||
-        (item.kind === "assistant" && item.status !== "inProgress"),
-    );
-    const context =
-      quote ||
-      [messages[0], ...messages.slice(-6)]
-        .filter((item, i, all) => item && all.indexOf(item) === i)
-        .map(
-          (item) =>
-            (item.kind === "user" ? "사용자" : label) +
-            ": " +
-            displayMessage(item).text.slice(0, 2400),
-        )
-        .join("\n\n");
-    const displaced = selectedByScope.current.get(
-      scopeHost + ":" + destination,
-    );
-    if(!canOpenTab())return;
-    const child = fresh(destination);
-    child.displacedKey = displaced;
-    child.cwd = conversation.cwd;
-    child.reviewOnly = review;
-    child.parentKey = view.key;
-    child.draft =
-      (review ? "선택한 내용에 대한 질문: " : "이어갈 작업: ") +
-      "\n\n[참고 기록 · " +
-      conversation.title +
-      " · " +
-      conversation.nativeId +
-      "]\n" +
-      context.slice(0, 20000);
-    if (multiTabs && rememberScope)storeText(child,child.draft);
-    freshScopes.current.add(scopeHost + ":" + destination);
-    setProvider(destination);
-    setHandoffOpen(false);
-    setHistoryOpen(false);
-    repaint();
-  }
-  function backToParent(copyAnswer: boolean) {
-    const parent = view.parentKey && entries.current.get(view.parentKey);
-    if (!parent || parent.hostId !== hostId) return;
-    const result =
-      copyAnswer &&
-      conversation?.items.filter((i) => i.kind === "assistant").at(-1)?.text;
-    if (result)
-      parent.draft = [parent.draft, result].filter(Boolean).join("\n\n");
-    if (view.displacedKey && view.provider !== parent.provider)
-      selectedByScope.current.set(
-        scopeHost + ":" + view.provider,
-        view.displacedKey,
-      );
-    selectedByScope.current.set(scopeHost + ":" + parent.provider, parent.key);
-    if (rememberScope && result) storeText(parent,parent.draft);
-    setProvider(parent.provider);
-    setHandoffOpen(false);
-    repaint();
-  }
-  async function changeReservation(
-    entry: NonNullable<IdeChatConversation["queue"]>[number],
-    action: "edit" | "up" | "remove" | "authorize",
-    text?: string,
-  ) {
-    if (!conversation) return;
-    try {
-      accept(
-        view,
-        await call<IdeChatConversation>(
-          `/conversations/${encodeURIComponent(conversation.id)}/queue/${entry.id}`,
-          {
-            runtimeId: conversation.runtimeId,
-            expectedText: entry.text,
-            action,
-            text,
-          },
-        ),
-      );
-    } catch (error) {
-      view.error = (error as Error).message;
-      repaint();
-    }
-  }
-  function showLiveTerminal(target: TerminalInfo) {
-    if (!conversation || !onFocusTerminal) return;
-    setActionKey(undefined);
-    const ticket = ++openingTerminal.current;
-    const stillHere = () => navigation.current.active && mounted.current && selected.current === view.key &&
-      view.conversation?.id === conversation.id && ticket === openingTerminal.current;
-    void call<IdeChatConversation>("/conversations/" + encodeURIComponent(conversation.id)).then(latest => {
-      if (!stillHere()) return;
-      const {inventory, currentId, useWorkspace} = navigation.current;
-      const actual = chatTerminalTarget(latest, inventory, currentId, useWorkspace);
-      if (latest.runtimeId !== conversation.runtimeId || latest.id !== conversation.id ||
-          latest.nativeId !== conversation.nativeId || actual?.id !== target.id)
-        throw Error("원본 터미널을 열 수 없습니다. 현재 대화를 다시 확인하세요.");
-      accept(view, latest);
-      onShowTerminal?.();
-      onFocusTerminal(target.id);
-    }).catch(error => {
-      if (stillHere()) { view.error = (error as Error).message; repaint(); }
-    });
-  }
-  function keepNewDraft(destination: IdeChatProvider) {
-    freshScopes.current.add(scopeHost + ":" + destination);
-    if (!rememberScope || multiTabs) return;
-    const key = ["harbor.chat", useWorkspace ? "server" : rememberScope, hostId, destination].join(".");
-    restored.current.add(key);
-    try {
-      remembered().removeItem(key);
-      remembered().removeItem(key + ".native");
-    } catch {}
-  }
-  function addChat(destination: IdeChatProvider = provider, cwd = chosenPath) {
-    if (!canOpenTab()) return;
-    keepNewDraft(destination);
-    if (currentTerminal) freshScopes.current.add(scopeHost + ":" + currentTerminal.agentKind);
-    const next = fresh(destination);
-    next.newChat = true;
-    next.cwd = cwd;
-    if (multiTabs && rememberScope && cwd) writeDraftFolder(tabStoreKey(scopeHost), next.key, cwd);
-    following.current = true;
-    activateTab(next);
-  }
-  useEffect(() => {
-    if (!tabRequest || !active || tabRequest.hostId !== hostId) return;
-    if (handledWorkspace.current !== tabRequest) {
-      handledWorkspace.current = tabRequest;
-      if ("key" in tabRequest) {
-        const tab = entries.current.get(tabRequest.key);
-        if (tab) activateTab(tab);
-      } else addChat(tabRequest.provider, tabRequest.cwd);
-    }
-    onWorkspaceRequestHandled?.();
-  }, [tabRequest, active, hostId]);
-  const handledNewChat = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (!newChatRequest || !active || !hostId || handledNewChat.current === newChatRequest) return;
-    handledNewChat.current = newChatRequest;
-    addChat();
-    onNewChatHandled?.(newChatRequest);
-  }, [newChatRequest, active, hostId]);
-  function moveTab(id:string,toIndex:number) {
-    const index=tabs.findIndex(t=>t.key===id);
-    if(index<0 || toIndex===index || toIndex<0 || toIndex>=tabs.length) return;
-    const ordered=tabs.slice();
-    ordered.splice(toIndex,0,...ordered.splice(index,1));
-    for(const entry of ordered) entries.current.delete(entry.key);
-    for(const entry of ordered) entries.current.set(entry.key,entry);
-    dirtyTabAreas.current.add(scopeHost);
-    repaint();
-  }
-  function chooseProvider(next: IdeChatProvider) {
-    if(next===provider)return;
-    const previous = entries.current.get(selectedByScope.current.get(scopeHost + ":" + next) || "");
-    const previousSession = previous?.conversation || previous?.restoreId || previous?.restoreNative;
-    const unbound = !view.conversation && !view.restoreId && !view.restoreNative &&
-      !view.createAttempt && !view.sending && !view.parentKey && !view.reviewOnly;
-    const emptyTab = multiTabs && !view.draft && !view.images?.length && !view.attachment &&
-      !view.model && !view.effort && !view.permission;
-    if (unbound && (view.newChat || emptyTab || (multiTabs && previousSession))) {
-      if (view.readingImages || (next === "antigravity" && view.images?.length)) {
-        view.error = "이미지 첨부를 먼저 확인한 뒤 AI를 변경하세요.";
-        repaint();
-        return;
-      }
-      if (next === "antigravity" && view.permission === "read-only") {
-        view.error = "Antigravity는 읽기 전용 대화를 지원하지 않습니다. 실행 권한을 확인하세요.";
-        repaint();
-        return;
-      }
-      const oldGroup = scopeHost + ":" + view.provider;
-      if (selectedByScope.current.get(oldGroup) === view.key) {
-        const previous = [...entries.current.values()].filter(t =>
-          t.area === scopeHost && t.key !== view.key && t.provider === view.provider).at(-1);
-        if (previous) selectedByScope.current.set(oldGroup, previous.key);
-        else selectedByScope.current.delete(oldGroup);
-      }
-      view.provider = next;
-      view.newChat = true;
-      view.migrateLegacy = false;
-      view.model = "";
-      view.effort = undefined;
-      if (view.permission !== "read-only") view.permission = undefined;
-      view.autoAccept=undefined;
-      view.historyIndex = undefined;
-      view.error = undefined;
-      keepNewDraft(next);
-      if (rememberScope && view.draft) storeText(view,view.draft);
-      activateTab(view);
-      return;
-    }
-    // Established conversations already have tabs. Choosing an AI to start work must not resume one.
-    if ((previousSession && (multiTabs || view.conversation || view.restoreId)) ||
-        (!previous && (view.conversation || view.restoreId))) {
-      addChat(next);
-      return;
-    }
-    setProvider(next);
-  }
-  const [observed,setObserved]=useState<{id:string;native:string;runtime:string;model?:string;effort?:ChatSettingsValue["effort"];policy?:TerminalUsage["codexTurnPolicy"]}>();
-  useEffect(()=>{
-    if(!folderOpen || !active || !conversation || (conversation.observedModel && conversation.observedEffort &&
-      (conversation.permission || conversation.provider !== "codex")))return;
-    const target=conversation,controller=new AbortController();
-    void request("/conversations/"+encodeURIComponent(target.id)+"/usage",{signal:controller.signal})
-      .then(async r=>r.ok?(await r.json()).usage:undefined).then(u=>{
-        if(!controller.signal.aborted && u?.provider===target.provider && u.sessionId===target.nativeId)
-          setObserved({id:target.id,native:target.nativeId,runtime:target.runtimeId,model:u.model,effort:u.effort,policy:u.codexTurnPolicy});
-      }).catch(()=>{});
-    return ()=>controller.abort();
-  },[folderOpen,active,request,conversation?.id,conversation?.nativeId,conversation?.runtimeId,conversation?.model,conversation?.effort,conversation?.observedEffort,conversation?.permission]);
-  const measurement=conversation && observed?.id===conversation.id && observed.native===conversation.nativeId && observed.runtime===conversation.runtimeId ? observed : undefined;
-  const actualModel=conversation?.observedModel||measurement?.model||conversation?.model||"";
-  const configuredModel = conversation
-    ? conversation.live ? actualModel : conversation.configuredModel ?? actualModel
-    : view.model;
-  const modelSetting=configuredModel || "";
-  const exactModel=modelSetting ? chatModelOption(catalog.models,modelSetting) : undefined;
-  const variant=provider==="antigravity" && modelSetting && !exactModel ? catalog.models.find(m=>m.efforts?.some(e=>m.id+"-"+e===modelSetting)) : undefined;
-  const selectedModel=exactModel || variant || (!modelSetting ? catalog.models.find(m=>m.isDefault) : undefined);
-  const variantEffort=variant?.efforts?.find(e=>e!=="default" && variant.id+"-"+e===modelSetting);
-  const knownDefaultEffort=!!conversation && !conversation.live && conversation.configuredModel !== undefined && !conversation.effort;
-  const measuredEffort=conversation?.observedEffort || (!measurement?.model || measurement.model===actualModel ? measurement?.effort : undefined);
-  const effortSetting=(conversation ? conversation.effort ?? (!knownDefaultEffort ? measuredEffort : undefined) : view.effort) || (variantEffort && variantEffort!=="default"?variantEffort:undefined);
-  const editModel = variant?.id || configuredModel;
-  const permissionSetting=conversation?.permission || (conversation?.reviewOnly||view.reviewOnly?"read-only":view.permission||"default");
-  const unknown={model:!!conversation && !actualModel && conversation.configuredModel===undefined,
-    effort:!!conversation && !effortSetting && !knownDefaultEffort,
-    permission:!!conversation && !conversation.permission && !conversation.reviewOnly};
-  const pendingServer = useWorkspace && (updateStatus?.phase === "pending" || updateStatus?.phase === "installing");
-  let autoUnavailable = "상태 미제공";
-  if (pendingServer && catalog.supportsAutoAccept !== true) autoUnavailable = "업데이트 적용 후 사용";
-  else if (!conversation && !catalog.at) autoUnavailable = "확인 중…";
-  else if (catalog.supportsAutoAccept === false)
-    autoUnavailable = updateStatus?.phase === "current" ? "이 연결에서 미지원" : "서버 업데이트 필요";
-  async function saveSettings(settings:ChatSettingsValue,engineChanged:boolean,fields?:("model"|"effort"|"permission")[]){
-    const target=view;
-    if(target.conversation){
-      const c=target.conversation;
-      const changeNativeEngine=!!c.canConfigureNative && c.status==="idle" && engineChanged;
-      if(c.live && engineChanged && !changeNativeEngine)throw Error("현재 상태에서 모델이나 추론 강도를 바꿀 수 없습니다. 설정을 다시 열어 주세요.");
-      if(fields && !fields.length)return;
-      if(!c.supportsPartialSettings && !c.live && fields && (["model","effort","permission"] as const)
-          .some(k=>unknown[k] && !fields.includes(k)))
-        throw Error("서버에서 현재 설정을 확인할 수 없습니다. 각 값을 선택하거나 서버 작업 공간을 업데이트하세요.");
-      const changed=(key:"model"|"effort"|"permission")=>!fields || fields.includes(key);
-      const patch=!!fields && !!c.supportsPartialSettings;
-      const data={runtimeId:c.runtimeId,...(patch?{changedFields:fields}:{}),
-        ...((!patch||changed("permission"))?{permission:settings.permission}:{}),
-        ...((!c.live||changeNativeEngine)&&(!patch||changed("model"))?{model:settings.model||undefined}:{}),
-        ...((!c.live||changeNativeEngine)&&(!patch||changed("effort"))?{effort:settings.effort}:{})};
-      const v=await call<IdeChatConversation>("/conversations/"+encodeURIComponent(c.id)+"/settings",data,undefined,c.live?.terminalId);
-      accept(target,v);
-    }else{
-      target.model=settings.model;target.effort=settings.effort;target.permission=settings.permission;
-      if(target.permission==="read-only")target.autoAccept=undefined;
-      if(multiTabs)dirtyTabAreas.current.add(scopeHost);
-    }
-    repaint();
-  }
-  const chat = (
-    <section className="ide-chat" data-presentation={presentation} aria-label="IDE AI 대화">
-      {active &&
-        useWorkspace &&
-        (mobileWorkspace || remoteDesktop) &&
-        conversation?.live && (
-          <WorkspaceControl
-            key={conversation.id}
-            chat={conversation}
-            mobile={mobileWorkspace}
-          />
-        )}
-      {multiTabs && !!hostId && <ManagedChatTabs tabs={tabs.map((t,i)=>({id:t.key,title:tabTitle(t,i),closeDisabled:!!t.sending || !!t.readingImages}))} selected={view.key} create={() => addChat()} move={moveTab}
-        activate={id=>{const t=entries.current.get(id);if(t)activateTab(t);}}
-        close={id=>{const t=entries.current.get(id);if(t)closeTab(t);}}/>}
+  return (
+    <section className="ide-chat" aria-label="IDE AI 대화">
       <header>
         <select
           aria-label="AI 제공자"
           value={provider}
           onChange={(event) =>
-            chooseProvider(event.target.value as IdeChatProvider)
+            setProvider(event.target.value as IdeChatProvider)
           }
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
-          {hasGemini && <option value="antigravity">Antigravity</option>}
+          {antigravityIntegration && hostId === "local" && (
+            <option value="antigravity">Antigravity</option>
+          )}
         </select>
-        <button type="button" className="chat-working-dir" disabled={!hostId || !!conversation || view.sending || !!view.restoreId} aria-label={conversation?"현재 작업 폴더":"작업 폴더 선택"} title={[hostName||hostId,chosenPath||"기본 경로 확인 필요"].filter(Boolean).join(" · ")} onClick={()=>setPickingFolder(view.key)}><FolderOpen size={14}/><span>{hostName||"서버 선택"}</span><span><bdi dir="ltr">{chosenPath || (defaultDirectory?.scope===scopeHost?"기본 경로 확인 필요":"폴더 확인 중…")}</bdi></span></button>
-        <button type="button" className="chat-settings-button" aria-label="모델·추론 강도·권한 설정" title={[unknown.model?"모델 미확인":selectedModel?.name||modelSetting||"기본 모델",unknown.effort?"강도 미확인":effortSetting||selectedModel?.defaultEffort||"기본 노력",unknown.permission?"권한 미확인":permissionLabels[permissionSetting]].join(" · ")} aria-expanded={folderOpen} disabled={!hostId || view.sending || !!view.restoreId && !conversation} onClick={()=>setFolderOpen(true)}><SlidersHorizontal size={14}/><span>{unknown.model?"모델 미확인":selectedModel?.name||modelSetting||"기본 모델"}</span><small>{unknown.effort?"강도 미확인":effortSetting||selectedModel?.defaultEffort||"기본 노력"} · {unknown.permission?"권한 미확인":permissionLabels[permissionSetting]}</small></button>
+        <span className="ide-chat-host" title={hostName}>
+          {hostName || "서버 선택"}
+        </span>
         <button
           aria-label="대화 기록"
           title="대화 기록"
@@ -1769,142 +943,26 @@ export default function IdeChatPanel({
           <History size={16} />
           <span>기록</span>
         </button>
-        {!multiTabs && <button aria-label="새 대화" title="새 대화" onClick={() => addChat()}><Plus size={17}/></button>}
-        {(conversation || view.parentKey) && <details className="chat-more" ref={actionMenu} open={actionKey===view.key}>
-          <summary aria-label="대화 메뉴" title="대화 메뉴" aria-expanded={actionKey===view.key} onMouseDown={e=>e.preventDefault()} onClick={e=>{e.preventDefault();setHandoffOpen(false);setActionKey(actionKey===view.key?undefined:view.key);}}><MoreHorizontal size={16}/></summary>
-          <div className="chat-more-list" role="group" aria-label="대화 동작">
-          {sourceTerminal && live?.canSend && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>
-            원본 터미널 열기 · {sourceTerminal.title}
-          </button>}
-          {view.parentKey && (
-            <button onClick={() => backToParent(false)}>원래 대화</button>
-          )}
-          {view.parentKey &&
-            conversation?.items.some((i) => i.kind === "assistant") && (
-              <button onClick={() => backToParent(true)}>
-                답을 원래 초안에 담기
-              </button>
-            )}
-          {conversation && !multiTabs && (
-            <button
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() =>
-                startRelated(
-                  provider === "antigravity" ? "codex" : provider,
-                  true,
-                )
-              }
-            >
-              {provider === "antigravity" ? "Codex 옆 대화" : "옆 대화"}
-            </button>
-          )}
-          {conversation && (
-            <button
-              aria-expanded={handoffOpen}
-              onClick={() => setHandoffOpen(!handoffOpen)}
-            >
-              작업 인계
-            </button>
-          )}
-          {conversation && (
-            <button
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                const text =
-                  selectedPassage() ||
-                  conversation.items
-                    .filter((i) => i.kind === "assistant")
-                    .at(-1)?.text ||
-                  "";
-                if (text.length > 24000) {
-                  view.error = "공유할 부분을 24,000자 이내로 선택하세요.";
-                  repaint();
-                  return;
-                }
-                setActionKey(undefined);setLabQuote({ text, sessionId: conversation.id });
-              }}
-            >
-              연구실에서 묻기
-            </button>
-          )}
-          {handoffOpen &&
-            (["codex", "claude", "antigravity"] as const)
-              .filter(
-                (p) => p !== provider && (p !== "antigravity" || hasGemini),
-              )
-              .map((p) => (
-                <button key={p} onClick={() => startRelated(p, false)}>
-                  {agentLabel(p)}로 인계
-                </button>
-              ))}
-        {conversation?.peerEnabled !== undefined && (
-          <button
-            type="button"
-            aria-pressed={conversation.peerEnabled}
-            onClick={async () => {
-              setActionKey(undefined);const target = view;
-              try {
-                const next = await call<IdeChatConversation>(
-                  `/conversations/${encodeURIComponent(conversation.id)}/collaboration`,
-                  {
-                    runtimeId: conversation.runtimeId,
-                    enabled: !conversation.peerEnabled,
-                  },
-                );
-                accept(target, next);
-                repaint();
-              } catch (e) {
-                target.error = (e as Error).message;
-                repaint();
-              }
-            }}
-          >
-            {conversation.peerEnabled ? "세션 협업 끄기" : "세션 협업 켜기"}
-          </button>
-        )}
-</div>
-        </details>}
+        <button
+          aria-label="새 대화"
+          title="새 대화"
+          onClick={() => {
+            historyGeneration.current++;
+            setTerminalIntent(undefined);
+            setResuming("");
+            freshScopes.current.add(scope);
+            if (currentTerminal)
+              freshScopes.current.add(`${hostId}:${currentTerminal.agentKind}`);
+            fresh();
+            setHistoryOpen(false);
+            following.current = true;
+            repaint();
+          }}
+        >
+          <Plus size={17} />
+        </button>
       </header>
-
-      {folderOpen && <ChatSettings key={view.key} workspaceUpdate={useWorkspace ? updateStatus : undefined} lastTurnPolicy={measurement?.policy} hostName={hostName||hostId} provider={provider} models={catalog.models} notice={catalog.notice} unknown={unknown} observed={conversation?{model:conversation.observedModel||measurement?.model||(!conversation.supportsPartialSettings?conversation.model||undefined:undefined),effort:measuredEffort||undefined}:undefined} initial={{model:editModel,effort:effortSetting,permission:permissionSetting}} bound={!!conversation?.live} originalTerminal={!!sourceTerminal || live?.origin === "terminal" && !!live.terminalTitle} nativeConfiguration={conversation?.canConfigureNative} review={!!(view.reviewOnly||conversation?.reviewOnly)} active={!!conversation} status={conversation?.status} onSave={saveSettings} autoAccept={conversation ? conversation.autoAccept : catalog.supportsAutoAccept ? !!view.autoAccept : undefined} pendingDraftAuto={!conversation && !!view.autoAccept && catalog.supportsAutoAccept!==true} autoUnavailable={autoUnavailable} onAutoAccept={async(enabled)=>{
-        const target=view,c=target.conversation;
-        if(!c){if((!enabled || catalog.supportsAutoAccept) && !target.reviewOnly && target.permission!=="read-only"){target.autoAccept=enabled;if(multiTabs)dirtyTabAreas.current.add(target.area||scopeHost);}repaint();return;}
-        if(c.autoAccept===undefined || c.reviewOnly)throw Error("이 대화의 자동 수락 상태를 확인할 수 없습니다.");
-        const path="/conversations/"+encodeURIComponent(c.id);
-        try{
-          const result=await call<IdeChatConversation>(path+"/auto-accept",{runtimeId:c.runtimeId,enabled},undefined,c.live?.terminalId);
-          accept(target,result);
-          if(result.autoAccept!==enabled)throw Error("자동 수락 변경 결과를 확인할 수 없습니다.");
-        }catch(error){
-          try{accept(target,await call<IdeChatConversation>(path));}catch{}
-          throw error;
-        }
-      }} onClose={()=>setFolderOpen(false)}/>}
-      {pickingFolder===view.key && !conversation && <ChatFolderPicker key={scopeHost+view.key} hostId={hostId} hostName={hostName||hostId} initialPath={chosenPath} request={folderRequest} onClose={()=>setPickingFolder(undefined)} onSelect={path=>{view.cwd=path;if(multiTabs && rememberScope)writeDraftFolder(tabStoreKey(scopeHost),view.key,path);dirtyTabAreas.current.add(scopeHost);setPickingFolder(undefined);repaint();}}/>}
-          {conversation && labQuote?.sessionId === conversation.id && (
-            <Modal
-              title="연구실에서 묻기"
-              backdropClassName={mobileWorkspace ? "mobile-lab-modal" : ""}
-              wide
-              onClose={() => setLabQuote(null)}
-            >
-              <LabQuestions
-                hosts={[
-                  {
-                    id: hostId,
-                    name: hostName || hostId,
-                    serverWorkspace: useWorkspace,
-                  },
-                ]}
-                hostId={hostId}
-                debate={false}
-                request={labRequest}
-                initialMaterial={labQuote.text}
-                RenderAnswer={Markdown}
-              />
-            </Modal>
-          )}
-      {currentTerminal && currentTerminal.id !== sourceTerminal?.id && (
+      {currentTerminal && (
         <div className="ide-chat-current-terminal">
           <button
             type="button"
@@ -1917,7 +975,7 @@ export default function IdeChatPanel({
             }
             onClick={() => {
               freshScopes.current.delete(
-                `${scopeHost}:${currentTerminal.agentKind}`,
+                `${hostId}:${currentTerminal.agentKind}`,
               );
               setProvider(currentTerminal.agentKind!);
               setTerminalIntent({
@@ -1936,7 +994,6 @@ export default function IdeChatPanel({
           <span>{currentTerminal.title}</span>
         </div>
       )}
-      {!multiTabs && (
       <div className="ide-chat-conversation-title">
         <strong>{conversation?.title || "새 대화"}</strong>
         <span>
@@ -1949,6 +1006,27 @@ export default function IdeChatPanel({
                 : "질문을 보내면 시작됩니다"}
         </span>
       </div>
+      {live && (
+        <div className="ide-chat-live" role="status">
+          <span>
+            <TerminalSquare size={13} />
+            {view.connectionError
+              ? "대화 갱신 대기 중"
+              : conversation?.status === "offline"
+                ? "저장된 터미널 대화"
+                : "열린 터미널과 연결됨"}
+          </span>
+          <button
+            type="button"
+            onClick={showLiveTerminal}
+            disabled={!onShowTerminal && !onFocusTerminal}
+          >
+            {live.canSend || conversation?.status === "offline"
+              ? "터미널 보기"
+              : "터미널에서 입력"}
+          </button>
+          {live.reason && <small>{live.reason}</small>}
+        </div>
       )}
       {historyOpen && (
         <section className="ide-chat-history" aria-label={`${label} 대화 기록`}>
@@ -1969,14 +1047,13 @@ export default function IdeChatPanel({
           </div>
           <div className="ide-chat-history-list">
             {historyError && <p role="alert">{historyError}</p>}
-            {!historyBusy && !history.length && !historyCursor && !historyError && (
+            {!historyBusy && !history.length && !historyError && (
               <p>저장된 대화가 없습니다.</p>
             )}
-            {history.map((thread, i) => (
-              <Fragment key={thread.id}>
-              <HistoryScopeHeading folder={historyCwd} scope={thread.historyScope} previous={history[i-1]?.historyScope} />
+            {history.map((thread) => (
               <button
                 className="ide-chat-history-row"
+                key={thread.id}
                 disabled={!!resuming}
                 onClick={() => void resume(thread)}
                 title={`${thread.title}\n${thread.cwd}`}
@@ -1993,7 +1070,6 @@ export default function IdeChatPanel({
                   {new Date(thread.updatedAt).toLocaleDateString()}
                 </small>
               </button>
-              </Fragment>
             ))}
             {historyBusy && <p>기록 불러오는 중…</p>}
             {historyCursor && (
@@ -2005,7 +1081,7 @@ export default function IdeChatPanel({
         </section>
       )}
       <div
-        className={presentation === "terminal" ? "ide-chat-scroll terminal-conversation-body" : "ide-chat-scroll"}
+        className="ide-chat-scroll"
         ref={scroll}
         onScroll={() => {
           const el = scroll.current!;
@@ -2014,10 +1090,7 @@ export default function IdeChatPanel({
           setBottom(following.current);
         }}
       >
-        {!!view.restoreId && !view.historyPaused && !conversation && <p role="status">대화에 다시 연결 중…</p>}
-        {!conversation && (presentation === "terminal" ? (
-          null
-        ) : (
+        {!conversation && (
           <div className="ide-chat-empty">
             <div className="ide-chat-empty-icon">
               {provider === "claude" ? "✳" : "⌘"}
@@ -2025,7 +1098,7 @@ export default function IdeChatPanel({
             <strong>{label}와 새 대화</strong>
             <p>{hostName || "선택한 서버"}에서 질문하거나 작업을 요청하세요.</p>
           </div>
-        ))}
+        )}
         {conversation?.historyCursor && (
           <button
             className="ide-chat-older"
@@ -2035,13 +1108,20 @@ export default function IdeChatPanel({
             {view.loadingOlder ? "불러오는 중…" : "이전 메시지 더 보기"}
           </button>
         )}
-        {transcript && <ManagedTranscript key={JSON.stringify([transcript.hostId, transcript.provider, transcript.nativeId])}
-          items={transcript.items} hostId={transcript.hostId} cwd={transcript.cwd} provider={transcript.provider}
-          nativeId={transcript.nativeId} running={!!running} waiting={conversation?.status === "waiting"}
-          renderMessage={presentation !== "terminal" && conversation ? (item) => (
-            <ChatItem key={item.kind + ":" + item.id} item={item} conversation={conversation} renderMarkdown={renderMarkdown} />
-          ) : undefined}/>}
-        {running && conversation && <ManagedActivity items={conversation.items} cwd={conversation.cwd}/>}
+        {conversation?.items.map((item) => (
+          <ChatItem
+            key={item.id}
+            item={item}
+            conversation={conversation}
+            renderMarkdown={renderMarkdown}
+          />
+        ))}
+        {running && (
+          <div className="ide-chat-progress">
+            <LoaderCircle size={14} className="ide-spinner" />
+            {label}가 작업 중입니다.
+          </div>
+        )}
         {conversation?.approvals.map((approval) => (
           <ApprovalCard
             key={`${conversation.id}:${approval.id}`}
@@ -2077,96 +1157,28 @@ export default function IdeChatPanel({
           {conversation.historyNotice}
         </div>
       )}
-      {view.historyPaused && !(view.reviewOnly && view.restoreId && !view.conversation) && (
+      {view.historyPaused && (
         <button
           type="button"
           className="ide-chat-older"
-          disabled={!!resuming}
           onClick={() => {
-            if (!view.conversation && view.historyRetryId) {
-              void resume({ id: view.historyRetryId });
-              return;
-            }
             view.historyPaused = false;
             if (view.conversation) retryHistory((value) => value + 1);
+            else if (view.historyRetryId)
+              void resume({ id: view.historyRetryId });
             repaint();
           }}
         >
-          {view.restoreId && !view.conversation ? "이 대화 다시 연결" : "기록 다시 불러오기"}
+          기록 다시 불러오기
         </button>
       )}
-      {!!conversation?.queue?.length && (
-        <ol className="chat-reservations" aria-label="다음 턴 예약">
-          {conversation.queue.map((entry, i) => (
-            <li key={entry.id}>
-              <form
-                key={entry.text}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void changeReservation(
-                    entry,
-                    "edit",
-                    String(
-                      new FormData(event.currentTarget).get("message") ?? "",
-                    ),
-                  );
-                }}
-              >
-                <input
-                  aria-label="예약 메시지"
-                  name="message"
-                  defaultValue={entry.text}
-                  required
-                  disabled={!!entry.error}
-                />
-                <button disabled={!!entry.error}>저장</button>
-              </form>
-              <button
-                disabled={!i}
-                onClick={() => void changeReservation(entry, "up")}
-              >
-                위로
-              </button>
-              <button onClick={() => void changeReservation(entry, "remove")}>
-                취소
-              </button>
-              {entry.notBefore && <small>{new Date(entry.notBefore).toLocaleString("ko-KR")} 이후 전송</small>}
-              {entry.needsAuthorization && (
-                <button
-                  onClick={() => void changeReservation(entry, "authorize")}
-                >
-                  예약 다시 승인
-                </button>
-              )}
-              {entry.error && <small role="alert">{entry.error}</small>}
-            </li>
-          ))}
-        </ol>
-      )}
-      {active && useWorkspace && !mobileWorkspace && !remoteDesktop && window.harborDesktop?.inlineApproval &&
-        conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
-        <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}
       <form
         className="ide-chat-compose"
         onSubmit={(event) => {
           event.preventDefault();
-          void send(
-            (running || conversation?.status === "waiting") && !live
-              ? "next"
-              : undefined,
-          );
+          void send();
         }}
       >
-        {!!view.images?.length && (
-          <ImageAttachments
-            images={view.images}
-            disabled={view.sending || !!view.readingImages}
-            onRemove={(id) => {
-              view.images = view.images?.filter((image) => image.id !== id);
-              repaint();
-            }}
-          />
-        )}
         {view.attachment && (
           <div className="ide-chat-attachment">
             <FileCode2 size={14} />
@@ -2189,28 +1201,16 @@ export default function IdeChatPanel({
         )}
         <textarea
           aria-label="AI에게 보낼 메시지"
-          rows={multiTabs ? 1 : undefined}
-          aria-description={multiTabs ? "Enter로 전송, Shift+Enter로 줄바꿈" : undefined}
-          onPaste={(e) => {
-            const files = Array.from(e.clipboardData.files);
-            if (!files.length) return;
-            e.preventDefault();
-            if (directImages) void attachImages(files);
-            else {
-              view.error = "이 대화는 이미지 첨부를 지원하지 않습니다.";
-              repaint();
-            }
-          }}
           placeholder={
-            inputRestriction ? "" : `${label}에게 질문하거나 작업 요청…`
+            live?.canSend === false
+              ? "이 대화의 입력은 열린 터미널에서 계속하세요."
+              : `${label}에게 질문하거나 작업 요청…`
           }
           value={view.draft}
           maxLength={32000}
           disabled={!hostId || live?.canSend === false}
           onChange={(event) => {
             view.draft = event.target.value;
-            storeText(view,view.draft);
-            view.historyIndex = undefined;
             if (!following.current && scroll.current) {
               following.current = true;
               setBottom(true);
@@ -2220,112 +1220,31 @@ export default function IdeChatPanel({
           }}
           onKeyDown={(event) => {
             if (
-              !event.nativeEvent.isComposing &&
-              !event.shiftKey &&
-              !event.altKey &&
-              !event.ctrlKey &&
-              !event.metaKey &&
-              (event.key === "ArrowUp" || event.key === "ArrowDown") &&
-              (!view.draft || view.historyIndex !== undefined)
-            ) {
-              const prompts =
-                conversation?.items
-                  .filter(typedPrompt)
-                  .map((item) => displayMessage(item).text)
-                  .reverse() || [];
-              const index =
-                (view.historyIndex ?? -1) + (event.key === "ArrowUp" ? 1 : -1);
-              if (index >= -1 && index < prompts.length && prompts.length) {
-                event.preventDefault();
-                view.historyIndex = index < 0 ? undefined : index;
-                view.draft = prompts[index] || "";
-                if(multiTabs && rememberScope)storeText(view,view.draft);
-                repaint();
-              }
-              return;
-            }
-            if (
               event.key === "Enter" &&
               !event.shiftKey &&
               !event.nativeEvent.isComposing &&
               event.nativeEvent.keyCode !== 229
             ) {
               event.preventDefault();
-              void send(
-                (running || conversation?.status === "waiting") && !live
-                  ? "next"
-                  : undefined,
-              );
+              void send();
             }
           }}
         />
-        <div className="ide-chat-compose-controls">
-          {directImages && <button
+        <div>
+          <button
             type="button"
-            aria-label="이미지 첨부"
-            title="이미지 첨부"
-            disabled={!hostId || view.sending || view.readingImages}
-            onClick={() => imageFile.current?.click()}
+            aria-label="대화 작업 폴더 설정"
+            aria-expanded={folderOpen}
+            title={conversation?.cwd || view.cwd || "서버 홈 폴더"}
+            onClick={() => setFolderOpen(!folderOpen)}
           >
-            <ImagePlus size={15} />
-          </button>}
-          <input
-            hidden
-            ref={imageFile}
-            type="file"
-            multiple
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            aria-label="첨부 이미지 파일"
-            onChange={(e) => {
-              const files = Array.from(e.target.files || []);
-              e.target.value = "";
-              void attachImages(files);
-            }}
-          />
-
-          {inputRestriction ? <div className="ide-chat-input-state" role="status">
-            <span>{inputRestriction}</span>
-            {conversation?.status === "offline" && live && provider === "antigravity" && !conversation.reviewOnly &&
-              <button type="button" disabled={view.sending} onClick={() => void resumeOffline(view)}>
-                {view.sending ? "연결 중…" : "이 대화 이어가기"}
-              </button>}
-            {active && useWorkspace && !mobileWorkspace && !remoteDesktop && !window.harborDesktop?.inlineApproval && !location.hostname.startsWith("harbor-") &&
-              conversation?.status === "waiting" && !conversation.approvals.length && !view.connectionError && live?.terminalId &&
-              <WorkspaceApprovalLink key={conversation.id+":"+live.terminalId} hostId={hostId} terminalId={live.terminalId}/>}
-            {sourceTerminal && <button type="button" onClick={() => showLiveTerminal(sourceTerminal)}>
-              원본 터미널 열기 · {sourceTerminal.title}
-            </button>}
-          </div> : <small>Enter 전송 · Shift+Enter 줄바꿈</small>}
-          {!!resetChat && resetOffer?.id===resetChat && resetOffer.time>Date.now() && <button type="button" title={new Date(resetOffer.time).toLocaleString("ko-KR")} disabled={!view.draft.trim() || !!view.images?.length || view.sending || view.readingImages} onClick={()=>void send("reset")}>한도 초기화 후 보내기</button>}
-          {(running || conversation?.status === "waiting") && !live && (
-            <>
-              {running && provider === "codex" && (
-                <button
-                  type="button"
-                  disabled={!hasContent || view.readingImages || view.sending}
-                  onClick={() => void send("steer")}
-                >
-                  지금 반영
-                </button>
-              )}
-              <button
-                type="submit"
-                disabled={
-                  !view.draft.trim() ||
-                  !!view.images?.length ||
-                  view.readingImages ||
-                  view.sending
-                }
-                title={
-                  view.images?.length
-                    ? "이미지는 다음 턴에 예약할 수 없습니다."
-                    : undefined
-                }
-              >
-                다음 턴 예약
-              </button>
-            </>
-          )}
+            <FolderOpen size={14} />
+          </button>
+          <small>
+            {live?.canSend === false
+              ? "입력·승인은 열린 터미널에서"
+              : "Enter 전송 · Shift+Enter 줄바꿈"}
+          </small>
           {(running || conversation?.status === "waiting") &&
           live?.canInterrupt !== false ? (
             <button
@@ -2342,9 +1261,7 @@ export default function IdeChatPanel({
               aria-label="AI 메시지 전송"
               disabled={
                 !hostId ||
-                !hasContent ||
-                (!!view.restoreId && !view.conversation) ||
-                view.readingImages ||
+                !view.draft.trim() ||
                 view.sending ||
                 live?.canSend === false
               }
@@ -2357,20 +1274,37 @@ export default function IdeChatPanel({
             </button>
           )}
         </div>
-
+        {folderOpen && (
+          <div className="ide-chat-options">
+            <label>
+              작업 폴더
+              <input
+                aria-label="AI 작업 폴더"
+                placeholder="서버 홈 폴더 (~)"
+                value={conversation?.cwd || view.cwd}
+                disabled={!!conversation || view.sending}
+                onChange={(event) => {
+                  view.cwd = event.target.value;
+                  repaint();
+                }}
+              />
+            </label>
+            <label>
+              모델
+              <input
+                aria-label="AI 모델"
+                placeholder="계정 기본 모델"
+                value={conversation?.model || view.model}
+                disabled={!!conversation || view.sending}
+                onChange={(event) => {
+                  view.model = event.target.value;
+                  repaint();
+                }}
+              />
+            </label>
+          </div>
+        )}
       </form>
     </section>
   );
-  return presentation==="terminal" && !mobileWorkspace ? <div className="managed-chat-surface">
-    {chat}
-
-    <ManagedSideRail storageScope={rememberScope && conversation ? sideStorageKey(rememberScope,scopeHost,conversation.provider,conversation.nativeId):undefined} parent={conversation} state={view.sideChat ||= newSideChat(view.provider)}
-      request={request} hostId={hostId} provider={view.provider} active={active} selection={selectedPassage}
-      append={text=>{
-        if(selected.current!==view.key || !entries.current.has(view.key))return;
-        const next=[view.draft,text].filter(Boolean).join("\n\n");
-        if(next.length>32000){view.error="원래 초안과 답변이 입력 한도를 넘었습니다. 필요한 부분을 복사하세요.";repaint();return;}
-        view.draft=next;storeText(view,next);repaint();
-      }}/>
-  </div> : chat;
 }

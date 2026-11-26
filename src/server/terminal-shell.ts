@@ -25,9 +25,6 @@ export type TerminalProgram =
   | "antigravity"
   | "antigravity-cli";
 export interface TerminalOptions {
-  managedChatAdapter?: true;
-  antigravityModel?: string;
-  antigravityEffort?: import("../shared/ide-chat.js").ChatEffort;
   claudePeerChannel?: boolean;
   /** Persistence is opt-in for each new SSH terminal; defaults remain direct. */
   sshSessionMode?: "direct" | "tmux";

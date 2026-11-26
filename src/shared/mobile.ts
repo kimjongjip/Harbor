@@ -18,21 +18,10 @@ import type { HarborRequest } from "./requests";
 import type { ResearchLabView } from "./research";
 
 export interface MobileState {
-  antigravityIntegration?: boolean;
-  viewer?: {
-    deviceId: string;
-    name: string;
-    kind: "mobile" | "desktop";
-    managedChat?: boolean;
-  };
+  viewer?: { deviceId: string; name: string; kind: "mobile" | "desktop" };
   controls?: Record<string, TerminalControlView>;
   runtimeId: string;
-  hosts: {
-    id: string;
-    name: string;
-    kind: "local" | "ssh";
-    serverWorkspace?: boolean;
-  }[];
+  hosts: { id: string; name: string; kind: "local" | "ssh" }[];
   terminals: TerminalInfo[];
   requests: HarborRequest[];
   labs: Pick<
@@ -61,7 +50,6 @@ export interface MobileSettings {
     createdAt: number;
     expiresAt: number;
     notifications: boolean;
-    managedChat?: boolean;
   }[];
 }
 export interface TerminalControlView {

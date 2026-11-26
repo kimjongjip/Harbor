@@ -6,7 +6,6 @@ const {
   DesktopUpdater,
   checkRelease,
   prepareRelease,
-  validatePrepared,
   managedRoot,
   removeManaged,
   installationRoot,
@@ -47,13 +46,8 @@ async function prepared(root, version = "2.0.0") {
   const files = {
     "package.json": JSON.stringify({ name: "codex-harbor", version }),
     "dist/server.mjs": "",
-    "dist/pty-worker.mjs": "",
-    "dist/worker-manifest/package.json": JSON.stringify({ name: "codex-harbor", version }),
-    "dist/worker-manifest/package-lock.json": JSON.stringify({ name: "codex-harbor", version, packages: {"": {version}} }),
     "dist/client/index.html": "",
     "desktop/main.cjs": "",
-    "desktop/antigravity.cjs": "",
-    "scripts/harbor-image.py": "",
     "node_modules/electron/dist/electron.exe": "",
     ".runtime/node-v24.15.0-win-x64/node.exe": "",
   };
@@ -65,14 +59,6 @@ async function prepared(root, version = "2.0.0") {
   }
   return directory;
 }
-test("a PC update requires the matching installable server worker before it can restart", async t => {
-  const root = await fixture(t);
-  const directory = await prepared(root);
-  await validatePrepared(directory, "2.0.0");
-  const lock = path.join(directory, "dist", "worker-manifest", "package-lock.json");
-  await fs.writeFile(lock, JSON.stringify({name:"codex-harbor", version:"2.0.0", packages:{"":{version:"1.0.0"}}}));
-  await assert.rejects(validatePrepared(directory, "2.0.0"), /버전/);
-});
 test("check pins package and notes to a verified main commit and never downgrades", async () => {
   const urls = [];
   const fetcher = async (url) => {
@@ -211,8 +197,6 @@ test("handoff waits for old app exit, preserves data/profile and atomically sele
     dataDirectory: path.join(root, "private-data"),
     profileDirectory: path.join(root, "profile"),
   };
-  await fs.mkdir(spec.dataDirectory);
-  await fs.writeFile(path.join(spec.dataDirectory, "server-workspaces.json"), JSON.stringify(["a".repeat(64)]));
   await handoffUpdate(spec, {
     alive: () => running,
     pause: async () => {
@@ -237,8 +221,6 @@ test("handoff waits for old app exit, preserves data/profile and atomically sele
     await fs.readFile(path.join(root, ".runtime/desktop-update.json"), "utf8"),
   );
   assert.equal(pointer.directory, sha);
-  assert.deepEqual(pointer.workspaceUpdate.profiles, ["a".repeat(64)]);
-  assert.ok(Number.isFinite(pointer.workspaceUpdate.requestedAt));
 });
 test("failed launch restores the previous selection; cancelled shutdown never switches versions", async (t) => {
   const root = await fixture(t);

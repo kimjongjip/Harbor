@@ -1,6 +1,4 @@
-import { managedCodexTools, type ManagedPeerCall } from "./managed-peers.js";
 import { EventEmitter } from "node:events";
-import {attachTargets,codexChanges,pendingTargets} from "./managed-auto-accept.js";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
@@ -17,13 +15,11 @@ import type {
   SessionView,
 } from "../shared/types.js";
 import { sessionKey } from "../shared/types.js";
-import { RpcClient, RpcRequestRejected, type RpcMessage } from "./rpc.js";
+import { RpcClient, type RpcMessage } from "./rpc.js";
 import { Store } from "./store.js";
 import { processCommand } from "./ssh.js";
 import { sshCodexChannel } from "./ssh-connect.js";
 import { validateImages } from "./images.js";
-import { chatEfforts, type ChatEffort } from "../shared/ide-chat.js";
-import { codexUsage } from "./terminal-usage.js";
 import {
   appendDelta,
   normalizeItem,
@@ -32,20 +28,7 @@ import {
   upsertItem,
 } from "./session.js";
 
-function sideReaderConfig(reader: { url: string; token: string }) {
-  return {
-    "mcp_servers.harbor_side": {
-      url: reader.url,
-      http_headers: { Authorization: "Bearer " + reader.token },
-    },
-  };
-}
 export class Hub extends EventEmitter {
-  managedPeerCall?: (
-    hostId: string,
-    threadId: string,
-    ...args: Parameters<ManagedPeerCall>
-  ) => Promise<unknown>;
   hosts = new Map<string, HostView>();
   sessions = new Map<string, SessionView>();
   clients = new Map<string, RpcClient>();
@@ -79,24 +62,6 @@ export class Hub extends EventEmitter {
         items: [],
         approvals: [],
       });
-  }
-  hasActiveWork() {
-    return (
-      !!(
-        this.connecting.size ||
-        this.opening.size ||
-        this.sending.size ||
-        this.requestOwners.size
-      ) ||
-      [...this.sessions.values()].some(
-        (s) =>
-          s.activeTurnId ||
-          s.jobId ||
-          s.approvals.length ||
-          ["running", "waiting"].includes(s.status),
-      ) ||
-      this.store.data.discussions.some((d) => d.status === "running")
-    );
   }
   state(): Omit<AppState, "terminals"> {
     return {
@@ -166,9 +131,6 @@ export class Hub extends EventEmitter {
       pinned,
     } = s;
     this.store.session({
-      ...(s.observedEffort ? { observedEffort: s.observedEffort } : {}),
-      ...(s.observedModel ? { observedModel: s.observedModel } : {}),
-      ...(s.peerTools ? { peerTools: true } : {}),
       id,
       hostId,
       threadId,
@@ -415,26 +377,13 @@ export class Hub extends EventEmitter {
     if (!thread) return;
     s.status = statusOf(thread.status);
     if (thread.name) s.title = thread.name;
-    if (thread.model) {
-      s.model = thread.model;
-      s.observedModel = thread.model;
-    }
+    if (thread.model) s.model = thread.model;
     if (thread.cwd) s.cwd = thread.cwd;
     s.preview = thread.preview || s.preview;
     if (thread.updatedAt) s.updatedAt = thread.updatedAt * 1000;
     s.error = undefined;
     const active = thread.turns?.find((t: any) => t.status === "inProgress");
     if (active) s.activeTurnId = active.id;
-  }
-  private hydrateLaunchSettings(s: SessionView, result: any) {
-    const reported = result.model || result.thread?.model;
-    if (typeof reported === "string" && reported) {
-      s.model = reported;
-      s.observedModel = reported;
-    }
-    if (chatEfforts.includes(result.reasoningEffort as ChatEffort))
-      s.observedEffort = result.reasoningEffort;
-    if (s.observedModel || s.observedEffort) this.saveSession(s);
   }
   async createSession(
     hostId: string,
@@ -443,8 +392,6 @@ export class Hub extends EventEmitter {
       cwd: string;
       model?: string;
       permission: PermissionMode;
-      peerTools?: boolean;
-      sideReader?: { url: string; token: string };
     },
   ) {
     const host = this.host(hostId);
@@ -457,42 +404,15 @@ export class Hub extends EventEmitter {
     if (host.kind === "local" && !statSync(cwd).isDirectory())
       throw new Error("프로젝트 폴더를 찾을 수 없습니다.");
     const client = this.client(hostId);
-    const baseStart = {
+    const result = await client.call("thread/start", {
       cwd,
       ...(input.model ? { model: input.model } : {}),
       sandbox: input.permission,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       serviceName: "codex-harbor",
-      ...(input.sideReader && { config: sideReaderConfig(input.sideReader) }),
-    };
-    let peerTools = !!(input.peerTools && this.managedPeerCall),
-      result;
-    try {
-      result = await client.call(
-        "thread/start",
-        peerTools
-          ? { ...baseStart, dynamicTools: managedCodexTools }
-          : baseStart,
-      );
-    } catch (error) {
-      if (
-        !peerTools ||
-        !(error instanceof RpcRequestRejected) ||
-        !/dynamic.?tools|dynamic tool|unknown (?:field|variant).*function/i.test(
-          error.message,
-        )
-      )
-        throw error;
-      peerTools = false;
-      result = await client.call("thread/start", baseStart);
-    }
+    });
     const s = this.track(hostId, result.thread, input);
-    this.hydrateLaunchSettings(s, result);
-    if (peerTools) {
-      s.peerTools = true;
-      this.saveSession(s);
-    }
     s.loaded = true;
     if (input.title)
       await client
@@ -528,7 +448,6 @@ export class Hub extends EventEmitter {
       excludeTurns: true,
     });
     this.hydrateMeta(s, result.thread);
-    this.hydrateLaunchSettings(s, result);
     try {
       const page = await client.call("thread/turns/list", {
         threadId: s.threadId,
@@ -593,65 +512,6 @@ export class Hub extends EventEmitter {
     this.publish(s);
     return s;
   }
-  async forkSideSession(
-    hostId: string,
-    threadId: string,
-    cwd: string,
-    model: string | undefined,
-    guard: () => void | Promise<void>,
-    reader?: { url: string; token: string },
-  ) {
-    const client = this.client(hostId);
-    let turns;
-    try {
-      turns = await client.call("thread/turns/list", {
-        threadId,
-        limit: 16,
-        sortDirection: "desc",
-        itemsView: "notLoaded",
-      });
-    } catch (error) {
-      if (error instanceof RpcRequestRejected) return;
-      throw error;
-    }
-    const point = turns.data?.find(
-      (turn: { status: string; id: string }) => turn.status === "completed",
-    );
-    if (!point?.id) return;
-    await guard();
-    let result;
-    try {
-      result = await client.call("thread/fork", {
-        threadId,
-        lastTurnId: point.id,
-        cwd,
-        model,
-        sandbox: "read-only",
-        approvalPolicy: "never",
-        excludeTurns: true,
-        ...(reader && { config: sideReaderConfig(reader) }),
-      });
-    } catch (error) {
-      if (
-        error instanceof RpcRequestRejected &&
-        /unknown|unsupported|method not found|not implemented/i.test(
-          error.message,
-        )
-      )
-        return;
-      throw error;
-    }
-    if (!result.thread?.id || result.thread.id === threadId)
-      throw Error("옆 대화 분기 ID를 확인할 수 없습니다.");
-    const child = this.track(hostId, result.thread, {
-      title: "옆 대화",
-      permission: "read-only",
-      model,
-    });
-    this.hydrateLaunchSettings(child, result);
-    child.loaded = true;
-    return child;
-  }
   async fork(id: string, title: string) {
     const source = this.session(id);
     if (["running", "waiting"].includes(source.status))
@@ -676,9 +536,6 @@ export class Hub extends EventEmitter {
     text: string,
     options: {
       mode?: "send" | "steer";
-      effort?: import("../shared/ide-chat.js").ChatEffort;
-      strictReview?: boolean;
-      model?: string;
       readOnly?: boolean;
       jobId?: string;
       images?: string[];
@@ -724,9 +581,7 @@ export class Hub extends EventEmitter {
         result = await client.call("turn/start", {
           threadId: s.threadId,
           input,
-          ...(options.effort ? { effort: options.effort } : {}),
-          ...(options.model ? { model: options.model } : {}),
-          approvalPolicy: options.strictReview ? "never" : "on-request",
+          approvalPolicy: "on-request",
           approvalsReviewer: "user",
           sandboxPolicy: readOnly
             ? { type: "readOnly" }
@@ -738,15 +593,6 @@ export class Hub extends EventEmitter {
         });
         if (!this.completedTurns.has(`${s.id}:${result.turn.id}`))
           s.activeTurnId = result.turn.id;
-        if (options.model) {
-          s.model = options.model;
-          if (s.observedModel !== options.model) s.observedModel = undefined;
-        }
-        if (typeof result.model === "string" && result.model) {
-          s.model = result.model;
-          s.observedModel = result.model;
-        }
-        if (options.effort) s.observedEffort = options.effort;
       }
       if (
         !result.turn ||
@@ -781,14 +627,6 @@ export class Hub extends EventEmitter {
     const s = this.sessions.get(sessionKey(hostId, threadId));
     if (!s) return;
     switch (method) {
-      case "thread/tokenUsage/updated": {
-        const usage = codexUsage(threadId, p.tokenUsage);
-        if (usage) this.emit("session-usage", s, usage);
-        return;
-      }
-      case "thread/compacted":
-        this.emit("session-compacted", s);
-        return;
       case "thread/status/changed":
         s.status = statusOf(p.status);
         this.changed();
@@ -805,14 +643,6 @@ export class Hub extends EventEmitter {
         this.changed();
         break;
       case "turn/completed":
-        // Some app-server versions include the final public items only on the turn.
-        if (Array.isArray(p.turn.items))
-          for (const raw of p.turn.items.slice(-600)) {
-            if (!raw?.id) continue;
-            const row = normalizeItem(raw, p.turn.id);
-            if (row)
-              upsertItem(s, { ...row, status: row.status || "completed" });
-          }
         this.completedTurns.add(`${s.id}:${p.turn.id}`);
         if (this.completedTurns.size > 1000)
           this.completedTurns.delete(
@@ -831,25 +661,8 @@ export class Hub extends EventEmitter {
         break;
       case "item/started":
       case "item/completed": {
-        if (
-          typeof p.item?.type === "string" &&
-          p.item.type.startsWith("collab")
-        )
-          this.emit("session-roster-item", s, p.item);
-        if (method === "item/completed" && p.item?.type === "contextCompaction")
-          this.emit("session-compacted", s);
         const item = normalizeItem(p.item, p.turnId);
-        if (item) {
-          item.status ||=
-            method === "item/started" ? "inProgress" : "completed";
-          upsertItem(s, item);
-          if (method === "item/started" && p.item?.type === "fileChange") {
-            const actual = s.items.find(
-              (i) => i.id === item.id && i.turnId === p.turnId,
-            );
-            if (actual) attachTargets(actual, codexChanges(p.item.changes));
-          }
-        }
+        if (item) upsertItem(s, item);
         break;
       }
       case "item/agentMessage/delta":
@@ -857,30 +670,6 @@ export class Hub extends EventEmitter {
         break;
       case "item/commandExecution/outputDelta":
         appendDelta(s, p, true);
-        break;
-      case "item/fileChange/outputDelta":
-        appendDelta(s, p, true, "change");
-        break;
-      case "item/fileChange/patchUpdated": {
-        if (!p.itemId || !Array.isArray(p.changes)) return;
-        const row = normalizeItem(
-          {
-            id: p.itemId,
-            type: "fileChange",
-            changes: p.changes,
-            status: "inProgress",
-          },
-          p.turnId,
-        );
-        if (row) upsertItem(s, row);
-        break;
-      }
-      case "item/mcpToolCall/progress":
-        if (typeof p.message === "string" && p.message)
-          appendDelta(s, { ...p, delta: "\n" + p.message }, true, "tool");
-        break;
-      case "item/plan/delta":
-        appendDelta(s, p, false, "plan");
         break;
       case "turn/plan/updated":
         upsertItem(s, {
@@ -912,8 +701,6 @@ export class Hub extends EventEmitter {
         if (s.status !== "running") s.status = "idle";
         this.changed();
         break;
-      default:
-        return;
     }
     this.publish(s);
   }
@@ -928,25 +715,6 @@ export class Hub extends EventEmitter {
     );
     // A shared daemon may deliver a request belonging to another client; never decide it here.
     if (!s) return;
-    if (
-      m.method === "item/tool/call" &&
-      !p.namespace &&
-      this.managedPeerCall &&
-      managedCodexTools.some((t) => t.name === p.tool)
-    ) {
-      const respond = (success: boolean, text: string) => {
-        if (this.clients.get(hostId) === client && client.alive)
-          client.respond(m.id!, {
-            success,
-            contentItems: [{ type: "inputText", text }],
-          });
-      };
-      void this.managedPeerCall(hostId, s.threadId, p.tool, p.arguments).then(
-        (result) => respond(true, JSON.stringify(result)),
-        (error) => respond(false, errorText(error)),
-      );
-      return;
-    }
     const approval: Approval = {
       id: `${hostId}:${String(m.id)}`,
       requestId: m.id!,
@@ -969,27 +737,6 @@ export class Hub extends EventEmitter {
     ) {
       approval.kind = "file";
       approval.title = "파일 변경 승인";
-      if (
-        m.method === "item/fileChange/requestApproval" &&
-        !p.grantRoot &&
-        !p.grant_root &&
-        !p.additionalPermissions &&
-        !p.networkApprovalContext &&
-        !p.reason &&
-        !p.guardianAssessment &&
-        (!p.availableDecisions ||
-          (Array.isArray(p.availableDecisions) &&
-            p.availableDecisions.includes("accept"))) &&
-        s.activeTurnId &&
-        p.turnId === s.activeTurnId &&
-        typeof p.itemId === "string"
-      ) {
-        const item = s.items.find(
-          (i) =>
-            i.id === p.itemId && i.turnId === p.turnId && i.kind === "change",
-        );
-        if (item) attachTargets(approval, pendingTargets(item));
-      }
       approval.detail =
         [p.reason, p.grantRoot].filter(Boolean).join("\n") ||
         "이 작업의 파일 변경을 승인할까요?";
@@ -1180,12 +927,11 @@ export class Hub extends EventEmitter {
       this.changed();
     }
   }
-  runAndWait(
+  private runAndWait(
     id: string,
     text: string,
     jobId: string,
     signal: AbortSignal,
-    strictReview = false,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       let turnId: string | undefined;
@@ -1256,12 +1002,7 @@ export class Hub extends EventEmitter {
         aborted();
         return;
       }
-      void this.send(id, text, {
-        readOnly: true,
-        strictReview,
-        jobId,
-        beforeDispatch: async () => signal.throwIfAborted(),
-      })
+      void this.send(id, text, { readOnly: true, jobId })
         .then((r) => {
           turnId = r.turn?.id;
           if (shouldInterrupt) stopTurn();

@@ -22,7 +22,7 @@ import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/cl
 import{Terminal}from'@xterm/xterm';import'@xterm/xterm/css/xterm.css';
 import{TerminalConversation}from'./src/client/TerminalConversation';
 import'./src/client/styles.css';import'./src/client/themes.css';import'./src/client/history.css';
-Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'});
+Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'});
 window.requests=[];window.stage=0;window.nativeWrites=[];
 const info={id:'fixture-pty',hostId:'fixture',cwd:'/fixture',title:'Completion fixture',exited:false,agentKind:'${provider}',agentSessionId:'fixture-history',agentState:'idle',peerDelivery:'poll'};
 window.fetch=async(input,options={})=>{const url=new URL(String(input),location.href);window.requests.push({url:url.href,method:options.method,stage:window.stage});

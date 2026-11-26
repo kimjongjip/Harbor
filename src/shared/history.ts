@@ -1,6 +1,5 @@
 import type { MessageItem } from "./types.js";
 export interface HistoryThread {
-  historyScope?: "folder" | "global";
   provider?: import("./agent-provider.js").AgentProvider;
   id: string;
   hostId: string;
@@ -12,7 +11,6 @@ export interface HistoryThread {
   active: boolean;
 }
 export interface HistoryPage {
-  preferredCwd?: string;
   data: HistoryThread[];
   nextCursor: string | null;
 }
@@ -36,39 +34,4 @@ export interface HistoryActivityPage {
   offset: number;
   nextOffset: number | null;
   total: number;
-}
-
-/** Older servers send a full timeline; compact responses carry each Q/A only once. */
-export function expandTimeline(
-  detail: Pick<
-    HistoryDetail,
-    "items" | "timeline" | "timelineIds" | "activity"
-  >,
-): MessageItem[] {
-  if (detail.timeline) return detail.timeline;
-  if (!detail.timelineIds) return detail.items;
-  const byId = new Map(
-    [...detail.items, ...(detail.activity || [])].map((item) => [
-      `${item.kind}:${item.id}`,
-      item,
-    ]),
-  );
-  const seen = new Set<string>();
-  const result: MessageItem[] = [];
-  for (const id of detail.timelineIds) {
-    const item = byId.get(id);
-    if (item && !seen.has(id)) {
-      result.push(item);
-      seen.add(id);
-    }
-  }
-  // Keep Q/A readable even if an older/proxy response lacks an order entry.
-  for (const item of detail.items) {
-    const id = `${item.kind}:${item.id}`;
-    if (!seen.has(id)) {
-      result.push(item);
-      seen.add(id);
-    }
-  }
-  return result;
 }

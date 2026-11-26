@@ -35,9 +35,6 @@ const participantSchema = z.object({
 const messageSchema = z.object({
   id: idSchema,
   threadId: idSchema,
-  peerRequestKey: idSchema.optional(),
-  peerDepth: z.number().int().nonnegative().optional(),
-  peerClosed: z.boolean().optional(),
   replyToId: idSchema.optional(),
   sender: participantSchema,
   recipient: participantSchema,
@@ -92,7 +89,6 @@ interface Resolver {
 export class Mailbox extends EventEmitter {
   readonly file: string;
   private messages: MailboxMessage[] = [];
-  private paused: string[] = [];
 
   constructor(
     directory: string,
@@ -108,7 +104,6 @@ export class Mailbox extends EventEmitter {
       const saved = z
         .object({
           version: z.literal(1),
-          paused: z.array(z.string().max(1024)).optional(),
           messages: z.array(messageSchema).max(MAX_MESSAGES),
         })
         .parse(JSON.parse(readFileSync(this.file, "utf8")));
@@ -118,7 +113,6 @@ export class Mailbox extends EventEmitter {
       )
         throw new Error("메시지 기록 파일이 너무 큽니다.");
       this.messages = saved.messages;
-      this.paused = saved.paused || [];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -188,40 +182,21 @@ export class Mailbox extends EventEmitter {
       purpose?: "question";
       labId?: string;
       labRevision?: number;
-      requestKey?: string;
-      followUpTo?: string;
       questionSource?: MailboxMessage["questionSource"];
     } = {},
   ): MailboxMessage {
     const parsed = sendSchema.parse({ fromTerminalId, toTerminalId, text });
-    const parent = scope.followUpTo ? this.find(scope.followUpTo) : undefined;
-    if (scope.followUpTo && (!parent || parent.author !== "agent" || parent.recipient.terminalId !== fromTerminalId ||
-        parent.sender.terminalId !== toTerminalId || parent.recipient.sessionId !== scope.senderSessionId ||
-        parent.sender.sessionId !== scope.recipientSessionId || parent.labId !== scope.labId))
-      throw new Error("같은 두 대화가 주고받은 메시지에서 후속 질문을 시작하세요.");
-    if (scope.requestKey) {
-      const existing = this.messages.find(m => m.sender.terminalId === fromTerminalId && m.sender.sessionId === scope.senderSessionId && m.peerRequestKey === scope.requestKey);
-      if (existing) {
-        if (existing.recipient.terminalId !== toTerminalId || existing.recipient.sessionId !== scope.recipientSessionId ||
-            existing.text !== parsed.text || existing.purpose !== scope.purpose || existing.replyToId !== scope.followUpTo || existing.labId !== scope.labId)
-          throw new Error("같은 요청 키에 다른 메시지가 있습니다.");
-        return structuredClone(existing);
-      }
-    }
-    if (parent?.replyMessageId) throw new Error("이미 후속 메시지가 있는 항목입니다.");
     return this.create(
       this.scopedParticipant(fromTerminalId, scope.senderSessionId),
       this.scopedParticipant(toTerminalId, scope.recipientSessionId),
       parsed.text,
-      scope.followUpTo,
+      undefined,
       "agent",
       scope.purpose,
       undefined,
       scope.labId,
       scope.questionSource,
       scope.labRevision,
-      undefined,
-      scope.requestKey,
     );
   }
 
@@ -253,13 +228,10 @@ export class Mailbox extends EventEmitter {
     if (!previous || previous.recipient.terminalId !== fromTerminalId)
       throw new Error("이 세션으로 받은 메시지에만 답장할 수 있습니다.");
     this.assertSession(previous.recipient, sessionId);
-    if (previous.replyMessageId) {
-      const sent = this.find(previous.replyMessageId);
-      if (sent?.author === "agent" && sent.sender.sessionId === sessionId && sent.text === text.trim()) return sent;
+    if (previous.replyMessageId)
       throw new Error(
         "이미 답장한 메시지입니다. 새 메시지로 후속 질문을 보내세요.",
       );
-    }
     if (previous.sender.kind === "terminal")
       this.participant(previous.sender.terminalId!);
     const recipient =
@@ -293,7 +265,6 @@ export class Mailbox extends EventEmitter {
         (message) =>
           message.recipient.terminalId === terminalId &&
           this.matchesSession(message.recipient, options.sessionId) &&
-          this.permits(message) &&
           (options.unreadOnly === false || !message.consumedAt),
       )
       .slice(0, limit);
@@ -325,7 +296,6 @@ export class Mailbox extends EventEmitter {
     questionSource?: MailboxMessage["questionSource"],
     labRevision?: number,
     ideInput?: MailboxMessage["ideInput"],
-    requestKey?: string,
   ): MailboxMessage {
     if (sender.terminalId === recipient.terminalId)
       throw new Error("다른 세션을 선택하세요.");
@@ -360,13 +330,6 @@ export class Mailbox extends EventEmitter {
       ...(questionSource ? { questionSource } : {}),
       ...(labRevision !== undefined ? { labRevision } : {}),
     };
-    if (requestKey) message.peerRequestKey = requestKey;
-    if (this.isPeer(message)) {
-      if (!this.permits(message) || previous?.peerClosed) throw new Error("세션 협업이 일시정지되었거나 대화가 종료되었습니다.");
-      message.peerDepth = previous ? (previous.peerDepth ?? 0) + 1 : 0;
-      if (message.peerDepth > 15 || (purpose === "question" && message.peerDepth >= 15))
-        throw new Error("이 대화의 자동 왕복 한도에 도달했습니다. 사용자에게 결과를 전달하세요.");
-    }
     const next = [
       ...this.messages.map((item) =>
         item.id === previous?.id
@@ -513,7 +476,6 @@ export class Mailbox extends EventEmitter {
       !item ||
       item.recipient.terminalId !== terminalId ||
       item.recipient.sessionId !== sessionId ||
-      !this.permits(item) ||
       item.queueAttemptedAt ||
       item.offeredAt ||
       item.consumedAt
@@ -597,42 +559,10 @@ export class Mailbox extends EventEmitter {
       : `terminal:${participant.terminalId}`;
   }
 
-  private isPeer(message: MailboxMessage) {
-    return message.author === "agent" && !message.labId && !message.research &&
-      message.sender.kind === "terminal" && message.recipient.kind === "terminal";
-  }
-
-  isPaused(terminalId?: string, sessionId?: string) {
-    return !!sessionId && this.paused.includes(JSON.stringify([terminalId, sessionId]));
-  }
-
-  permits(message: MailboxMessage) {
-    return !this.isPeer(message) || (!message.peerClosed &&
-      !this.isPaused(message.sender.terminalId, message.sender.sessionId) &&
-      !this.isPaused(message.recipient.terminalId, message.recipient.sessionId));
-  }
-
-  setPaused(terminalId: string, sessionId: string, paused: boolean) {
-    if (this.participant(terminalId).sessionId !== sessionId)
-      throw new Error("대화가 변경되었습니다. 현재 세션을 확인하세요.");
-    const key = JSON.stringify([terminalId, sessionId]);
-    const next = this.paused.filter(v => v !== key);
-    if (paused) next.push(key);
-    this.commit(this.messages, next);
-  }
-
-  closePeerThread(terminalId: string, sessionId: string, threadId: string) {
-    if (this.participant(terminalId).sessionId !== sessionId || !this.messages.some(m =>
-      m.threadId === threadId && this.isPeer(m) && [m.sender, m.recipient].some(p =>
-        p.terminalId === terminalId && p.sessionId === sessionId)))
-      throw new Error("현재 대화의 협업만 종료할 수 있습니다.");
-    this.commit(this.messages.map(m => m.threadId === threadId ? { ...m, peerClosed: true } : m));
-  }
-
-  private commit(next: MailboxMessage[], paused = this.paused): void {
+  private commit(next: MailboxMessage[]): void {
     const temporary = `${this.file}.${randomUUID()}.tmp`;
     try {
-      writeFileSync(temporary, JSON.stringify({ version: 1, messages: next, paused }), {
+      writeFileSync(temporary, JSON.stringify({ version: 1, messages: next }), {
         flag: "wx",
         mode: 0o600,
       });
@@ -646,7 +576,6 @@ export class Mailbox extends EventEmitter {
       throw error;
     }
     this.messages = next;
-    this.paused = paused;
     this.emit("change");
   }
 }

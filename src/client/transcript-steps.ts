@@ -137,15 +137,6 @@ const argumentKeys = [
 /** Parse the server's public "key: value" argument lines (values may span lines). */
 export function toolArguments(detail = ""): Record<string, string> {
   const result: Record<string, string> = {};
-  // Native SDK events carry structured input. Saved CLI records use argument lines.
-  if (detail.trimStart().startsWith("{")) {
-    try {
-      const parsed = JSON.parse(detail);
-      for (const key of argumentKeys)
-        if (typeof parsed?.[key] === "string") result[key] = parsed[key];
-      return result;
-    } catch { /* A truncated preview may only contain the argument lines. */ }
-  }
   let current: string | undefined;
   for (const line of detail.split("\n")) {
     const match = /^([a-z_]+): ([\s\S]*)$/.exec(line);

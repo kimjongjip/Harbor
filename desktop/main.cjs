@@ -1,7 +1,6 @@
 const {
   app,
   BrowserWindow,
-  WebContentsView,
   Menu,
   shell,
   dialog,
@@ -18,14 +17,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { backendVersionError } = require("./backend-version.cjs");
 const { BackendSupervisor } = require("./backend-supervisor.cjs");
-function isWorkspaceEntry(value) {
-  try {
-    const url=new URL(value);
-    return url.protocol==="http:" && /^harbor-[0-9a-f]{24}\.localhost$/.test(url.hostname) &&
-      !!url.port && !url.username && !url.password && url.pathname==="/_workspace/open" &&
-      /^#[a-z0-9]+\.[0-9a-f]{32}\.[0-9a-f]{64}$/.test(url.hash);
-  } catch {return false;}
-}
 const { configureInputScheduling } = require("./input-scheduling.cjs");
 const {
   DesktopUpdater,
@@ -590,25 +581,6 @@ function createWindow(
       if (terminalId)
         void detachTerminalWindow(terminalId, win).catch(() => {});
       else createWindow(url, newWindowBounds({ source: win }));
-    } else if (isWorkspaceEntry(url)) {
-      const workspaceOrigin = new URL(url).origin;
-      const dialogWindow = new BrowserWindow({
-        parent:win, show:process.env.HARBOR_DESKTOP_HIDDEN !== "1", width:1040, height:760, title:"Harbor · 서버 작업 공간", autoHideMenuBar:true,
-        webPreferences:{contextIsolation:true,sandbox:true,nodeIntegration:false,partition:"harbor-workspace-"+new URL(url).hostname},
-      });
-      const closeWorkspace=()=>{if(!dialogWindow.isDestroyed())dialogWindow.destroy();};
-      win.once("closed",closeWorkspace);
-      dialogWindow.once("closed",()=>win.removeListener("closed",closeWorkspace));
-      dialogWindow.webContents.setWindowOpenHandler(()=>({action:"deny"}));
-      const restrict=(event,destination)=>{
-        try {if(new URL(destination).origin === workspaceOrigin)return;}catch{}
-        event.preventDefault();
-      };
-      dialogWindow.webContents.on("will-navigate",restrict);
-      dialogWindow.webContents.on("will-redirect",restrict);
-      dialogWindow.webContents.session.setPermissionRequestHandler((_contents,_permission,answer)=>answer(false));
-      dialogWindow.webContents.session.setPermissionCheckHandler(()=>false);
-      void dialogWindow.loadURL(url).catch(()=>dialogWindow.destroy());
     } else if (isWebPage(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
@@ -764,65 +736,6 @@ function setupTerminalWindows() {
       /* Source was closed or navigated. */
     }
   });
-  const inlineApprovals = new Map();
-  function disposeApproval(win, key) {
-    const slot = inlineApprovals.get(win);
-    if (!slot || slot.key !== key) return;
-    inlineApprovals.delete(win);
-    win.removeListener("closed", slot.close);
-    if (!win.isDestroyed()) {
-      win.contentView.removeChildView(slot.view);
-      win.webContents.removeListener("did-start-navigation", slot.navigation);
-    }
-    if (!slot.view.webContents.isDestroyed()) slot.view.webContents.close();
-  }
-  ipcMain.handle("harbor:inline-approval", async (event, key, bounds, entry) => {
-    const win = trustedWindow(event);
-    if (typeof key !== "string" || !/^[a-f0-9-]{36}$/i.test(key)) throw Error("Invalid view");
-    if (!bounds) { disposeApproval(win, key); return; }
-    const current = inlineApprovals.get(win);
-    if (!entry && current?.key !== key) return;
-    const size = win.getContentBounds();
-    if (!["x","y","width","height"].every(k => Number.isSafeInteger(bounds[k]))) throw Error("Invalid bounds");
-    const zoom = win.webContents.getZoomFactor();
-    const x = Math.max(0, Math.round(bounds.x * zoom)), y = Math.max(0, Math.round(bounds.y * zoom));
-    const rect = { x, y, width: Math.max(0, Math.min(size.width - x, Math.round(bounds.width * zoom))),
-      height: Math.max(0, Math.min(size.height - y, Math.round(bounds.height * zoom))) };
-    if (!entry) { current.view.setBounds(rect); return; }
-    if (!isWorkspaceEntry(entry)) throw Error("Invalid workspace");
-    const url = new URL(entry), terminal = url.searchParams.get("focus");
-    if (!terminal || !/^[\w-]{1,160}$/.test(terminal)) throw Error("Invalid terminal");
-    if (current) disposeApproval(win, current.key);
-    const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false,
-      partition:"harbor-inline-"+key, backgroundThrottling:false}});
-    const wc = view.webContents;
-    const close = () => disposeApproval(win,key);
-    const navigation = (_event, _url, inPlace, main) => { if (main && !inPlace) close(); };
-    inlineApprovals.set(win,{key,view,close,navigation});
-    win.once("closed",close);
-    win.webContents.on("did-start-navigation",navigation);
-    wc.setWindowOpenHandler(() => ({action:"deny"}));
-    const destination = url.origin + "/?terminal=" + encodeURIComponent(terminal);
-    const restrict = (event, next) => { if (next !== destination) event.preventDefault(); };
-    wc.on("will-navigate",restrict);
-    wc.on("will-redirect",restrict);
-    wc.session.setPermissionRequestHandler((_c,_p,cb)=>cb(false));
-    wc.session.setPermissionCheckHandler(()=>false);
-    win.contentView.addChildView(view);
-    view.setBounds(rect);
-    try {
-      const auth = await wc.session.fetch(url.origin + "/_workspace/login", {method:"POST",
-        headers:{"X-Harbor-Link": url.hash.slice(1)},credentials:"include",redirect:"error"});
-      if (!auth.ok) throw Error("서버 인증이 만료되었습니다.");
-      if (wc.isDestroyed()) return;
-      await wc.loadURL(destination);
-      if (wc.isDestroyed()) return;
-      await wc.insertCSS(`body { overflow: hidden !important }
-        .harbor-app {visibility:hidden}
-        [data-terminal-id="${terminal}"] .terminal-card-body {visibility:visible;position:fixed!important;inset:0!important;z-index:10000;background:var(--panel)}
-        .terminal-usage {display:none!important}`);
-    } catch (error) { close(); throw error; }
-  });
   ipcMain.handle("harbor:new-workspace", (event) => {
     const source = trustedWindow(event);
     return !!createWindow(origin + "/", newWindowBounds({ source }));
@@ -855,15 +768,6 @@ function setupTerminalWindows() {
     trustedWindow(event);
     return updater.restart();
   });
-  ipcMain.handle("harbor:process-metrics", (event) => {
-    trustedWindow(event);
-    return app.getAppMetrics().map((m) => ({
-      pid: m.pid,
-      type: m.type,
-      workingSetBytes: m.memory.workingSetSize * 1024,
-      cpuPercent: m.cpu.percentCPUUsage,
-    }));
-  });
   ipcMain.handle("harbor:backend-state", (event) => {
     trustedWindow(event);
     return backendSupervisor.status;
@@ -878,17 +782,6 @@ function setupTerminalWindows() {
       throw new Error("Invalid clipboard text");
     clipboard.writeText(text);
     return true;
-  });
-  ipcMain.handle("harbor:capture-current-window", async (event) => {
-    const win = trustedWindow(event);
-    if (!win.isVisible() || !win.isFocused())
-      throw Error("캡처할 Harbor 창을 선택하세요.");
-    const image = await win.webContents.capturePage();
-    if (image.isEmpty()) throw Error("창 이미지를 읽을 수 없습니다.");
-    const png = image.toPNG();
-    if (png.length > 12 * 1024 * 1024)
-      throw Error("창 캡처가 12MB를 초과합니다.");
-    return png.toString("base64");
   });
   ipcMain.on("harbor:workspace-tabs", (event) => {
     event.returnValue = workspaceTabs.snapshot(

@@ -4,21 +4,6 @@ export type SessionStatus =
 export type PermissionMode = "read-only" | "workspace-write";
 export type CliApprovalMode = "native" | "full-access";
 
-/** Version of the user's installed workspace service and its selected next release. */
-export interface WorkspaceUpdateStatus {
-  phase: "checking" | "installing" | "pending" | "current" | "error";
-  targetVersion: string;
-  runningVersion?: string;
-  stagedVersion?: string;
-  detail?: string;
-}
-
-export interface WorkspaceUpdateOverview {
-  targetVersion: string;
-  handoff?: string;
-  hosts: Array<WorkspaceUpdateStatus & { id: string; name: string }>;
-}
-
 export interface HostConfig {
   /** User-selected default for new terminals, never an instruction from a peer. */
   cliApprovalMode?: CliApprovalMode;
@@ -41,7 +26,6 @@ export interface ModelOption {
   isDefault: boolean;
 }
 export interface HostView extends HostConfig {
-  serverWorkspace?: boolean;
   status: HostStatus;
   error?: string;
   transport?: "shared" | "isolated";
@@ -50,11 +34,6 @@ export interface HostView extends HostConfig {
   terminalConnected?: boolean;
 }
 export interface SessionMeta {
-  /** Effective Codex effort returned for this thread by app-server. */
-  observedEffort?: import("./ide-chat").ChatEffort;
-  observedModel?: string;
-  /** Harbor registered its peer dynamic tools when this native thread was created. */
-  peerTools?: boolean;
   id: string;
   hostId: string;
   threadId: string;
@@ -174,7 +153,6 @@ export type TerminalConnectionIssue =
   | "backend-stop";
 export interface TerminalInfo {
   autoApproval?: {
-    workspaceOnly?: boolean;
     enabled: boolean;
     accepted: number;
     sessionId?: string;
@@ -185,8 +163,6 @@ export interface TerminalInfo {
   cliApprovalMode?: CliApprovalMode;
   id: string;
   startupPlaceholder?: boolean;
-  /** The managed AI chat service launched this ACP adapter. */
-  managedChatAdapter?: true;
   hostId: string;
   cwd: string;
   title: string;
@@ -218,7 +194,6 @@ export interface TerminalInfo {
   agentConnected?: boolean;
   peerDelivery?: "automatic" | "shared" | "hook" | "poll" | "unavailable";
   claudePeerChannel?: boolean;
-  collaborationPaused?: boolean;
   peerDetail?: string;
   resumeThreadId?: string;
   researchSettings?: import("./research.js").ResearchAgentSettings;

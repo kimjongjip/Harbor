@@ -22,7 +22,7 @@ export function belongsToClaudeSession(row: any, sessionId: string): boolean {
 const bounded = (value: unknown, length = 4000): string =>
   typeof value === "string" ? value.slice(0, length) : "";
 
-export function toolDescription(part: any): string {
+function toolDescription(part: any): string {
   const input = part.input;
   if (!input || typeof input !== "object") return "";
   // Display only public work arguments, not arbitrary tool payloads or images.
@@ -31,7 +31,7 @@ export function toolDescription(part: any): string {
     .join("\n");
 }
 
-export function toolResult(part: any): string {
+function toolResult(part: any): string {
   if (typeof part.content === "string") return part.content;
   if (!Array.isArray(part.content)) return "";
   let text = "";
@@ -43,7 +43,7 @@ export function toolResult(part: any): string {
 }
 
 /** Claude's own record of an edit: the exact hunks its TUI renders, with line numbers. */
-export function editResult(value: any): Pick<MessageItem, "text" | "detail" | "format"> | undefined {
+function editResult(value: any): Pick<MessageItem, "text" | "detail" | "format"> | undefined {
   if (!value || typeof value !== "object") return;
   const hunks = Array.isArray(value.structuredPatch) ? value.structuredPatch : [];
   const lines: string[] = [];

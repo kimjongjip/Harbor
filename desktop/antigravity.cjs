@@ -2,191 +2,14 @@
 // keyboard input and peer messages, including while its editor is idle.
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
-const { realpathSync, lstatSync } = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const { PassThrough } = require("node:stream");
-const { randomUUID, createHash } = require("node:crypto");
+const { randomUUID } = require("node:crypto");
 const { stripVTControlCharacters } = require("node:util");
 const token = process.env.HARBOR_SESSION_TOKEN;
 const bridge = process.env.HARBOR_AGY_BRIDGE;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-// ACP option IDs are opaque. Only an explicitly offered allow_once may be
-// delegated to Harbor; native policy changes and user questions stay interactive.
-function workspaceTarget(value, cwd, editing) {
-  if (
-    typeof value !== "string" ||
-    !path.isAbsolute(value) ||
-    /[\0\r\n]/.test(value) ||
-    value.split(/[\\/]/).includes("..")
-  )
-    return false;
-  try {
-    const root = realpathSync(cwd),
-      target = path.normalize(value),
-      relative = path.relative(root, target);
-    if (
-      root === path.parse(root).root ||
-      relative === ".." ||
-      relative.startsWith(".." + path.sep) ||
-      path.isAbsolute(relative) ||
-      relative.split(path.sep).some((part) => part.startsWith("."))
-    )
-      return false;
-    if (
-      (editing && !relative) ||
-      (process.platform === "win32" && relative.includes(":"))
-    )
-      return false;
-    let existing = target;
-    for (;;) {
-      try {
-        const entry = lstatSync(existing);
-        if (entry.isSymbolicLink() || (entry.isFile() && entry.nlink !== 1))
-          return false;
-        if (editing && existing === target && !entry.isFile()) return false;
-        break;
-      } catch (e) {
-        if (e.code !== "ENOENT" || existing === root) return false;
-        existing = path.dirname(existing);
-      }
-    }
-    const actual = realpathSync(existing),
-      resolved = path.relative(root, actual);
-    return !(
-      path.relative(existing, actual) ||
-      resolved === ".." ||
-      resolved.startsWith(".." + path.sep) ||
-      path.isAbsolute(resolved) ||
-      resolved.split(path.sep).some((part) => part.startsWith("."))
-    );
-  } catch {
-    return false;
-  }
-}
-function allowOnce(params, mode, cwd = process.cwd()) {
-  const tool = params?.toolCall,
-    options = params?.options;
-  if (process.platform === "linux" && tool?.kind === "execute" && ["default","auto","accept-edits"].includes(mode) &&
-      !["failed","completed","cancelled"].includes(tool.status) && inspectionCommand(tool,cwd) && Array.isArray(options)) {
-    const choices=options.filter(o=>o?.kind==="allow_once" && typeof o.optionId==="string" && o.optionId);
-    if(choices.length===1 && options.filter(o=>o?.optionId===choices[0].optionId).length===1)return choices[0];
-  }
-  if (
-    !["default", "auto", "accept-edits"].includes(mode) ||
-    !["edit", "read", "search"].includes(tool?.kind) ||
-    !Array.isArray(options)
-  )
-    return;
-  if (
-    ["failed", "completed", "cancelled"].includes(tool.status) ||
-    Array.isArray(tool.rawInput?.questions)
-  )
-    return;
-  const identity = [
-    tool.title,
-    tool.rawInput?.tool_name,
-    tool.rawInput?.name,
-    tool.rawInput?.toolName,
-  ]
-    .filter((v) => typeof v === "string")
-    .join(" ");
-  if (
-    /AskUserQuestion|request_user_input|ask_user|harbor_request|ExitPlanMode|EnterPlanMode|switch_mode|ask.question|ask user|사용자.*질문/i.test(
-      identity,
-    )
-  )
-    return;
-  if (
-    /permission|chmod|chown|shell|command|delete|move|policy|sandbox/i.test(
-      identity,
-    )
-  )
-    return;
-  const input = tool.rawInput || {},
-    targets = [];
-  for (const [key, value] of Object.entries(input)) {
-    if (
-      tool.kind === "search" &&
-      /^(?:globs?|patterns?|filepatterns?|includes?|excludes?|filters?)$/i.test(
-        key,
-      )
-    ) {
-      const patterns = Array.isArray(value) ? value : [value];
-      if (
-        !patterns.length ||
-        patterns.length > 32 ||
-        patterns.some(
-          (v) =>
-            typeof v !== "string" ||
-            !v ||
-            v.length > 512 ||
-            v.includes("..") ||
-            !v.split("/").every((part) => {
-              const simple = part.replace(
-                /\.\{[\p{L}\p{N}_-]+(?:,[\p{L}\p{N}_-]+)+\}$/u,
-                ".ext",
-              );
-              return (
-                !!simple &&
-                !simple.startsWith(".") &&
-                /^[\p{L}\p{N}_*? .-]+$/u.test(simple)
-              );
-            }),
-        )
-      )
-        return;
-      continue;
-    }
-    if (
-      /command|url|uri|mode|permission|executable|shell|delete|move|overwrite.*policy/i.test(
-        key,
-      )
-    )
-      return;
-    if (
-      /^(targetfile|absolutepath|searchpath|searchdirectory|directorypath|file_path|path|file)$/i.test(
-        key,
-      )
-    )
-      targets.push(value);
-    else if (
-      /path|file|director|(^|_)(source|destination|src|dest|to|from)($|_)/i.test(
-        key,
-      )
-    )
-      return;
-  }
-  if (tool.kind === "edit" && !targets.length) return;
-  if (
-    tool.locations !== undefined &&
-    (!Array.isArray(tool.locations) || tool.locations.length > 64)
-  )
-    return;
-  for (const l of tool.locations || []) targets.push(l?.path);
-  if (
-    !targets.length ||
-    targets.length > 64 ||
-    targets.some((v) => !workspaceTarget(v, cwd, tool.kind === "edit"))
-  )
-    return;
-  const once = options.filter(
-    (o) =>
-      o?.kind === "allow_once" &&
-      typeof o.optionId === "string" &&
-      o.optionId.length,
-  );
-  return once.length === 1 ? once[0] : undefined;
-}
-function inspectionCommand(tool,cwd) {
-  const input=tool?.rawInput;
-  if (!input || typeof input!=="object" || Array.isArray(input) ||
-      Object.keys(input).some(k=>!["CommandLine","commandLine","command_line","command","Cwd","cwd","WaitMsBeforeAsync","SafeToAutoRun","Blocking","Description","description","Name","name"].includes(k))) return;
-  const commands=[input.CommandLine,input.commandLine,input.command_line,input.command].filter(v=>v!==undefined);
-  if(commands.length!==1 || !require("./inspection-command.cjs").isInspectionCommand(commands[0])) return;
-  if ([input.cwd,input.Cwd].some(dir=>dir!==undefined && dir!==cwd)) return;
-  return commands[0];
-}
 async function request(route, body, signal) {
   const res = await fetch(new URL(route, bridge), {
     method: body === undefined ? "GET" : "POST",
@@ -280,8 +103,6 @@ function editorInput(stdin, warn = () => {}) {
   stdin.once("end", () => input.end());
   return {
     input,
-    hasPendingInput: () =>
-      pasted !== null || buffer.length > 0 || input.readableLength > 0,
     expand: (s) => s.replace(/\[붙여넣기 #\d+\]/g, (k) => pastes.get(k) ?? k),
     dispose: () => {
       stdin.off("data", consume);
@@ -309,7 +130,6 @@ async function run(
     "HARBOR_AGY_CONFIG",
   ])
     delete env[key];
-  if (token) env.HARBOR_WORK_SCOPE = createHash("sha256").update(token).digest("hex");
   const agent = spawn(exe, args, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -385,99 +205,6 @@ async function run(
       await fs.rm(tmp, { force: true });
     }
   }
-  function turnRows(tx, state) {
-    const last = tx.items.at(-1);
-    return [
-      { ...tx.user, turnStatus: state },
-      ...tx.items.map((item) => ({
-        ...item,
-        ...(item.kind === "assistant" && {
-          phase:
-            item === last && state === "completed"
-              ? "final_answer"
-              : "commentary",
-        }),
-        turnStatus: state,
-      })),
-    ];
-  }
-  function publishProgress(tx) {
-    tx.dirty = true;
-    if (tx.timer || tx.writing || tx.finalizing) return;
-    tx.timer = setTimeout(async () => {
-      tx.timer = undefined;
-      tx.dirty = false;
-      tx.writing = atomic(tx.file, turnRows(tx, "inProgress")).catch(() => {});
-      await tx.writing;
-      tx.writing = undefined;
-      if (tx.dirty) publishProgress(tx);
-    }, tx.textLength > 96000 ? 700 : 300);
-  }
-  function updateTool(tx, update) {
-    let call = tx.calls.get(update.toolCallId);
-    if (!call) {
-      if (tx.calls.size >= 128 || tx.items.length >= 257) return;
-      const item = {
-        id: randomUUID(),
-        turnId: tx.id,
-        kind: "tool",
-        text: "도구 실행",
-        status: "inProgress",
-      };
-      call = { item, locations: "", output: "" };
-      tx.calls.set(update.toolCallId || item.id, call);
-      tx.items.push(item);
-    }
-    const { item } = call;
-    if (update.title) item.text = clean(update.title).slice(0, 1000);
-    if (update.kind === "execute") item.kind = "command";
-    if (update.kind === "edit") item.kind = "change";
-    if (["completed", "failed"].includes(update.status))
-      item.status = update.status;
-    if (Array.isArray(update.locations)) {
-      call.locations = update.locations
-        .slice(0, 8)
-        .map((loc) =>
-          typeof loc?.path === "string" ? clean(loc.path).slice(0, 512) : "",
-        )
-        .filter(Boolean)
-        .join("\n");
-    }
-    if (Array.isArray(update.content) && update.content.length) {
-      call.output = update.content
-        .slice(0, 16)
-        .map((block) => {
-          if (block?.type === "content" && block.content?.type === "text")
-            return clean(block.content.text).slice(-4096);
-          if (block?.type === "diff" && typeof block.path === "string")
-            return [clean(block.path).slice(0,512), ...["oldText","newText"].flatMap(key =>
-              typeof block[key] === "string" ? clean(block[key]).slice(0,1600).split("\n").map(line=>(key==="oldText"?"- ":"+ ")+line) : [])].join("\n");
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n")
-        .slice(-4096);
-    }
-    if (item.kind === "change") {
-      const raw = update.rawInput || {};
-      const edits = Array.isArray(raw.ReplacementChunks) ? raw.ReplacementChunks : [raw];
-      const changes = edits.slice(0,12).flatMap(e => {
-        if (!e || typeof e !== "object") return [];
-        const before = e.TargetContent ?? e.old_string, after = e.ReplacementContent ?? e.FileContents ?? e.CodeContent ?? e.new_string;
-        if (typeof after !== "string" && typeof before !== "string") return [];
-        return [[before,"- "],[after,"+ "]].flatMap(([value,prefix]) => typeof value === "string" && value.length ? clean(value).slice(0,2000).split("\n").map(line=>prefix+line) : []);
-      });
-      if (changes.length) call.editPreview = changes.join("\n").slice(0,4096);
-      const patch = update.content?.find?.(block=>block?.type==="diff" && (typeof block.newText==="string" || typeof block.oldText==="string"));
-      if (patch) call.editPreview = call.output;
-      const file = patch?.path || raw.TargetFile || raw.file_path || call.locations?.split("\n")[0];
-      if (typeof file === "string" && file) call.file = clean(file).slice(0,512);
-      if (call.file) item.text = call.file;
-    }
-    item.detail = [call.locations, call.editPreview || call.output].filter(Boolean).join("\n");
-    publishProgress(tx);
-    return item;
-  }
   const meta = () =>
     atomic("session.json", {
       title,
@@ -520,38 +247,11 @@ async function run(
     if (folder && !usageTimer)
       usageTimer = setTimeout(() => void saveUsage().catch(() => {}), 700);
   }
-  let requestedVariant,
-    permissionMode,
-    configuring = false;
-  let manualApprovals = false;
-  let reportSettings = false,
-    lastReport = "",
-    reporting = Promise.resolve();
-  function reportConfiguration(refresh = false) {
-    if (!reportSettings || closed) return reporting;
-    const effort = config("effort")?.currentValue;
-    const value = JSON.stringify([model, effort]);
-    if (!refresh && lastReport === value) return reporting;
-    lastReport = value;
-    const snapshot = { op: "register", model, effort };
-    reporting = reporting
-      .then(() => configEvent(snapshot))
-      .then(result => {manualApprovals = result?.manualApprovals === true;})
-      .catch(() => {
-        if (lastReport === value) lastReport = "";
-      });
-    return reporting;
-  }
   function configuration(options) {
     configs = options || [];
-    permissionMode = config("mode")?.currentValue ?? permissionMode;
     model =
       configs.find((o) => o.category === "model" || o.id === "model")
         ?.currentValue || model;
-    const thought = config("effort")?.currentValue;
-    if (thought && requestedVariant === model + "-" + thought)
-      model = requestedVariant;
-    if (reportSettings && !configuring) void reportConfiguration();
   }
   function config(key) {
     return configs.find(
@@ -560,115 +260,6 @@ async function run(
         x.category === key ||
         (key === "effort" && x.category === "thought_level"),
     );
-  }
-  async function configEvent(event) {
-    const res = await fetch(process.env.HARBOR_HOOK_URL, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + process.env.HARBOR_HOOK_TOKEN,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        harbor_acp_config: { ...event, nativeId: sessionId },
-      }),
-      signal: AbortSignal.any([polling.signal, AbortSignal.timeout(8000)]),
-    });
-    if (!res.ok) throw Error("설정 연결에 실패했습니다.");
-    return res.json();
-  }
-  async function setOption(key, value) {
-    const option = config(key);
-    if (!option)
-      throw Error("Antigravity가 " + key + " 설정을 제공하지 않습니다.");
-    if (key === "model") requestedVariant = value;
-    const r = await call(
-      "session/set_config_option",
-      { sessionId, configId: option.id, value },
-      8000,
-    );
-    if (!Array.isArray(r.configOptions))
-      throw Error("실제 설정을 확인하지 못했습니다.");
-    configuration(r.configOptions);
-    if ((key === "model" ? model : config(key)?.currentValue) !== value)
-      throw Error("요청한 " + key + " 설정이 확인되지 않았습니다.");
-  }
-  async function handleConfiguration() {
-    const request = await configEvent({ op: "claim" });
-    if (!request?.id) return;
-    const { id, config: desired } = request;
-    if (turn || approval || queue.length || configuring) {
-      await configEvent({
-        op: "ack",
-        id,
-        error: "작업 중인 Antigravity입니다.",
-      });
-      return;
-    }
-    configuring = true;
-    const oldModel = model,
-      oldBase = config("model")?.currentValue,
-      oldEffort = config("effort")?.currentValue;
-    let modelAttempted = false;
-    try {
-      if (desired.model && desired.model !== model) {
-        modelAttempted = true;
-        await setOption("model", desired.model);
-      }
-      // An agy variant such as <model>-low selects the thought level itself.
-      const level = config("effort");
-      const isVariant =
-        desired.model && desired.model !== config("model")?.currentValue;
-      if (isVariant && desired.effort && desired.effort !== level?.currentValue)
-        throw Error("선택한 모델 변형의 effort와 요청한 값이 다릅니다.");
-      if (desired.effort && desired.effort !== level?.currentValue)
-        await setOption("effort", desired.effort);
-      if (
-        !model ||
-        (desired.effort && desired.effort !== config("effort")?.currentValue)
-      )
-        throw Error("실제 모델 설정을 확인하지 못했습니다.");
-      if (oldModel !== model) {
-        recordUsage({});
-        await saveUsage();
-      }
-      await meta();
-    } catch (e) {
-      try {
-        if (modelAttempted && oldBase) await setOption("model", oldBase);
-        if (oldEffort && config("effort")?.currentValue !== oldEffort)
-          await setOption("effort", oldEffort);
-        requestedVariant = oldModel;
-        configuration(configs);
-        await configEvent({
-          op: "ack",
-          id,
-          error: clean(e.message).slice(0, 300),
-        });
-      } catch {
-        await configEvent({
-          op: "ack",
-          id,
-          error:
-            "설정 적용 상태가 불확실합니다. 원래 대화에서 모델과 effort를 확인하세요.",
-        }).catch(() => {});
-      }
-      configuring = false;
-      void reportConfiguration();
-      void drain();
-      return;
-    }
-    try {
-      await configEvent({
-        op: "ack",
-        id,
-        model,
-        effort: config("effort")?.currentValue,
-      });
-    } finally {
-      configuring = false;
-      void reportConfiguration();
-      void drain();
-    }
   }
   async function ack(id) {
     if (!id || acknowledging.has(id)) return;
@@ -703,111 +294,17 @@ async function run(
         approval = {
           id: msg.id,
           options: Array.isArray(p.options) ? p.options : [],
-          controller: new AbortController(),
         };
-        const captured = approval,
-          activeTurn = turn;
-        const toolCall = {
-          ...activeTurn?.capabilities.get(p.toolCall?.toolCallId),
-          ...p.toolCall,
-        };
-        if (toolCall.kind === "execute" && !p.toolCall?.rawInput && toolCall.inspection &&
-            p.toolCall?.title === toolCall.inspection) {
-          toolCall.rawInput={command:toolCall.inspection};
-        }
-        const action = { ...p, toolCall },
-          choice = allowOnce(action, permissionMode);
-        let shown = false;
-        const showApproval = () => {
-          if (shown || closed || approval !== captured) return;
-          shown = true;
-          status("waiting");
-          line("승인 요청 · " + clean(toolCall.title) + "\n" +
-            captured.options.map((o,i)=>i+1+". "+clean(o.name)).join("\n") + "\n/approve 번호 또는 /deny");
-        };
-        if (choice && activeTurn && process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN)
-          setTimeout(showApproval,500).unref();
-        else showApproval();
-        const choices = captured.options.filter(o => o?.kind === "allow_once" && typeof o.optionId === "string");
-        const detail = JSON.stringify(toolCall.rawInput ?? toolCall.locations ?? {}).slice(0,8000);
-        if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN && activeTurn && choices.length === 1 && choices[0].optionId &&
-            captured.options.filter(o=>o.optionId===choices[0].optionId).length===1 && detail.length <= 8000) {
-          void (async () => {
-            await reporting;
-            if (!manualApprovals) await reportConfiguration(true);
-            if (!manualApprovals) return;
-            if (choice) await new Promise(resolve=>setTimeout(resolve,500));
-            if (closed || approval !== captured || turn !== activeTurn) return;
-            showApproval();
-            await reported;
-            while (!closed && approval === captured && turn === activeTurn) {
-              const response = await fetch(process.env.HARBOR_HOOK_URL, {
-                method:"POST",headers:{Authorization:"Bearer "+process.env.HARBOR_HOOK_TOKEN,"Content-Type":"application/json"},
-                body:JSON.stringify({harbor_acp_manual:{session:sessionId,title:clean(toolCall.title || toolCall.kind || "Antigravity 실행 승인").slice(0,1000),detail}}),
-                signal:AbortSignal.any([polling.signal,captured.controller.signal,AbortSignal.timeout(310000)]),
-              }).catch(()=>undefined);
-              if (!response || response.status === 409 || response.status >= 500) {
-                if (closed || approval !== captured || turn !== activeTurn || captured.controller.signal.aborted || polling.signal.aborted) return;
-                await new Promise(resolve=>setTimeout(resolve,1000));
-                continue;
-              }
-              if (!response.ok) return;
-              const decision = await response.json();
-              if (closed || approval !== captured || turn !== activeTurn) return;
-              if (typeof decision.approved === "boolean") {
-                finishApproval(decision.approved ? choices[0] : undefined);
-                return;
-              }
-              await new Promise(resolve=>setTimeout(resolve,1000));
-            }
-          })().catch(()=>{});
-        }
-        if (
-          choice &&
-          turn &&
-          process.env.HARBOR_HOOK_URL &&
-          process.env.HARBOR_HOOK_TOKEN
-        ) {
-          void (async () => {
-            await reported;
-            if (closed || approval !== captured || turn !== activeTurn) return;
-            const res = await fetch(process.env.HARBOR_HOOK_URL, {
-              method: "POST",
-              headers: {
-                Authorization: "Bearer " + process.env.HARBOR_HOOK_TOKEN,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                harbor_acp: true,
-                hook_event_name: "PermissionRequest",
-                session_id: sessionId,
-                tool_name: "Antigravity/" + (toolCall.kind === "execute" ? "inspect" : toolCall.kind),
-                tool_input: {
-                  ...(toolCall.kind === "execute" && {command:inspectionCommand(toolCall,process.cwd())}),
-                  description:
-                    clean(toolCall.title).slice(0, 1500) || toolCall.kind,
-                },
-              }),
-              signal: AbortSignal.any([
-                polling.signal,
-                captured.controller.signal,
-                AbortSignal.timeout(310000),
-              ]),
-            });
-            if (!res.ok) return;
-            const decision = (await res.json())?.hookSpecificOutput?.decision
-              ?.behavior;
-            if (
-              closed ||
-              approval !== captured ||
-              turn !== activeTurn ||
-              allowOnce(action, permissionMode) !== choice ||
-              !["allow", "deny"].includes(decision)
-            )
-              return;
-            finishApproval(decision === "allow" ? choice : undefined);
-          })().catch(() => {});
-        }
+        status("waiting");
+        line(
+          "승인 요청 · " +
+            clean(p.toolCall?.title) +
+            "\n" +
+            approval.options
+              .map((o, i) => i + 1 + ". " + clean(o.name))
+              .join("\n") +
+            "\n/approve 번호 또는 /deny",
+        );
         return;
       }
       if (msg.method === "session/request_permission")
@@ -825,32 +322,6 @@ async function run(
     )
       return;
     const u = p.update || {};
-    if (u.sessionUpdate === "current_mode_update") {
-      permissionMode = u.currentModeId;
-      return;
-    }
-    if (
-      u.sessionUpdate === "config_option_update" &&
-      Array.isArray(u.configOptions)
-    ) {
-      configuration(u.configOptions);
-      return;
-    }
-    if (
-      turn &&
-      ["tool_call", "tool_call_update"].includes(u.sessionUpdate) &&
-      typeof u.toolCallId === "string" &&
-      (turn.capabilities.has(u.toolCallId) || turn.capabilities.size < 128)
-    ) {
-      const previous=turn.capabilities.get(u.toolCallId);
-      const kind=u.kind ?? previous?.kind;
-      turn.capabilities.set(u.toolCallId, {
-        kind,
-        title: u.title===undefined ? previous?.title : clean(u.title).slice(0, 1500),
-        inspection:kind==="execute" && !["completed","failed","cancelled"].includes(u.status) ?
-          (u.rawInput===undefined ? previous?.inspection : inspectionCommand(u,process.cwd())) : undefined,
-      });
-    }
     if (
       replaying &&
       ["user_message_chunk", "agent_message_chunk"].includes(u.sessionUpdate) &&
@@ -882,6 +353,8 @@ async function run(
       return;
     }
     if (u.sessionUpdate === "usage_update") recordUsage(u);
+    if (u.sessionUpdate === "config_option_update")
+      configuration(u.configOptions);
     if (!turn) return;
     if (
       turn.receipt &&
@@ -898,21 +371,7 @@ async function run(
       u.content?.type === "text"
     ) {
       const text = clean(u.content.text);
-      if (!text) return;
-      let row = turn.items.at(-1);
-      if (row?.kind !== "assistant") {
-        row = {
-          id: randomUUID(),
-          turnId: turn.id,
-          kind: "assistant",
-          text: "",
-        };
-        turn.items.push(row);
-      }
-      const visible = text.slice(0, Math.max(0, 512000 - turn.textLength));
-      row.text += visible;
-      turn.textLength += visible.length;
-      publishProgress(turn);
+      turn.answer = (turn.answer + text).slice(0, 512000);
       const rows = (
         (turn.outputStarted ? "" : "• ") +
         turn.partial +
@@ -921,26 +380,15 @@ async function run(
       turn.outputStarted = true;
       turn.partial = rows.pop().slice(-512000);
       for (const row of rows) line(row);
-    } else if (
-      u.sessionUpdate === "tool_call" ||
-      u.sessionUpdate === "tool_call_update"
-    ) {
-      const item = updateTool(turn, u);
-      if (item && u.sessionUpdate === "tool_call") line("· " + item.text);
-    } else if (u.sessionUpdate === "plan" && Array.isArray(u.entries)) {
-      const text = u.entries
-        .slice(0, 32)
-        .map((e) => clean(e?.content || "").slice(0, 256))
-        .filter(Boolean)
-        .join("\n");
-      if (text && (turn.plan || turn.items.length < 257)) {
-        if (!turn.plan) {
-          turn.plan = { id: randomUUID(), turnId: turn.id, kind: "plan" };
-          turn.items.push(turn.plan);
-        }
-        turn.plan.text = text;
-        publishProgress(turn);
-      }
+    } else if (u.sessionUpdate === "tool_call" && turn.tools.length < 128) {
+      const text = clean(u.title || u.kind || "도구").slice(0, 1000);
+      turn.tools.push({
+        id: randomUUID(),
+        turnId: turn.id,
+        kind: "tool",
+        text,
+      });
+      line("· " + text);
     }
   }
   const input = readline.createInterface({ input: agent.stdout });
@@ -949,22 +397,6 @@ async function run(
       receive(JSON.parse(s));
     } catch {}
   });
-  function finishApproval(option) {
-    const current = approval;
-    if (!current) return;
-    approval = undefined;
-    current.controller.abort();
-    write({
-      id: current.id,
-      result: {
-        outcome: option
-          ? { outcome: "selected", optionId: option.optionId }
-          : { outcome: "cancelled" },
-      },
-    });
-    status("working");
-    rl?.prompt();
-  }
   function end(error) {
     if (closed) return;
     closed = true;
@@ -987,18 +419,10 @@ async function run(
   agent.on("exit", () => end(Error("Antigravity 연결이 종료됐습니다.")));
   agent.stdin.on("error", end);
   async function drain() {
-    if (turn || configuring || closed || !queue.length) return;
+    if (turn || closed || !queue.length) return;
     const job = queue.shift(),
       id = randomUUID(),
-      tx = {
-        id,
-        receipt: job.receipt,
-        textLength: 0,
-        partial: "",
-        items: [],
-        calls: new Map(),
-        capabilities: new Map(),
-      };
+      tx = { id, receipt: job.receipt, answer: "", partial: "", tools: [] };
     turn = tx;
     const name = "turn-" + Date.now() + "-" + id + ".json";
     const first = {
@@ -1008,8 +432,6 @@ async function run(
       text: job.text,
       ...(job.peer ? { origin: "channel" } : {}),
     };
-    tx.file = name;
-    tx.user = first;
     let finished = "failed";
     try {
       if (title === "Antigravity" && !job.peer)
@@ -1029,23 +451,24 @@ async function run(
       if (job.receipt && !tx.confirmed) void ack(job.receipt);
     } catch (e) {
       line("Antigravity · " + e.message);
-      tx.items.push({
-        id: randomUUID(),
-        turnId: id,
-        kind: "notice",
-        text: clean(e.message || "작업 실패").slice(0, 1200),
-        status: "failed",
-      });
     } finally {
       if (tx.partial) line(tx.partial);
       try {
-        tx.finalizing = true;
-        clearTimeout(tx.timer);
-        await tx.writing;
-        await atomic(name, turnRows(tx, finished));
+        await atomic(name, [
+          { ...first, turnStatus: finished },
+          ...tx.tools,
+          {
+            id: id + "-answer",
+            turnId: id,
+            kind: "assistant",
+            text: tx.answer,
+            phase: "final_answer",
+            turnStatus: finished,
+          },
+        ]);
         await meta();
         await saveUsage();
-        if (finished === "completed" && tx.textLength)
+        if (finished === "completed" && tx.answer)
           void request("/bridge/peers/antigravity-completed", {
             sessionId,
             turnId: id,
@@ -1053,8 +476,6 @@ async function run(
       } catch {
         line("대화 기록 저장 실패");
       }
-      approval?.controller.abort();
-      approval = undefined;
       turn = undefined;
       approval = undefined;
       if (!closed) {
@@ -1073,34 +494,6 @@ async function run(
           undefined,
           polling.signal,
         );
-        if (!batch?.runtime && !batch?.sessionId && batch?.reason) {
-          // On reconnect the bridge can know this terminal while still lacking its runtime.
-          status(approval ? "waiting" : turn ? "working" : "idle");
-          await reported;
-        }
-        if (batch?.sessionId === sessionId && !configuring)
-          await reportConfiguration(!!batch.configRegistrationRequired);
-        if (batch?.sessionId === sessionId && batch.configPending)
-          await handleConfiguration();
-        if (
-          batch?.sessionId === sessionId &&
-          batch.finishForUpdate &&
-          rl &&
-          !closed &&
-          !turn &&
-          !approval &&
-          !configuring &&
-          !queue.length &&
-          !pending.size &&
-          !acknowledging.size &&
-          !batch.messages?.length &&
-          !rl.line &&
-          !editor?.hasPendingInput()
-        ) {
-          // Close the ACP stream only from its own idle loop. The next adapter loads the same native ID.
-          end(Error("Harbor 업데이트로 대화를 다시 연결합니다."));
-          return;
-        }
         if (batch?.sessionId === sessionId)
           for (const m of batch.messages || []) {
             if (queue.length >= 32) break;
@@ -1200,11 +593,9 @@ async function run(
           await fs.readFile(path.join(folder, "session.json"), "utf8"),
         ).title;
       } catch {}
-    permissionMode = opened.modes?.currentModeId;
     configuration(opened.configOptions);
     model = model || opened.models?.currentModelId;
     const settings = JSON.parse(process.env.HARBOR_AGY_CONFIG || "{}");
-    requestedVariant = settings.model;
     for (const key of ["model", "effort"])
       if (settings[key] && settings[key] !== "default") {
         const option = config(key);
@@ -1218,13 +609,6 @@ async function run(
           value: settings[key],
         });
         configuration(r.configOptions);
-        if (
-          (key === "model" ? model : config(key)?.currentValue) !==
-          settings[key]
-        )
-          throw Error(
-            "Antigravity가 요청한 " + key + " 설정을 적용하지 않았습니다.",
-          );
       }
     await meta();
     if (resumeId)
@@ -1240,10 +624,6 @@ async function run(
     await saveUsage();
     status("idle");
     await reported;
-    if (process.env.HARBOR_HOOK_URL && process.env.HARBOR_HOOK_TOKEN) {
-      reportSettings = true;
-      await reportConfiguration();
-    }
     out("Antigravity · Harbor\n/exit 종료 · Ctrl+C 작업 중단\n");
     editor = editorInput(process.stdin, line);
     process.stdout.write("\x1b[?2004h");
@@ -1270,7 +650,17 @@ async function run(
           line("/approve 번호 또는 /deny");
           return;
         }
-        finishApproval(option);
+        write({
+          id: approval.id,
+          result: {
+            outcome: option
+              ? { outcome: "selected", optionId: option.optionId }
+              : { outcome: "cancelled" },
+          },
+        });
+        approval = undefined;
+        status("working");
+        rl.prompt();
         return;
       }
       const setting = /^\/(model|effort|mode)(?:\s+(.+))?$/.exec(text);
@@ -1283,18 +673,18 @@ async function run(
         }
         if (!setting[2])
           line(JSON.stringify({ current: o.currentValue, options: o.options }));
-        else if (turn || configuring) line("작업이 끝난 뒤 설정을 변경하세요.");
-        else {
-          configuring = true;
-          void setOption(key, setting[2])
-            .then(() => line("설정을 변경했습니다."))
-            .catch((e) => line(e.message))
-            .finally(() => {
-              configuring = false;
-              void reportConfiguration();
-              void drain();
-            });
-        }
+        else if (turn) line("작업이 끝난 뒤 설정을 변경하세요.");
+        else
+          void call("session/set_config_option", {
+            sessionId,
+            configId: o.id,
+            value: setting[2],
+          })
+            .then((r) => {
+              configuration(r.configOptions);
+              line("설정을 변경했습니다.");
+            })
+            .catch((e) => line(e.message));
         return;
       }
       if (queue.length >= 32) {
@@ -1306,7 +696,13 @@ async function run(
       rl.prompt();
     });
     rl.on("SIGINT", () => {
-      if (approval) finishApproval();
+      if (approval) {
+        write({
+          id: approval.id,
+          result: { outcome: { outcome: "cancelled" } },
+        });
+        approval = undefined;
+      }
       if (turn) notify("session/cancel", { sessionId });
       else rl.prompt();
     });
@@ -1327,7 +723,7 @@ async function run(
       }).catch(() => {});
   }
 }
-module.exports = { run, editorInput, allowOnce };
+module.exports = { run, editorInput };
 if (require.main === module)
   (process.argv[2] === "--mcp" ? mcp() : run()).catch((e) => {
     console.error(clean(e.message));

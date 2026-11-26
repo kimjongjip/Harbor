@@ -9,35 +9,6 @@ import { Mailbox } from "./mailbox.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { PeerDelivery } from "./peer-delivery.js";
 import type { TerminalInfo } from "../shared/types.js";
-import { randomUUID } from "node:crypto";
-
-test("the Antigravity manual approval hook is private and scoped to the waiting native session",async t=>{
-  const {mailbox,terminals,resolver}=await fixture(t);
-  const terminal=terminals[0],session=randomUUID();
-  Object.assign(terminal,{program:"antigravity",agentSessionId:session,exited:false});
-  let enabled=false;
-  const bridge=new AgentBridge(mailbox,{terminals:()=>terminals,host:resolver.host,autoAcceptAcp:(id,native)=>enabled && id===terminal.id && native===session});
-  const credential=bridge.issue(terminal.id);
-  bridge.peers.setRuntime(terminal.id,{kind:"antigravity",sessionId:session,state:"waiting",delivery:"automatic"});
-  const http=createServer(express().use("/permission",bridge.permissionHandle)).listen(0,"127.0.0.1");
-  await once(http,"listening");
-  t.after(()=>{http.closeAllConnections();http.close();});
-  const url="http://127.0.0.1:"+(http.address() as {port:number}).port+"/permission";
-  const offer=(key:string,id:string)=>fetch(url,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+key},
-    body:JSON.stringify({harbor_acp_manual:{session:id,title:"명령 실행",detail:"fixture command"}})});
-  assert.equal((await offer(credential.token,session)).status,401);
-  assert.equal((await offer(credential.hookToken,randomUUID())).status,409);
-  enabled=true;
-  assert.deepEqual(await (await offer(credential.hookToken,session)).json(),{approved:true});
-  assert.equal((await offer(credential.hookToken,randomUUID())).status,409);
-  enabled=false;
-  const pending=offer(credential.hookToken,session);
-  for(let i=0;i<100&&!bridge.acpManual.pending(terminal.id,session).length;i++)await new Promise(r=>setTimeout(r,10));
-  const [card]=bridge.acpManual.pending(terminal.id,session);
-  assert.ok(card);
-  assert.ok(bridge.acpManual.answer(terminal.id,session,card.id,false));
-  assert.deepEqual(await (await pending).json(),{approved:false});
-});
 
 test("Claude preparation requests wait for native Stop without claiming model receipt", async (t) => {
   const f = await fixture(t);
@@ -122,69 +93,6 @@ async function fixture(t: any) {
   });
   return { mailbox, peers, terminals, resolver, bind, directory };
 }
-
-test("organic collaboration binds follow-ups, retries and user controls to the original sessions across restarts", async t => {
-  const f = await fixture(t);
-  f.terminals[0].agentSessionId = "native-a";
-  f.terminals[1].agentSessionId = "native-b";
-  const send = (key: string, parent?: string) => f.peers.send("a","b","Compare the measurement","question", undefined, undefined, {requestKey:key, followUpTo:parent});
-  const q = send("q1");
-  assert.equal(send("q1").id, q.id);
-  const a = f.mailbox.replyAgent("b", q.id, "Measured at 800 MHz", "native-b");
-  assert.equal(f.mailbox.replyAgent("b", q.id, a.text, "native-b").id, a.id);
-  const follow = send("q2", a.id);
-  assert.equal(follow.threadId, q.threadId);
-  assert.equal(send("q2", a.id).id, follow.id);
-  assert.throws(() => send("q2"), /요청 키/);
-  f.mailbox.setPaused("b","native-b",true);
-  assert.deepEqual(f.peers.events("b","native-b").messages, []);
-  assert.equal(f.peers.result("a",follow.id).status,"unavailable");
-  assert.deepEqual(f.mailbox.consume("b",{sessionId:"native-b"}),[]);
-  assert.throws(() => send("new"), /일시정지/);
-  const restored = new Mailbox(f.directory, f.resolver);
-  assert.equal(restored.isPaused("b","native-b"), true);
-  assert.equal(restored.isPaused("b","another"), false);
-  f.mailbox.setPaused("b","native-b",false);
-  assert.deepEqual(f.peers.events("b","native-b").messages.map(m=>m.id),[follow.id]);
-  f.mailbox.closePeerThread("b","native-b",q.threadId);
-  assert.deepEqual(f.peers.events("b","native-b").messages,[]);
-  assert.throws(()=>f.mailbox.replyAgent("b",follow.id,"again","native-b"),/종료/);
-  assert.notEqual(send("separate").threadId, q.threadId);
-});
-
-test("managed chat input expires when its receiver stops polling and recovers only for that native session", async t => {
-  const f = await fixture(t);
-  let now = 0;
-  const peers = new PeerDelivery(f.mailbox, () => now);
-  for (const kind of ["claude", "antigravity"] as const) {
-    const capability = {kind, state:"idle", delivery:"automatic", userInputVersion:1} as const;
-    // Some Claude channel versions register before the SessionStart hook supplies the native ID.
-    peers.setRuntime("b", capability);
-    peers.observeInputReader("b");
-    peers.setRuntime("b", {...capability,sessionId:"native-b"});
-    assert.ok(peers.inputAvailable("b","native-b",kind));
-    now += 25000;
-    assert.ok(peers.inputAvailable("b","native-b",kind), "a normal long poll remains usable");
-    await peers.poll("b","native-b",0);
-    now += 40000;
-    assert.ok(peers.inputAvailable("b","native-b",kind));
-    // Server hook activity, wrong-session and abandoned polls are not a connected recipient.
-    peers.setRuntime("b", {...capability,sessionId:"native-b",state:"working"});
-    await peers.poll("b","different-session",0);
-    await peers.poll("b","native-b",0,AbortSignal.abort());
-    now += 6000;
-    assert.equal(peers.inputAvailable("b","native-b",kind),false);
-    await peers.poll("b","native-b",0);
-    assert.ok(peers.inputAvailable("b","native-b",kind));
-    peers.setRuntime("b",{...capability,sessionId:"new-b"});
-    assert.equal(peers.inputAvailable("b","new-b",kind),false);
-    assert.equal(peers.inputAvailable("b","native-b",kind),false);
-    peers.observeInputReader("b","new-b");
-    assert.ok(peers.inputAvailable("b","new-b",kind));
-    peers.revoke("b");
-    assert.equal(peers.inputAvailable("b","new-b",kind),false);
-  }
-});
 
 test("IDE user metadata is internal, native-bound, durable and idempotent; old runtimes do not imply input support", async (t) => {
   const f = await fixture(t);
@@ -512,12 +420,6 @@ test("scoped HTTP MCP asks Claude by name, correlates its actual reply, and neve
     state: "idle",
     delivery: "automatic",
   });
-  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), false);
-  await post("/bridge/peers/runtime", b.token, {
-    kind: "claude", state: "idle", delivery: "automatic", userInputVersion: 1,
-  });
-  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), true);
-  assert.equal(bridge.peers.inputAvailable("b", "native-b", "antigravity"), false);
   await rpc(b.token, "initialize", {
     protocolVersion: "2025-06-18",
     clientInfo: { name: "harbor-claude-adapter", version: "1.0.0" },
@@ -624,7 +526,6 @@ test("scoped HTTP MCP asks Claude by name, correlates its actual reply, and neve
     delivery: "automatic",
   });
   assert.equal(bridge.peers.runtime("b")?.state, "offline");
-  assert.equal(bridge.peers.inputAvailable("b", "native-b", "claude"), false);
   await post("/bridge/claude", b.hookToken, {
     hook_event_name: "SessionStart",
     session_id: "new-native-b",

@@ -156,30 +156,6 @@
   color: var(--muted);
   margin-bottom: 2px;
 }
-.session-discovery-bar {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  padding: 2px 8px 6px;
-}
-.session-discovery-bar input {
-  flex: 1;
-  min-width: 0;
-}
-.session-discovery-bar button[aria-pressed="true"],
-.harbor-session-item .session-pin[aria-pressed="true"] {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.harbor-session-item .session-pin {
-  opacity: 0.55;
-  flex-shrink: 0;
-}
-.harbor-session-item:hover .session-pin,
-.harbor-session-item .session-pin:focus-visible,
-.harbor-session-item .session-pin[aria-pressed="true"] {
-  opacity: 1;
-}
 .harbor-session-item {
   display: flex;
   align-items: center;

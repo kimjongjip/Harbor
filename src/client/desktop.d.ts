@@ -6,8 +6,6 @@ interface WorkspaceTabPlacement {
 }
 interface Window {
   harborDesktop?: {
-    workspaceApprovalWindow?: boolean;
-    inlineApproval?: (key:string,bounds:{x:number;y:number;width:number;height:number}|null,entry?:string)=>Promise<void>;
     readonly platform: string;
     awaitWorkspaceActivation?: () => Promise<boolean>;
     readonly version: string;
@@ -24,14 +22,6 @@ interface Window {
     onUpdateState?: (
       callback: (state: import("./UpdateButton").DesktopUpdateState) => void,
     ) => () => void;
-    processMetrics?: () => Promise<
-      Array<{
-        pid: number;
-        type: string;
-        workingSetBytes: number;
-        cpuPercent: number;
-      }>
-    >;
     backendState?: () => Promise<{
       phase: "ready" | "recovering" | "failed";
       attempt: number;
@@ -46,7 +36,6 @@ interface Window {
     ) => () => void;
     retryBackend?: () => Promise<unknown>;
     writeClipboardText?: (text: string) => Promise<boolean>;
-    captureCurrentWindow?: () => Promise<string | null>;
     detachedTerminals: () => Promise<string[]>;
     workspaceTabs?: () => WorkspaceTabPlacement;
     newWorkspace?: () => Promise<boolean>;

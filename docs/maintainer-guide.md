@@ -1,11 +1,5 @@
 # Harbor 개발·Git 게시·배포 절차
 
-## 2.0 서버 작업 공간
-
-Windows 빌드에는 `dist/worker-manifest`의 패키지 정보와 잠금 파일을 포함한다. SSH 설치는 해당 릴리스의 앱과 잠금 파일을 서버 사용자 디렉터리에 준비하고 그 서버에서 Linux 의존성을 설치한다. 기존 작업이 실행 중일 때 서비스 교체를 보류하며, PC의 연결 해제는 서버 작업 종료와 별도다.
-
-서버 연결·설치 검증은 `remote-workspaces.test.ts`, 연구실과 예약 복원은 `lab-questions.test.ts`, `research-lab.test.ts`, `ide-chat.test.ts`를 사용한다. 브라우저 검증은 빌드 후 `ide-chat.browser.test.ts`, `ide-terminal-switch.browser.test.ts`, `mobile.browser.test.ts`, `lab-questions.browser.test.ts`를 실행한다. 격리 시험과 실제 서버의 로그아웃·전원 차단 시험 결과를 구분해 보고한다.
-
 ## 1.18.36 중간 보고
 
 `transcriptSections`는 호출·결과를 먼저 연결한 뒤 연속된 도구 기록과 메시지를 나눈다. Claude의 phase 없는 assistant 메시지와 Codex commentary 모두 작업 그룹 밖에서 Markdown으로 표시한다. 그룹 키는 첫 도구의 ID를 사용하므로 뒤에 보고·결과가 추가되어도 사용자가 접은 상태를 유지한다. native 출력 포털은 그룹 바깥의 고정 노드에 두어 저장 전 중간 보고도 접기에 숨지 않는다. 진행 중 Claude 도구의 중복 native 블록 차단은 그대로 유지한다.

@@ -82,16 +82,6 @@ test("API conversion includes long context and cache writes without double count
   );
 });
 
-test("only completed history scans report the last turn's native Codex policy", () => {
-  const ledger = new CodexUsageLedger("a");
-  const policy = { sandbox_policy: {type:"workspace-write", writable_roots:["/fixture"]}, approval_policy:"on-request" };
-  ledger.append(line({type:"turn_context", payload:{model:"fixture",...policy}}) + tokens(10,0,1));
-  assert.deepEqual(ledger.snapshot()?.codexTurnPolicy, {sandbox:"workspace-write",approval:"on-request"});
-  assert.equal(ledger.snapshot(true)?.codexTurnPolicy, undefined);
-  ledger.append(line({type:"turn_context", payload:{model:"fixture",approval_policy:{custom:true}}}));
-  assert.equal(ledger.snapshot()?.codexTurnPolicy, undefined);
-});
-
 test("bounded Codex scan advances incrementally, survives partial records, and resets on truncation", async () => {
   const store = new CodexUsageHistory();
   let content = Buffer.from(

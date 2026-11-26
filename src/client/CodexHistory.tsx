@@ -1,5 +1,5 @@
 import { providerName as agentLabel } from "../shared/agent-provider";
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronRight,
@@ -23,7 +23,6 @@ import { expandTimeline } from "./conversation-turns";
 import { conversationSelection } from "./conversation-selection";
 import { richSelectedText } from "./TerminalRich";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
-import { absoluteHistoryFolder, HistoryScopeHeading } from "./history-scope";
 import {
   historySnippet,
   newestHistoryTurns,
@@ -38,14 +37,12 @@ export default function CodexHistory({
   hosts,
   provider = "codex",
   initialHostId,
-  preferredCwd,
   onResume,
   onConnect,
 }: {
   hosts: HostView[];
   provider?: import("../shared/agent-provider").AgentProvider;
   initialHostId?: string;
-  preferredCwd?: string;
   onResume: (terminal: TerminalInfo) => void;
   onConnect: (host: HostView) => void;
 }) {
@@ -132,8 +129,6 @@ export default function CodexHistory({
     .map((h) => h.id)
     .sort()
     .join(",");
-  const historyCwd = provider === "codex" && hostId !== "all" && hostId === initialHostId
-    ? absoluteHistoryFolder(preferredCwd) : undefined;
   const queryKey = JSON.stringify([
     provider,
     hostId,
@@ -141,7 +136,6 @@ export default function CodexHistory({
     automation,
     archived,
     hostKey,
-    historyCwd,
   ]);
   useEffect(() => {
     if (hostId !== "all" && !hosts.some((host) => host.id === hostId))
@@ -165,7 +159,7 @@ export default function CodexHistory({
       targets.map(async (host) => ({
         hostId: host.id,
         page: await api<HistoryPage>(
-          `/hosts/${host.id}/history?${new URLSearchParams({ provider, search: query, includeAutomation: String(automation), archived: String(archived), ...(historyCwd ? {cwd:historyCwd} : {}), ...(more && cursors[host.id] ? { cursor: cursors[host.id]! } : {}) })}`,
+          `/hosts/${host.id}/history?${new URLSearchParams({ provider, search: query, includeAutomation: String(automation), archived: String(archived), ...(more && cursors[host.id] ? { cursor: cursors[host.id]! } : {}) })}`,
           undefined,
           "GET",
         ),
@@ -193,8 +187,7 @@ export default function CodexHistory({
             t,
           ]),
         ).values(),
-      ].sort((a, b) =>
-        Number(b.historyScope === "folder") - Number(a.historyScope === "folder") || b.updatedAt - a.updatedAt),
+      ].sort((a, b) => b.updatedAt - a.updatedAt),
     );
     setCursors((prev) => (more ? { ...prev, ...next } : next));
     setErrors((prev) => (more ? { ...prev, ...failed } : failed));
@@ -208,21 +201,19 @@ export default function CodexHistory({
     setThreads([]);
     setCursors({});
     setErrors({});
-    return () => {
-      generation.current++;
-    };
-  }, [provider, hostId, query, automation, archived, hostKey, historyCwd]);
-  useEffect(() => {
     readingGeneration.current++;
     setSelected(null);
     setDetail(null);
     setDetailError("");
     setReading(false);
     setHistoryPaused(false);
+    return () => {
+      generation.current++;
+    };
   }, [provider, hostId, query, automation, archived, hostKey]);
   useEffect(() => {
     if (expanded && loadedKey.current !== queryKey) void load();
-  }, [expanded, provider, hostId, query, automation, archived, hostKey, historyCwd]);
+  }, [expanded, provider, hostId, query, automation, archived, hostKey]);
   useEffect(
     () => () => {
       readingGeneration.current++;
@@ -442,11 +433,10 @@ export default function CodexHistory({
               </button>
             </div>
           ))}
-          {threads.map((thread, i) => (
-            <Fragment key={`${thread.hostId}:${thread.id}`}>
-            <HistoryScopeHeading folder={historyCwd} scope={thread.historyScope} previous={threads[i-1]?.historyScope} />
+          {threads.map((thread) => (
             <div
               className={`history-row ${selected?.id === thread.id && selected.hostId === thread.hostId ? "selected" : ""}`}
+              key={`${thread.hostId}:${thread.id}`}
               draggable={!archived}
               title={
                 archived
@@ -528,7 +518,6 @@ export default function CodexHistory({
                 </button>
               )}
             </div>
-            </Fragment>
           ))}
           {busy && (
             <div className="history-loading">
@@ -536,7 +525,7 @@ export default function CodexHistory({
               대화 기록을 불러오는 중…
             </div>
           )}
-          {!busy && !threads.length && !Object.values(cursors).some(Boolean) && !Object.keys(errors).length && (
+          {!busy && !threads.length && !Object.keys(errors).length && (
             <div className="history-empty">
               <HistoryIcon size={20} />
               <b>{query ? "검색 결과가 없습니다" : "저장된 대화가 없습니다"}</b>

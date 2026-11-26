@@ -27,7 +27,6 @@ export default function SessionMessages({
   const recipient = terminals.find((t) => t.id === to);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [thread, setThread] = useState<string | null>(null);
   const [reply, setReply] = useState<MailboxMessage | null>(null);
   const [allHistory, setAllHistory] = useState(terminalId === "__all__");
   useEffect(() => {
@@ -38,28 +37,8 @@ export default function SessionMessages({
     );
     setAllHistory(terminalId === "__all__");
     setReply(null);
-    setThread(null);
   }, [terminalId]);
-  const control = async (
-    change:
-      | { action: "pause"; paused: boolean }
-      | { action: "close"; threadId: string },
-  ) => {
-    if (!terminal?.agentSessionId || busy) return;
-    setBusy(true);
-    try {
-      await api(`/terminals/${terminalId}/collaboration`, {
-        ...change,
-        sessionId: terminal.agentSessionId,
-      });
-    } catch (error) {
-      onError((error as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
   const visible = messages
-    .filter((m) => !thread || m.threadId === thread)
     .filter(
       (m) =>
         allHistory ||
@@ -92,38 +71,16 @@ export default function SessionMessages({
         </button>
       </header>
       <div className="mailbox-history-filter">
-        {terminal?.agentSessionId && !terminal.exited && (
-          <button
-            disabled={busy}
-            onClick={() =>
-              void control({
-                action: "pause",
-                paused: !terminal.collaborationPaused,
-              })
-            }
-          >
-            {terminal.collaborationPaused ? "협업 재개" : "협업 일시정지"}
-          </button>
-        )}
-        {thread && (
-          <button onClick={() => setThread(null)}>대화 필터 해제</button>
-        )}
         <button
           className={!allHistory ? "active" : ""}
           disabled={terminalId === "__all__"}
-          onClick={() => {
-            setAllHistory(false);
-            setThread(null);
-          }}
+          onClick={() => setAllHistory(false)}
         >
           이 세션
         </button>
         <button
           className={allHistory ? "active" : ""}
-          onClick={() => {
-            setAllHistory(true);
-            setThread(null);
-          }}
+          onClick={() => setAllHistory(true)}
         >
           전체 기록
         </button>
@@ -151,9 +108,8 @@ export default function SessionMessages({
           </p>
           <p>
             새 터미널에서 ‘Claude 대기 중에도 세션 메시지 받기’를 선택하세요.
-            기존 셸에서는 <code>claude --harbor-peers --resume</code>으로 같은
-            대화를 다시 열 수 있습니다. 채널 수신에는 Claude 계정·조직의 허용이
-            필요합니다.
+            기존 셸에서는 <code>claude --harbor-peers --resume</code>으로 같은 대화를 다시 열 수 있습니다.
+            채널 수신에는 Claude 계정·조직의 허용이 필요합니다.
           </p>
         </details>
         <div className="mailbox-peers" aria-label="대화 가능한 세션">
@@ -173,9 +129,7 @@ export default function SessionMessages({
                     ? "Claude"
                     : peer.agentKind === "codex"
                       ? "Codex"
-                      : peer.agentKind === "antigravity"
-                        ? "Antigravity"
-                        : "셸"}{" "}
+                      : "셸"}{" "}
                   · {peerConnection(peer)}
                 </small>
               </button>
@@ -212,39 +166,6 @@ export default function SessionMessages({
                     : "내가 보냄 · "}
                   {messageDelivery(message, terminals)}
                 </span>
-                {message.author === "agent" &&
-                  !message.labId &&
-                  message.sender.terminalId &&
-                  message.recipient.terminalId && (
-                    <>
-                      {!thread && (
-                        <button onClick={() => setThread(message.threadId)}>
-                          이 대화 보기
-                        </button>
-                      )}
-                      {thread &&
-                        !message.peerClosed &&
-                        message === visible[0] &&
-                        terminal?.agentSessionId &&
-                        [message.sender, message.recipient].some(
-                          (p) =>
-                            p.terminalId === terminalId &&
-                            p.sessionId === terminal.agentSessionId,
-                        ) && (
-                          <button
-                            disabled={busy}
-                            onClick={() =>
-                              void control({
-                                action: "close",
-                                threadId: thread,
-                              })
-                            }
-                          >
-                            이 협업 종료
-                          </button>
-                        )}
-                    </>
-                  )}
                 {message.sender.terminalId && (
                   <button
                     onClick={() => {

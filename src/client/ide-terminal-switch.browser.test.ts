@@ -12,7 +12,7 @@ import { TerminalScreen } from "../server/terminal-screen";
 
 test(
   "full desktop IDE moves the same live terminal and preserves drafts, splits without an external Mods installer",
-  { skip: process.platform !== "win32", timeout: 180000 },
+  { skip: process.platform !== "win32", timeout: 90000 },
   async () => {
     const root = resolve(".cache/ide-terminal-switch-tests");
     await mkdir(root, { recursive: true });
@@ -47,7 +47,7 @@ test(
       integration: "unavailable",
     }));
     const state = {
-      hosts: [host,{...host,id:"fixture-other",name:"Other fixture server",kind:"ssh",serverWorkspace:true}],
+      hosts: [host],
       terminals,
       sessions: [],
       activities: [],
@@ -147,115 +147,6 @@ test(
     app.get("/api/hosts/:id/files/preview", (_req, res) =>
       res.status(404).json({ error: "No fixture reports" }),
     );
-    const managedId = "fixture-managed-conversation";
-    const chat = {
-      id: managedId,
-      runtimeId: "fixture-runtime",
-      nativeId: "fixture-managed-native",
-      hostId: host.id,
-      provider: "codex",
-      title: "Synthetic background work",
-      cwd: "/fixture",
-      model: "",
-      items: [] as { id: string; kind: string; text: string }[],
-      approvals: [],
-      status: "idle",
-      revision: 0,
-      historyCursor: null,
-      updatedAt: Date.now(),
-    };
-    const secondChat: typeof chat = {
-      ...chat,
-      id: "fixture-managed-claude",
-      nativeId: "fixture-native-claude",
-      provider: "claude",
-      title: "Fixture second conversation",
-      status: "idle",
-      items: [],
-    };
-    const otherCodex: typeof chat = {
-      ...chat,
-      id: "fixture-second-codex",
-      nativeId: "fixture-second-codex-native",
-      title: "Second Codex analysis",
-      items: [],
-    };
-    const conversations = [chat, secondChat, otherCodex];
-    let codexCreations = 0;
-    app.post("/api/ide-chat/conversations", (req, res) => {
-      const c =
-        req.body.provider === "claude"
-          ? secondChat
-          : codexCreations++ === 0
-            ? chat
-            : otherCodex;
-      res.json({ ...c, revision: ++c.revision });
-    });
-    app.get("/api/ide-chat/conversations/:id", (req, res) => {
-      const c = conversations.find((c) => c.id === req.params.id);
-      if (!c) {
-        res.sendStatus(404);
-        return;
-      }
-      res.json({ ...c, revision: ++c.revision });
-    });
-    app.get("/api/ide-chat/conversations/:id/usage", (req, res) => {
-      const owner = conversations.find((v) => v.id === req.params.id);
-      if (!owner) {
-        res.sendStatus(404);
-        return;
-      }
-      const first = owner === chat;
-      res.json({
-        usage: {
-          provider: owner.provider,
-          sessionId: owner.nativeId,
-          model: first
-            ? "fixture-codex-usage"
-            : owner === otherCodex
-              ? "fixture-second-codex-usage"
-              : "fixture-claude-usage",
-          usedTokens: first ? 36000 : 77000,
-          contextWindow: 100000,
-          usedPercent: first ? 36 : 77,
-          costUsd: first ? 1.23 : 4.56,
-          updatedAt: Date.now(),
-          source: "native",
-        },
-        work: {
-          updatedAt: Date.now(),
-          jobs: first
-            ? [
-                {
-                  id: "fixture-sim",
-                  pid: 456,
-                  kind: "simulator",
-                  task: "fixture simulation",
-                  state: "running",
-                },
-              ]
-            : [],
-        },
-      });
-    });
-    app.post("/api/ide-chat/conversations/:id/messages", (req, res) => {
-      const target = conversations.find((c) => c.id === req.params.id);
-      if (!target) {
-        res.sendStatus(404);
-        return;
-      }
-      target.items.push({
-        id: req.body.requestId,
-        kind: "user",
-        text: req.body.text,
-      });
-      target.status = "running";
-      res.json({
-        ok: true,
-        requestId: req.body.requestId,
-        status: "submitted",
-      });
-    });
     app.use("/api", (_req, res) =>
       res.json({ data: [], messages: [], requests: [], hosts: [host] }),
     );
@@ -308,17 +199,6 @@ test(
       delete env.ELECTRON_RUN_AS_NODE;
       desktop = await _electron.launch({ args: [main], env });
       const page = await desktop.firstWindow();
-      page.setDefaultTimeout(20000);
-      const globalUpdate = page.locator(".harbor-topbar").getByRole("button", {name:"Harbor 업데이트"});
-      const checkUpdateLocation = async () => {
-        await globalUpdate.waitFor();
-        assert.equal(await page.getByRole("button", {name:"Harbor 업데이트"}).count(), 1);
-        assert.ok(await globalUpdate.evaluate(button => {
-          const box = button.getBoundingClientRect();
-          return box.left >= 0 && box.right <= innerWidth &&
-            button.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
-        }), "visible text update entry is accessible in the top bar");
-      };
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page
@@ -326,11 +206,6 @@ test(
         .getByText(/UNSENT one/)
         .waitFor();
       const pane = page.locator('[data-terminal-id="one"]');
-      await checkUpdateLocation();
-      const sidebarToggle = page.locator(".harbor-topbar .sidebar-toggle");
-      await sidebarToggle.click();
-      await checkUpdateLocation();
-      await sidebarToggle.click();
       await pane.locator(".terminal-usage").waitFor();
       await pane.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("abc");
@@ -454,7 +329,6 @@ test(
           500,
       );
       assert.ok((await explorer.boundingBox())!.width < preferredWidth);
-      await checkUpdateLocation();
       assert.ok(
         (await page.locator(".ide-main").boundingBox())!.width >= 239,
         "Narrow IDE retains usable editor space",
@@ -557,26 +431,17 @@ test(
       await page
         .getByLabel("AI에게 보낼 메시지", { exact: true })
         .fill("Separate unsent AI draft");
-      await page.getByRole("button", { name: "AI 채팅 패널 접기", exact: true }).click();
-      await page.getByRole("button", { name: "AI 채팅 패널 열기", exact: true }).click();
-      const ideComposer = page.getByLabel("AI에게 보낼 메시지", { exact: true });
-      assert.equal(await ideComposer.inputValue(), "Separate unsent AI draft");
       await page
         .getByRole("button", { name: "현재 터미널로 돌아가기", exact: true })
         .click();
       await page
         .getByRole("button", { name: "새 AI 대화 열기", exact: true })
         .click();
-      await page.waitForFunction(() => {
-        const composer = document.querySelector<HTMLTextAreaElement>(
-          '.harbor-ide-chat-region textarea[aria-label="AI에게 보낼 메시지"]',
-        );
-        return composer?.value === "";
-      });
       assert.equal(
-        requests.filter(item => item.method === "POST" && item.path.startsWith("/api/ide-chat/conversations")).length,
-        0,
-        "starting new drafts or reopening the pane must not send a prompt or resume a session",
+        await page
+          .getByLabel("AI에게 보낼 메시지", { exact: true })
+          .inputValue(),
+        "Separate unsent AI draft",
       );
       await page
         .getByRole("button", { name: "현재 터미널로 돌아가기", exact: true })
@@ -640,316 +505,6 @@ test(
         ),
         null,
       );
-      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
-      const managed = page.locator(".managed-chat-workspace");
-      await checkUpdateLocation();
-      const emptyRail = managed.getByRole("complementary", { name: "Codex 컨텍스트 사용량" });
-      await emptyRail.getByText("Harbor", { exact: true }).waitFor();
-      await emptyRail.getByText("대화를 시작하면 표시됩니다.", { exact: true }).waitFor();
-      assert.ok(!requests.some(r => r.path.startsWith("/api/ide-chat/conversations/") && r.path.endsWith("/usage")), "new chat sends no managed telemetry requests");
-      await managed
-        .getByLabel("AI에게 보낼 메시지")
-        .fill("Independent managed draft");
-      await page.getByRole("button", { name: "터미널", exact: true }).click();
-      await page.getByRole("button", { name: "AI 대화", exact: true }).click();
-      assert.equal(
-        await managed.getByLabel("AI에게 보낼 메시지").inputValue(),
-        "Independent managed draft",
-      );
-      assert.equal(
-        requests.some(
-          (r) =>
-            r.path === "/api/ide-chat/conversations" && r.method === "POST",
-        ),
-        false,
-      );
-      const composer = managed.getByRole("textbox", {
-        name: "AI에게 보낼 메시지",
-      });
-      await managed
-        .getByRole("button", { name: "AI 메시지 전송", exact: true })
-        .click();
-      await managed
-        .getByText("Independent managed draft", { exact: true })
-        .waitFor();
-      await page.waitForFunction(
-        () =>
-          document.querySelector<HTMLTextAreaElement>(
-            '.managed-chat-workspace textarea[aria-label="AI에게 보낼 메시지"]',
-          )?.value === "",
-      );
-      await composer.fill("Follow-up draft while the turn is running");
-      const panel = managed.getByRole("complementary", {
-        name: "Codex 컨텍스트 사용량",
-      });
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
-      await panel.locator(".crew-main").waitFor();
-      await panel.getByText("fixture simulation", { exact: true }).waitFor();
-      assert.match(
-        await panel.locator(".terminal-usage-percent").innerText(),
-        /36%/,
-      );
-      assert.match(
-        await panel.locator(".terminal-usage-cost").innerText(),
-        /1\.23/,
-      );
-      const panelBox = await panel.boundingBox(),
-        composerBox = await composer.boundingBox();
-      assert.ok(
-        panelBox &&
-          composerBox &&
-          panelBox.x >= composerBox.x + composerBox.width - 2,
-        "Harbor panel occupies the right column",
-      );
-      await panel.getByRole("button", { name: "상태 패널 접기" }).click();
-      await panel.locator(".terminal-usage-compact").waitFor();
-      assert.equal(
-        await composer.inputValue(),
-        "Follow-up draft while the turn is running",
-      );
-      await panel.getByRole("button", { name: "상태 패널 펼치기" }).click();
-      await panel.locator(".crew-main").waitFor();
-      await page.setViewportSize({ width: 700, height: 950 });
-      await panel.waitFor({ state: "hidden" });
-      assert.equal(
-        await composer.inputValue(),
-        "Follow-up draft while the turn is running",
-      );
-      await page.setViewportSize({ width: 1500, height: 950 });
-      await panel.locator(".crew-main").waitFor();
-      const picker = managed.getByLabel("AI 제공자");
-      await picker.selectOption("claude");
-      await composer.fill("Question for Claude");
-      await managed
-        .getByRole("button", { name: "AI 메시지 전송", exact: true })
-        .click();
-      const claudePanel = managed.getByRole("complementary", {
-        name: "Claude 컨텍스트 사용량",
-      });
-      await claudePanel
-        .getByText("fixture-claude-usage", { exact: true })
-        .waitFor();
-      assert.match(
-        await claudePanel.locator(".terminal-usage-percent").innerText(),
-        /77%/,
-      );
-      assert.match(
-        await claudePanel.locator(".terminal-usage-cost").innerText(),
-        /4\.56/,
-      );
-      assert.equal(
-        await managed.getByText("fixture-codex-usage", { exact: true }).count(),
-        0,
-      );
-      assert.equal(
-        await claudePanel
-          .getByText("fixture simulation", { exact: true })
-          .count(),
-        0,
-      );
-      await picker.selectOption("codex");
-      const tabs = managed.getByRole("tablist", { name: "열린 AI 대화" });
-      const tabA = tabs.getByRole("tab", { name: /Synthetic background work/ }),
-        tabB = tabs.getByRole("tab", { name: /Second Codex analysis/ });
-      const emptyCodex = tabs.getByRole("tab", { name: /Codex · 새 대화/ });
-      await emptyCodex.waitFor();
-      assert.equal(await emptyCodex.getAttribute("aria-selected"), "true");
-      assert.equal(await composer.inputValue(), "");
-      await tabs.getByRole("button", { name: /Codex · 새 대화 .*탭 닫기/ }).click();
-      await tabA.click();
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
-      assert.equal(await composer.inputValue(), "Follow-up draft while the turn is running");
-      await tabs.getByRole("tab", { name: /Fixture second conversation/ }).click();
-      await managed
-        .getByRole("button", { name: "새 대화", exact: true })
-        .click();
-      assert.equal(await picker.inputValue(), "claude");
-      await picker.selectOption("codex");
-      assert.equal(await emptyCodex.getAttribute("aria-selected"), "true");
-      assert.equal(await tabs.getByRole("tab").count(), 3);
-      assert.equal(await composer.inputValue(), "");
-      await composer.fill("Independent second Codex question");
-      await managed
-        .getByRole("button", { name: "AI 메시지 전송", exact: true })
-        .click();
-      await tabB.waitFor();
-      await panel
-        .getByText("fixture-second-codex-usage", { exact: true })
-        .waitFor();
-      await page.waitForFunction(
-        () =>
-          document.querySelector<HTMLTextAreaElement>(
-            '.managed-chat-workspace textarea[aria-label="AI에게 보낼 메시지"]',
-          )?.value === "",
-      );
-      await composer.fill("Second Codex follow-up draft");
-      const tabOrder = () => tabs.getByRole("tab").evaluateAll(nodes=>nodes.map(n=>n.getAttribute("aria-label")));
-      const expectedOrder = await tabOrder();
-      const beforeMove = expectedOrder.indexOf(await tabB.getAttribute("aria-label"));
-      assert.ok(beforeMove >= 0);
-      const afterMove = beforeMove === 0 ? 1 : beforeMove - 1;
-      [expectedOrder[beforeMove], expectedOrder[afterMove]] = [expectedOrder[afterMove], expectedOrder[beforeMove]];
-      await tabB.press(beforeMove === 0 ? "Alt+ArrowRight" : "Alt+ArrowLeft");
-      assert.deepEqual(await tabOrder(), expectedOrder, "keyboard reorders the selected tab");
-      await tabB.dragTo(tabA);
-      assert.notDeepEqual(await tabOrder(), expectedOrder, "dragging moves the tab within this window");
-      await tabB.dragTo(tabs.getByRole("tab").nth(afterMove));
-      assert.deepEqual(await tabOrder(), expectedOrder);
-      assert.equal(await tabB.getAttribute("aria-selected"), "true");
-      assert.equal(await composer.inputValue(), "Second Codex follow-up draft");
-      chat.items.push({
-        id: "progress-a",
-        kind: "assistant",
-        text: "Progress for the first Codex conversation",
-      });
-      assert.equal(
-        await managed
-          .getByText("Progress for the first Codex conversation", {
-            exact: true,
-          })
-          .count(),
-        0,
-      );
-      await tabA.click();
-      await managed
-        .getByText("Progress for the first Codex conversation", { exact: true })
-        .waitFor();
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
-      await page
-        .locator('[data-host-id="fixture-other"]')
-        .getByRole("button", { name: "Other fixture server", exact: true })
-        .click();
-      assert.equal(
-        await tabA.count(),
-        0,
-        "a different host and durable transport do not inherit direct Codex tabs",
-      );
-      assert.equal(await composer.inputValue(), "");
-      await page
-        .locator('[data-host-id="fixture"]')
-        .getByRole("button", { name: "Test server", exact: true })
-        .click();
-      await tabA.waitFor();
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
-      assert.equal(
-        await composer.inputValue(),
-        "Follow-up draft while the turn is running",
-      );
-      await page.evaluate(() => {
-        localStorage.setItem("harbor.managedHost.main", "fixture");
-        localStorage.setItem("harbor.managedHost.main.view", "chat");
-      });
-      await page.reload();
-      await page
-        .getByRole("button", { name: "AI 대화", exact: true, pressed: true })
-        .waitFor();
-      assert.equal(await managed.isVisible(), true);
-      await managed
-        .getByText("Independent managed draft", { exact: true })
-        .waitFor();
-      assert.equal(
-        await composer.inputValue(),
-        "Follow-up draft while the turn is running",
-      );
-      assert.equal(chat.status, "running");
-      assert.equal(chat.items.filter((i) => i.kind === "user").length, 1);
-      assert.equal(await tabs.getByRole("tab").count(), 3);
-      assert.deepEqual(await tabOrder(), expectedOrder, "restored tabs retain their names and order");
-      await managed.screenshot({path:join(directory,"managed-tabs-and-harbor-panel.png")});
-      await tabB.click();
-      await panel
-        .getByText("fixture-second-codex-usage", { exact: true })
-        .waitFor();
-      assert.equal(await composer.inputValue(), "Second Codex follow-up draft");
-      page.once("dialog", (dialog) => dialog.dismiss());
-      const closeB = managed.getByRole("button", {
-        name: /Second Codex analysis 탭 닫기/,
-      });
-      await closeB.click();
-      assert.equal(
-        await composer.inputValue(),
-        "Second Codex follow-up draft",
-        "canceling close keeps the draft",
-      );
-      page.once("dialog", (dialog) => dialog.accept());
-      await closeB.click();
-      await tabB.waitFor({ state: "detached" });
-      assert.equal(otherCodex.status, "running");
-      assert.equal(
-        requests.filter(
-          (r) => r.method === "POST" && r.path.endsWith("/interrupt"),
-        ).length,
-        0,
-      );
-      await tabA.click();
-      await panel.getByText("fixture-codex-usage", { exact: true }).waitFor();
-      assert.equal(
-        await composer.inputValue(),
-        "Follow-up draft while the turn is running",
-      );
-      assert.equal(
-        requests.filter(
-          (r) =>
-            r.path === "/api/ide-chat/conversations" && r.method === "POST",
-        ).length,
-        3,
-      );
-      const tree = page.locator(".harbor-host-tree");
-      await page.getByRole("button", {name:"새 터미널",exact:true}).first().click();
-      const create = page.locator(".new-terminal-dialog");
-      await create.getByLabel("열기 방식").selectOption("chat");
-      await create.getByRole("combobox").filter({has:page.getByRole("option",{name:"Claude",exact:true})}).selectOption("claude");
-      await create.getByLabel("시작 폴더").fill("/fixture/project");
-      await create.getByRole("button",{name:"AI 대화 탭 열기"}).click();
-      await managed.getByRole("button",{name:"작업 폴더 선택"}).getByText("/fixture/project").waitFor();
-      assert.equal(await picker.inputValue(),"claude");
-      const draftTab = await tabs.getByRole("tab",{selected:true}).innerText();
-      await tree.getByRole("button",{name:/Synthetic one/}).first().click();
-      await tree.locator(".harbor-session-row").filter({hasText:draftTab.trim()}).click();
-      assert.equal(await picker.inputValue(),"claude");
-      assert.equal(await composer.inputValue(),"");
-      await tree.locator(".harbor-session-row").filter({hasText:"Synthetic background work"}).click();
-      await tabs.getByRole("tab",{name:/Synthetic background work/,selected:true}).waitFor();
-      assert.equal(await composer.inputValue(),"Follow-up draft while the turn is running");
-      // The HTTP response can precede the WS inventory. Neither background
-      // completion should steal an explicit selection made after startup.
-      await page.getByRole("button", {name:"터미널",exact:true}).click();
-      await page.route("**/api/bootstrap",async route=>{
-        const original=await route.fetch(),boot=await original.json();
-        await route.fulfill({response:original,json:{...boot,state:{...boot.state,terminals:[]}}});
-      });
-      let permitReply!:()=>void;
-      const held=new Promise<void>(resolve=>{permitReply=resolve;});
-      await page.route("**/api/terminals",async route=>{
-        if(route.request().method()!=="POST")return route.continue();
-        assert.equal(route.request().postDataJSON().startupPlaceholder,true);
-        await held;
-        await route.fulfill({json:{...terminals[0],startupPlaceholder:true}});
-      });
-      const startup=page.waitForRequest(r=>r.method()==="POST" && new URL(r.url()).pathname==="/api/terminals");
-      await page.reload();
-      await startup;
-      await page.getByRole("button",{name:"AI 대화",exact:true}).click();
-      await composer.fill("Keep typing while the startup terminal connects");
-      const replied=page.waitForResponse(r=>r.request().method()==="POST" && new URL(r.url()).pathname==="/api/terminals");
-      permitReply();
-      await replied;
-      await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r()))));
-      assert.equal(await managed.isVisible(),true,"background POST completion preserves managed chat");
-      for(const socket of sockets.clients) socket.send(JSON.stringify({type:"state",state:{...state,terminals:[{...terminals[0],startupPlaceholder:true}]}}));
-      await page.waitForFunction(()=>!!document.querySelector('[data-terminal-id="one"]'));
-      await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r()))));
-      assert.equal(await managed.isVisible(),true,"delayed socket inventory preserves managed chat");
-      assert.equal(await composer.inputValue(),"Keep typing while the startup terminal connects");
-      await page.route("**/api/update/workspaces", route => route.fulfill({json:{targetVersion:"2.0.8",hosts:[]}}));
-      await globalUpdate.click();
-      await page.getByRole("button",{name:"서버 작업 공간 설정",exact:true}).click();
-      const workspaceSettings = page.getByRole("region",{name:"서버에서 세션 유지",exact:true});
-      await workspaceSettings.waitFor();
-      assert.ok(await workspaceSettings.evaluate(section=>{
-        const rect=section.getBoundingClientRect();
-        return document.activeElement === section && rect.top < innerHeight && rect.bottom > 0;
-      }), "setup goes directly to the saved SSH server's visible, focused workspace settings");
       assert.deepEqual(errors, []);
     } finally {
       await desktop

@@ -328,27 +328,6 @@ export default function MobileSettings({ onClose }: { onClose: () => void }) {
                 alignItems: "center",
               }}
             >
-              {d.kind !== "desktop" && (
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={!!d.managedChat}
-                    disabled={busy}
-                    onChange={(event) => {
-                      setBusy(true);
-                      void api<Settings>(
-                        `/mobile/devices/${d.id}/chat`,
-                        { enabled: event.target.checked },
-                        "PUT",
-                      )
-                        .then(setValue)
-                        .catch((e) => setError(e.message))
-                        .finally(() => setBusy(false));
-                    }}
-                  />
-                  서버 AI 대화·기록 접근
-                </label>
-              )}
               <span>
                 {d.name} · {d.kind === "desktop" ? "PC" : "모바일"} ·{" "}
                 {d.notifications ? "알림 켜짐" : "알림 꺼짐"}

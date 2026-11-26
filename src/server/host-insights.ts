@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
+import { AntigravityQuota } from "./antigravity-quota.js";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AntigravityQuota } from "./antigravity-quota.js";
 import { Router } from "express";
 import { z } from "zod";
 import type { HostConfig } from "../shared/types.js";
@@ -15,7 +14,6 @@ import type { Files } from "./files.js";
 import type { History } from "./history.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
 import { shellQuote } from "./ssh.js";
-import { ClaudeQuotaSource, quotaHostKey, retryAfterSeconds, type claudeUsageControl } from "./claude-account-usage.js";
 
 const numeric = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
@@ -42,7 +40,7 @@ export function codexQuota(raw: any, now = Date.now()): AccountQuota {
       const label = `${text(limit.limitName) || ""} ${duration} 한도`.trim();
       if (
         !windows.some(
-          (x) => x.label === label && x.remaining === left(w.usedPercent) && x.resetsAt === (numeric(w.resetsAt) ? w.resetsAt*1000 : undefined),
+          (x) => x.label === label && x.remaining === left(w.usedPercent),
         )
       )
         windows.push({
@@ -110,22 +108,6 @@ export function claudeQuota(raw: any, now = Date.now()): AccountQuota {
   };
 }
 
-/** Only account-attributed provider measurements are eligible for scheduled input. */
-export function reservationLimit(provider:"codex"|"claude", raw:any, model:string, now=Date.now()){
-  if(raw.error)return null;
-  const quota=provider==="codex" ? codexQuota({account:raw.account,rateLimits:raw.rateLimitsByLimitId?.codex ??
-    (!raw.rateLimits?.limitId || raw.rateLimits.limitId==="codex" ? raw.rateLimits : undefined)},now) : claudeQuota(raw,now);
-  if(!quota.account || quota.error)return null;
-  const relevant=quota.windows.filter(w=>!w.label.includes("Fable") || /fable/i.test(model));
-  if(provider==="claude" && numeric(raw.usage?.five_hour?.utilization)){
-    relevant.push({label:"five_hour",remaining:left(raw.usage.five_hour.utilization),resetsAt:Date.parse(raw.usage.five_hour.resets_at)});
-  }
-  if(!relevant.length)return null;
-  const exhausted=relevant.filter(w=>w.remaining===0);
-  if(exhausted.some(w=>!Number.isSafeInteger(w.resetsAt) || w.resetsAt!<=now))return null;
-  return {accountKey:createHash("sha256").update(provider+"\n"+quota.account.toLowerCase()).digest("hex"),notBefore:exhausted.length?Math.max(...exhausted.map(w=>w.resetsAt!)):undefined};
-}
-
 export function claudeQuotaError(status: number) {
   if (status === 401)
     return "Claude 인증이 만료되었거나 유효하지 않습니다. CLI 로그인 상태를 확인해주세요.";
@@ -153,10 +135,6 @@ mode=MODE
 if mode=='models':
  d=read(os.path.join(os.environ.get('CODEX_HOME',os.path.expanduser('~/.codex')),'models_cache.json'))
  print(json.dumps([dict((k,m.get(k)) for k in ('slug','context_window','max_context_window','effective_context_window_percent')) for m in d.get('models',[])][:200]))
-elif mode=='identity':
- root=os.environ.get('CLAUDE_CONFIG_DIR')
- account=read(os.path.join(root,'.claude.json') if root else os.path.expanduser('~/.claude.json')).get('oauthAccount',{})
- print(json.dumps({'email':account.get('emailAddress')}))
 else:
  root=os.environ.get('CLAUDE_CONFIG_DIR',os.path.expanduser('~/.claude'))
  c=read(os.path.join(root,'.credentials.json')).get('claudeAiOauth',{})
@@ -164,16 +142,14 @@ else:
  out={'plan':c.get('subscriptionType'),'email':account.get('emailAddress')}
  try:
   token=c.get('accessToken')
-  if not token:
-   out['missingCredential']=True
-   raise ValueError('login')
+  if not token: raise ValueError('login')
   req=urllib.request.Request('https://api.anthropic.com/api/oauth/usage',headers={'Authorization':'Bearer '+token,'anthropic-beta':'oauth-2025-04-20','User-Agent':'Harbor'})
   with urllib.request.urlopen(req,timeout=10) as r: d=json.loads(r.read(262144))
   out['usage']={k:{'utilization':v.get('utilization'),'resets_at':v.get('resets_at')} for k,v in d.items() if isinstance(v,dict) and (k.startswith('five_hour') or k.startswith('seven_day'))}
   out['usage']['limits']=[scoped_limit(v) for v in d.get('limits',[])[:100] if isinstance(v,dict)] if isinstance(d.get('limits'),list) else []
  except urllib.error.HTTPError as e:
   out['status']=e.code
-  if e.code==429: out['retryAfter']=str(e.headers.get('Retry-After',''))[:100]
+  if e.code==429: out['retryAfter']=min(1800,max(120,int(e.headers.get('Retry-After','120')))) if str(e.headers.get('Retry-After','120')).isdigit() else 120
  except Exception: out['error']='Claude 구독 로그인 또는 서버 연결을 확인해주세요.'
  print(json.dumps(out))`;
 
@@ -186,13 +162,9 @@ async function readJson(path: string) {
   }
 }
 export class HostInsights {
-  private readonly claudeSource:ClaudeQuotaSource;
-  readonly antigravityQuota:AntigravityQuota;
   private native = new Map<string, AccountQuota>();
-  observe(host: HostConfig|string, usage: TerminalUsage) {
-    const hostId=typeof host==="string"?host:quotaHostKey(host);
+  observe(hostId: string, usage: TerminalUsage) {
     if (usage.provider === "claude" && usage.accountWindows?.length) {
-      if(!usage.accountWindows.some(w=>w.label==="7일 한도"||w.label==="7일 Fable 한도"))return;
       this.native.set(hostId, {
         provider: "claude",
         windows: usage.accountWindows.filter(
@@ -205,6 +177,7 @@ export class HostInsights {
         this.native.delete(this.native.keys().next().value!);
     }
   }
+  readonly antigravityQuota: AntigravityQuota;
   private quotas = new Map<
     string,
     { at: number; refreshAfter: number; value: AccountQuota[] }
@@ -214,15 +187,10 @@ export class HostInsights {
     private files: Files,
     private history: History,
     private password: (id: string) => Promise<string | undefined>,
-    directory?:string,private control?:typeof claudeUsageControl,
-  ) {this.claudeSource=new ClaudeQuotaSource(directory);this.antigravityQuota=new AntigravityQuota(files,password);}
-  private claudeRead(host:HostConfig,force:boolean){
-    return this.claudeSource.read(host,force,()=>this.metadata(host,"identity"),()=>this.metadata(host,"claude"),
-      this.control?async()=>this.control!(host,await this.password(host.id)):undefined,claudeQuota);
-  }
+  ) { this.antigravityQuota = new AntigravityQuota(files,password); }
   private async metadata(
     host: HostConfig,
-    mode: "models" | "claude" | "identity",
+    mode: "models" | "claude",
   ): Promise<any> {
     if (host.kind === "ssh") {
       await this.password(host.id);
@@ -252,8 +220,6 @@ export class HostInsights {
         effective_context_window_percent: m.effective_context_window_percent,
       }));
     }
-    const account = (await readJson(join(process.env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json"))).oauthAccount;
-    if(mode==="identity")return {email:account?.emailAddress};
     const credential = (
       await readJson(
         join(
@@ -262,8 +228,13 @@ export class HostInsights {
         ),
       )
     ).claudeAiOauth;
+    const account = (
+      await readJson(
+        join(process.env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json"),
+      )
+    ).oauthAccount;
     if (!credential?.accessToken)
-      return {email:account?.emailAddress,missingCredential:true,error:"Claude CLI의 구독 정보를 확인하지 못했습니다."};
+      return { error: "이 서버에서 Claude 구독 로그인을 먼저 해주세요." };
     const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
@@ -277,8 +248,16 @@ export class HostInsights {
         email: account?.emailAddress,
         plan: credential.subscriptionType,
         error: claudeQuotaError(response.status),
-        status:response.status,
-        retryAfter:retryAfterSeconds(response.headers.get("retry-after")),
+        retryAfter:
+          response.status === 429
+            ? Math.min(
+                1800,
+                Math.max(
+                  120,
+                  Number(response.headers.get("retry-after")) || 120,
+                ),
+              )
+            : 0,
       };
     const body = await response.text();
     if (body.length > 262144) throw new Error("Usage response exceeded limit");
@@ -289,14 +268,12 @@ export class HostInsights {
     };
   }
   quota(host: HostConfig, force = false): Promise<AccountQuota[]> {
-    const key = quotaHostKey(host);
+    const key = JSON.stringify(host);
     const previous = this.quotas.get(key);
-    const native = this.native.get(key) || this.native.get(host.id);
-    const recent = native && Date.now() - native.updatedAt < 300000
-      ? {...native,windows:native.windows.filter(w=>!w.resetsAt||w.resetsAt>Date.now())}
-      : undefined;
+    const native = this.native.get(host.id);
+    const recent =
+      native && Date.now() - native.updatedAt < 300000 ? native : undefined;
     const mergeNative = (q: AccountQuota): AccountQuota => {
-      if(q.provider==="claude" && q.stale)q={...q,windows:q.windows.filter(w=>!w.resetsAt||w.resetsAt>Date.now())};
       if (q.provider !== "claude" || !recent?.windows.length) return q;
       const windows = [...q.windows];
       for (const w of recent.windows) {
@@ -307,10 +284,9 @@ export class HostInsights {
       return {
         ...q,
         windows,
-        updatedAt: !q.windows.length || recent.windows.length===2 ? recent.updatedAt : q.stale?q.updatedAt:Math.max(q.updatedAt,recent.updatedAt),
-        ...(q.error && !q.windows.length ? {error:q.retryAt?"나머지 한도는 요청 제한 해제 후 확인합니다.":"나머지 한도는 아직 확인되지 않았습니다.", stale:false, plan:"Claude 구독 · CLI 실시간"}:{}),
+        updatedAt: Math.max(q.updatedAt, recent.updatedAt),
         ...(recent.windows.length === 2
-          ? { error: undefined, stale: false, retryAt: undefined }
+          ? { error: undefined, stale: false }
           : {}),
       };
     };
@@ -323,8 +299,8 @@ export class HostInsights {
     const pending = this.pending.get(key);
     if (pending) return pending;
     const task = (async () => {
-      const retry = 120000;
-      const refreshDelay = 15000;
+      let retry = 120000;
+      let refreshDelay = 15000;
       const value = await Promise.all(
         (["codex", "claude"] as const).map(async (provider) => {
           if (provider === "claude" && recent?.windows.length === 2)
@@ -338,19 +314,17 @@ export class HostInsights {
                     host,
                     await this.password(host.id),
                   )
-                : await this.claudeRead(host,force);
-            if(provider==="claude" && raw.retryAt && raw.error){
-              return {...(raw.cached||claudeQuota(raw)),provider,account:raw.email,plan:raw.plan||raw.cached?.plan,error:raw.error,stale:!!raw.cached,retryAt:raw.retryAt};
-            }
-            if(provider==="claude" && raw.cached && raw.error)return {...raw.cached,provider,account:raw.email,stale:true,error:raw.error};
+                : await this.metadata(host, "claude");
+            retry = Math.max(retry, (raw.retryAfter || 0) * 1000);
+            refreshDelay = Math.max(refreshDelay, (raw.retryAfter || 0) * 1000);
             const result =
               provider === "codex" ? codexQuota(raw) : claudeQuota(raw);
             const old = previous?.value.find((q) => q.provider === provider);
-            return provider==="codex" && result.error && old?.windows.length
+            return result.error && old?.windows.length
               ? { ...old, stale: true, error: result.error }
               : result;
           } catch {
-            const old = provider==="codex"?previous?.value.find((q) => q.provider === provider):undefined;
+            const old = previous?.value.find((q) => q.provider === provider);
             return {
               ...(old || { provider, windows: [], updatedAt: Date.now() }),
               stale: true,
@@ -372,18 +346,6 @@ export class HostInsights {
     })().finally(() => this.pending.delete(key));
     this.pending.set(key, task);
     return task;
-  }
-  private reservationMeasurements=new Map<string,{until:number;result:Promise<ReturnType<typeof reservationLimit>>}>();
-  reservationQuota(host:HostConfig, provider:"codex"|"claude",model:string, fresh=false){
-    const key=JSON.stringify([host,provider,model]), prev=this.reservationMeasurements.get(key);
-    if(!fresh && prev && prev.until>Date.now())return prev.result;
-    const result=(async()=>{try{
-      const raw=provider==="codex" ? await this.history.accountUsage(host,await this.password(host.id)) : await this.claudeRead(host,true);
-      return reservationLimit(provider,raw,model);
-    }catch{return null;}})();
-    this.reservationMeasurements.set(key,{until:Date.now()+120000,result});
-    if(this.reservationMeasurements.size>64)this.reservationMeasurements.delete(this.reservationMeasurements.keys().next().value!);
-    return result;
   }
   async context(host: HostConfig): Promise<CodexContextSettings> {
     const config = await this.history.contextConfig(
@@ -483,7 +445,7 @@ export function createInsightsRouter(
       ),
     }),
   );
-  router.get("/:id/antigravity-quota",async(req,res)=>res.json(await insights.antigravityQuota.read(host(String(req.params.id)),req.query.refresh==="1")));
+  router.get("/:id/antigravity-quota", async(req,res)=>res.json(await insights.antigravityQuota.read(host(String(req.params.id)),req.query.refresh==="1")));
   router.get("/:id/codex-context", async (req, res) =>
     res.json(await insights.context(host(String(req.params.id)))),
   );

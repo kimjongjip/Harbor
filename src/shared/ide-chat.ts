@@ -4,56 +4,13 @@ import type { HistoryPage } from "./history.js";
 export type IdeChatProvider = import("./agent-provider.js").AgentProvider;
 export interface IdeChatLive {
   terminalId: string;
-  /** A managed ACP process was opened by Harbor to serve this conversation. */
-  origin?: "managed" | "terminal";
-  /** Only reported for a current, independently opened terminal with a confirmed native identity. */
-  terminalTitle?: string;
   canSend: boolean;
   canInterrupt: boolean;
   transport:
     "codex-native" | "claude-channel" | "antigravity-acp" | "unavailable";
   reason?: string;
 }
-export const chatEfforts = ["none","minimal","low","medium","high","xhigh","max","ultra"] as const;
-export type ChatEffort = typeof chatEfforts[number];
-export const chatPermissions = ["default","read-only","accept-edits","auto-accept"] as const;
-export type ChatPermission = typeof chatPermissions[number];
-export interface IdeChatUsage {
-  usage: import("./terminal-usage").TerminalUsage | null;
-  work: import("./host-insights").TerminalWorkSnapshot | null;
-}
-export interface IdeChatFolders {
-  path:string;
-  parent:string;
-  folders:{name:string;path:string}[];
-  truncated:boolean;
-}
-export interface ChatReservation {
-  notBefore?:number;
-  needsAuthorization?: boolean;
-  id: string;
-  text: string;
-  error?: string;
-}
 export interface IdeChatConversation {
-  supportsSideFork?: boolean;
-  /** Opaque binding to the account/host that produced this conversation. */
-  reconnectScope?: string;
-  /** Harbor answers pending tool and permission approvals in this conversation. */
-  autoAccept?: boolean;
-  handlesAllApprovals?: boolean;
-  /** Supports scoped settings updates without replacing other selected fields. */
-  supportsPartialSettings?: boolean;
-  observedEffort?: ChatEffort;
-  observedModel?: string;
-  configuredModel?:string;
-  canConfigureNative?:boolean;
-  permission?: ChatPermission;
-  /** Present on chats where Harbor owns the peer tool binding. */
-  peerEnabled?: boolean;
-  reviewOnly?: boolean;
-  effort?: ChatEffort;
-  queue?: ChatReservation[];
   id: string;
   runtimeId: string;
   hostId: string;
@@ -69,20 +26,11 @@ export interface IdeChatConversation {
   historyNotice?: string;
   error?: string;
   revision: number;
-  contentRevision?: number;
-  /** Conditional token for PC-projected activity from a previous remote worker. */
-  pollRevision?:string;
-  nativeActivityTimeline?:true;
   updatedAt: number;
   /** A view of the existing CLI; never a second native conversation process. */
   live?: IdeChatLive;
 }
 export interface IdeChatCreate {
-  sideParent?: { id:string; runtimeId:string; nativeId:string };
-  autoAccept?: boolean;
-  permission?: ChatPermission;
-  reviewOnly?: boolean;
-  effort?: ChatEffort;
   hostId: string;
   provider: IdeChatProvider;
   requestId: string;
@@ -91,8 +39,6 @@ export interface IdeChatCreate {
   resumeId?: string;
 }
 export interface IdeChatSend {
-  images?: string[];
-  delivery?: "steer" | "next" | "reset";
   runtimeId: string;
   requestId: string;
   text: string;

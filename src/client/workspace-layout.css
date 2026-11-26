@@ -132,19 +132,3 @@
     gap: 4px;
   }
 }
-.workspace-update-state {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 3px 10px;
-  padding-block: 4px 9px;
-  border-bottom: 1px solid var(--border);
-}
-.workspace-update-state span {
-  color: var(--muted);
-}
-.workspace-update-state p {
-  flex-basis: 100%;
-  margin: 0;
-  line-height: 1.45;
-}

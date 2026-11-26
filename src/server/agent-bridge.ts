@@ -7,7 +7,6 @@ import express, {
   type Router,
 } from "express";
 import { z } from "zod";
-import {AntigravitySettings,nativeControlEvent} from "./antigravity-settings.js";
 import { claudeHookSchema, type ClaudeHookEvent } from "./claude-hooks.js";
 import { claudeUsage } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
@@ -40,7 +39,6 @@ import {
 } from "../shared/requests.js";
 
 interface BridgeOptions {
-  autoAcceptAcp?(terminalId:string,nativeId:string):boolean;
   annotations?: TerminalAnnotations;
   research?(): ResearchLabs | undefined;
   manager?(): ResearchLabManager | undefined;
@@ -152,17 +150,6 @@ const tools = [
           description:
             "Session id or unique session name from harbor_sessions.",
         },
-        requestKey: {
-          type: "string",
-          maxLength: 128,
-          description:
-            "Reuse this operation key when retrying the same question.",
-        },
-        followUpTo: {
-          type: "string",
-          description:
-            "ID of a message received from this exact peer to continue its thread.",
-        },
         question: {
           type: "string",
           minLength: 1,
@@ -221,11 +208,6 @@ const tools = [
           description: "Session id from harbor_sessions, or its unique name.",
         },
         text: { type: "string", minLength: 1, maxLength: MAILBOX_TEXT_LIMIT },
-        requestKey: {
-          type: "string",
-          maxLength: 128,
-          description: "Reuse on a retry of the same operation.",
-        },
       },
       required: ["to", "text"],
       additionalProperties: false,
@@ -279,11 +261,7 @@ const tools = [
 ];
 
 /** Stateless MCP Streamable HTTP, with a distinct capability token per terminal. */
-import { AcpManualApprovals } from "./acp-manual-approval.js";
-import { isInspectionCommand } from "../../desktop/inspection-command.cjs";
 export class AgentBridge {
-  readonly acpManual = new AcpManualApprovals();
-  workspaceHandoff?: (terminalId: string, nativeId: string) => boolean;
   readonly handle: Router;
   readonly permissionHandle: Router;
   readonly claudeHandle: Router;
@@ -292,7 +270,6 @@ export class AgentBridge {
   readonly richHandle: Router;
   readonly annotations: TerminalAnnotations;
   readonly peers: PeerDelivery;
-  readonly acpSettings:AntigravitySettings;
   private readonly credentials = new Map<string, Credential>();
   private readonly pendingCalls = new Map<
     string,
@@ -311,11 +288,6 @@ export class AgentBridge {
     this.peerHandle = express.Router();
     this.richHandle = express.Router();
     this.peers = new PeerDelivery(mailbox);
-    this.acpSettings=new AntigravitySettings((id,nativeId)=>{
-      const t=options.terminals().find(t=>t.id===id),runtime=this.peers.runtime(id);
-      if(!t||t.exited||t.program!=="antigravity"||t.agentSessionId!==nativeId||!runtime||runtime.kind!=="antigravity"||runtime.sessionId!==nativeId||runtime.state==="offline")return;
-      return runtime.state==="idle"?"idle":"busy";
-    },()=>this.peers.emit("change"));
     const authenticate =
       (hook: boolean, allowGet = false, rich = false): RequestHandler =>
       (req, res, next) => {
@@ -450,21 +422,8 @@ export class AgentBridge {
           query.sessionId,
           query.waitMs,
           controller.signal,
-          ()=>this.acpSettings.pending(credential.terminalId,query.sessionId),
         );
-        if (!res.destroyed) {
-          const registrationNeeded = !!query.sessionId &&
-            events.runtime?.kind === "antigravity" && events.runtime.state !== "offline" &&
-            events.sessionId === query.sessionId && !this.acpSettings.registered(credential.terminalId, query.sessionId);
-          res.json({
-            ...events,
-            ...(query.sessionId && events.sessionId === query.sessionId && !events.messages.length &&
-              events.runtime?.kind === "antigravity" && events.runtime.state === "idle" &&
-              this.workspaceHandoff?.(credential.terminalId, query.sessionId) && { finishForUpdate: true }),
-            ...(this.acpSettings.pending(credential.terminalId,query.sessionId) && {configPending:true}),
-            ...(registrationNeeded && {configRegistrationRequired:true}),
-          });
-        }
+        if (!res.destroyed) res.json(events);
       } catch (error) {
         if (!res.destroyed)
           res.status(400).json({
@@ -480,10 +439,10 @@ export class AgentBridge {
     this.peerHandle.post("/runtime", (req, res) => {
       try {
         const credential = res.locals.harborCredential as Credential;
-        const report = peerRuntimeSchema.parse(req.body);
-        this.setPeerRuntime(credential.terminalId, report);
-        if (report.userInputVersion === 1)
-          this.peers.observeInputReader(credential.terminalId, report.sessionId);
+        this.setPeerRuntime(
+          credential.terminalId,
+          peerRuntimeSchema.parse(req.body),
+        );
         res.json({ runtime: this.peers.runtime(credential.terminalId) });
       } catch (error) {
         res.status(400).json({
@@ -861,20 +820,11 @@ export class AgentBridge {
       runtime.detail =
         "기존 Claude 대화 · 다음 입력·도구·응답 완료 때 수신. 입력 대기 중이면 받은함 확인 요청을 보내세요. 재실행은 필요하지 않습니다.";
     this.peers.setRuntime(terminalId, runtime);
-    if (previous?.kind === "antigravity" && (runtime.state !== "waiting" || runtime.sessionId !== previous.sessionId || runtime.kind !== previous.kind))
-      this.acpManual.revoke(terminalId);
-    if(previous?.kind==="antigravity" && previous.sessionId && (runtime.kind!=="antigravity" || runtime.sessionId!==previous.sessionId || runtime.state==="offline")){
-      this.acpSettings.revoke(terminalId);
-      try{this.options.requests?.cancelPermissions(terminalId,previous.sessionId);}
-      catch{/* Native binding checks still reject a stale approval if disk writes fail. */}
-    }
     this.options.onPeerRuntime?.(terminalId, runtime);
     this.options.onChange?.();
   }
 
   private revokePeerRuntime(terminalId: string): void {
-    this.acpManual.revoke(terminalId);
-    this.acpSettings.revoke(terminalId);
     const runtime = this.peers.runtime(terminalId);
     this.peers.revoke(terminalId);
     if (runtime)
@@ -1051,48 +1001,9 @@ export class AgentBridge {
     credential: Credential,
   ): Promise<void> {
     const requests = this.options.requests;
-    if(req.body?.harbor_acp_manual){
-      const input=z.object({session:z.string().uuid(), title:z.string().min(1).max(1000),detail:z.string().max(8000)}).strict().safeParse(req.body.harbor_acp_manual);
-      const current=()=>{
-        const t=this.options.terminals().find(t=>t.id===credential.terminalId);
-        const r=this.peers.runtime(credential.terminalId);
-        return input.success && this.credentials.get(credential.terminalId)===credential &&
-          t?.program==="antigravity" && !t.exited && t.agentSessionId===input.data.session &&
-          r?.kind==="antigravity" && r.sessionId===input.data.session && r.state==="waiting";
-      };
-      if(!input.success || !current()){res.sendStatus(409);return;}
-      if(this.options.autoAcceptAcp?.(credential.terminalId,input.data.session)){res.json({approved:true});return;}
-      const abort=new AbortController(), close=()=>abort.abort();
-      res.once("close",close);
-      try {
-        const approved=await this.acpManual.offer(credential.terminalId,input.data.session,input.data.title,input.data.detail,abort.signal);
-        if(!res.destroyed)res.json(current() && approved!==undefined ? {approved}:{});
-      } finally {res.off("close",close);}
-      return;
-    }
-    if(req.body?.harbor_acp_config){
-      const parsed=nativeControlEvent.safeParse(req.body.harbor_acp_config);
-      if(!parsed.success){res.status(400).json({error:"잘못된 ACP 설정 이벤트입니다."});return;}
-      try{const result=await this.acpSettings.receive(credential.terminalId,parsed.data);
-        res.json(parsed.data.op==="register"?{...result,manualApprovals:true}:result);}
-      catch{res.status(409).json({error:"Antigravity 세션 연결을 확인하세요."});}
-      return;
-    }
     const event = permissionEventSchema.safeParse(req.body);
-    const acp= req.body?.harbor_acp===true;
-    const acpBound=()=>{
-      if(!acp)return true;
-      const runtime=this.peers.runtime(credential.terminalId);
-      const terminal=this.options.terminals().find(t=>t.id===credential.terminalId);
-      return !!event.success && this.credentials.get(credential.terminalId)===credential &&
-        runtime?.kind==="antigravity" && runtime.sessionId===event.data.session_id && runtime.state!=="offline" &&
-        terminal?.program==="antigravity" && !terminal.exited && terminal.agentSessionId===event.data.session_id &&
-        (/^Antigravity\/(?:edit|read|search)$/.test(event.data.tool_name) ||
-         (process.platform === "linux" && event.data.tool_name === "Antigravity/inspect" &&
-           isInspectionCommand((event.data.tool_input as {command?:unknown})?.command)));
-    };
     // No decision means Codex retains its original approval flow.
-    if (!requests || !event.success || !acpBound()) {
+    if (!requests || !event.success) {
       res.json({});
       return;
     }
@@ -1197,7 +1108,6 @@ export class AgentBridge {
         res.json({});
         return;
       }
-      if(!acpBound()){res.json({});return;}
       res.json({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",
@@ -1525,8 +1435,6 @@ export class AgentBridge {
               .object({
                 to: referenceSchema,
                 question: textSchema,
-                requestKey: z.string().trim().min(1).max(128).optional(),
-                followUpTo: referenceSchema.optional(),
                 waitMs: z.number().int().min(0).max(50000).default(50000),
               })
               .strict()
@@ -1550,7 +1458,6 @@ export class AgentBridge {
               labId
                 ? this.options.research?.()?.get(labId).revision
                 : undefined,
-              { requestKey: input.requestKey, followUpTo: input.followUpTo },
             ).id;
             waitMs = input.waitMs;
           } else {
@@ -1679,11 +1586,6 @@ export class AgentBridge {
                     : ["codex", "resume"].includes(terminal.program || "")
                       ? "codex"
                       : "shell"),
-                collaborationPaused: this.mailbox.isPaused(
-                  terminal.id,
-                  this.peers.runtime(terminal.id)?.sessionId ||
-                    terminal.agentSessionId,
-                ),
                 ...this.status(terminal.id),
               })),
           };
@@ -1691,11 +1593,7 @@ export class AgentBridge {
         }
         case "harbor_send": {
           const input = z
-            .object({
-              to: referenceSchema,
-              text: textSchema,
-              requestKey: z.string().trim().min(1).max(128).optional(),
-            })
+            .object({ to: referenceSchema, text: textSchema })
             .strict()
             .parse(args);
           this.checkSendRate(credential);
@@ -1715,8 +1613,6 @@ export class AgentBridge {
               input.text,
               undefined,
               labId,
-              undefined,
-              { requestKey: input.requestKey },
             ),
             runtime: this.peers.runtime(recipient.id),
             note: "Queued, not confirmed read. Automatic delivery requires a live bound native runtime; poll-only peers must call harbor_inbox. No user draft or terminal input was submitted.",

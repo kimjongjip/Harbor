@@ -45,7 +45,7 @@ export function useTerminalHistorySession(
     let request: AbortController | undefined;
     const inspect = async () => {
       timer = undefined;
-      if (stopped || document.visibilityState === "hidden") return;
+      if (stopped) return;
       const next = codexHistoryTitle(term);
       if (next !== title) {
         title = next;

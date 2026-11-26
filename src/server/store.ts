@@ -36,9 +36,7 @@ export class Store {
         hosts: [
           {
             id: "local",
-            name: process.env.HARBOR_WORKSPACE_SOCKET
-              ? hostname()
-              : "이 컴퓨터",
+            name: "이 컴퓨터",
             kind: "local",
             address: hostname(),
             username: "",

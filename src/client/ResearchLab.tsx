@@ -21,9 +21,6 @@ import {
   researchDecisionLabel,
 } from "../shared/research";
 import { api } from "./api";
-import { Modal } from "./Dialogs";
-import { ResearchWorkflows, WorkflowProgress } from "./ResearchWorkflows";
-import { LabQuestions } from "./LabQuestions";
 import { NewResearchDialog, PreparationPanel } from "./ResearchPreparation";
 import { DeleteResearchDialog } from "./ResearchRecords";
 import { ResearchSettingsSummary } from "./ResearchSettings";
@@ -73,9 +70,6 @@ export function ResearchSidebar({
   onError(message: string): void;
 }) {
   const [creating, setCreating] = useState(false);
-  const [questionMode, setQuestionMode] = useState<"ask" | "debate" | null>(
-    null,
-  );
   const [removing, setRemoving] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [directive, setDirective] = useState("");
@@ -143,37 +137,6 @@ export function ResearchSidebar({
         </div>
       </div>
       <div className="research-list" aria-label="연구 과제 목록">
-        <div className="lab-actions">
-          <button
-            className="button secondary"
-            onClick={() => setQuestionMode("ask")}
-          >
-            각자에게 묻기
-          </button>
-          <button
-            className="button secondary"
-            onClick={() => setQuestionMode("debate")}
-          >
-            함께 토론하기
-          </button>
-        </div>
-        {questionMode && (
-          <Modal
-            title={questionMode === "ask" ? "각자에게 묻기" : "함께 토론하기"}
-            wide
-            onClose={() => setQuestionMode(null)}
-          >
-            <LabQuestions
-              hosts={state.hosts}
-              hostId={initialHostId}
-              debate={questionMode === "debate"}
-              request={api}
-              RenderAnswer={Markdown}
-            />
-          </Modal>
-        )}
-        <ResearchWorkflows state={state} onStarted={onCreated} />
-        {lab && <WorkflowProgress lab={lab} />}
         {labs.map((item) => (
           <div className="research-room-row" key={item.id}>
             <button

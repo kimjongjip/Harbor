@@ -19,22 +19,16 @@ const editorApi = createIdeApi((path, init) =>
 );
 
 export default function DesktopIdeView({
-  serverWorkspace,
   antigravityIntegration,
   onFocusTerminal,
-  terminalInventory,
   onShowTerminal,
   onShowChat,
   terminal,
   chatOpen,
   nativeTerminal = false,
   newConversation = false,
-  newChatRequest,
-  onNewChatHandled,
-  onFolderChange,
   ...props
 }: {
-  serverWorkspace?: boolean;
   antigravityIntegration?: boolean;
   terminalId: string;
   terminal?: TerminalInfo;
@@ -46,11 +40,7 @@ export default function DesktopIdeView({
   chatOpen: boolean;
   nativeTerminal?: boolean;
   newConversation?: boolean;
-  newChatRequest?: number;
-  onNewChatHandled?: (id: number) => void;
-  onFolderChange?: (folder: {hostId:string; cwd:string}) => void;
   onFocusTerminal: (id: string) => void;
-  terminalInventory: TerminalInfo[];
   onShowTerminal: () => void;
   onShowChat?: () => void;
 }) {
@@ -148,17 +138,12 @@ export default function DesktopIdeView({
             }
           >
             <IdeChatPanel
-              terminalInventory={terminalInventory}
-              serverWorkspace={serverWorkspace}
               antigravityIntegration={antigravityIntegration}
               hostId={props.hostId}
               terminal={
                 newConversation || nativeTerminal ? undefined : terminal
               }
               hostName={props.hostLabel}
-              newChatRequest={newChatRequest}
-              onNewChatHandled={onNewChatHandled}
-              onFolderChange={onFolderChange}
               active={props.visible && chatOpen && !nativeTerminal}
               onFocusTerminal={onFocusTerminal}
               onShowTerminal={onShowTerminal}

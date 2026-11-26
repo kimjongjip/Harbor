@@ -1,5 +1,4 @@
 import type { TerminalInfo } from "../shared/types.js";
-import type { HarborRequest } from "../shared/requests.js";
 import type { Requests } from "./requests.js";
 
 type State = NonNullable<TerminalInfo["autoApproval"]>;
@@ -8,22 +7,17 @@ type State = NonNullable<TerminalInfo["autoApproval"]>;
 export class AutoApproval {
   private policies = new Map<string, State>();
   private draining = false;
-  private readonly checked = new WeakMap<State, Set<string>>();
   constructor(
     private readonly requests: Requests,
     private readonly terminal: (id: string) => TerminalInfo | undefined,
     private readonly changed: () => void,
-    private readonly workspaceCheck?: (
-      terminal: TerminalInfo,
-      request: HarborRequest,
-    ) => Promise<boolean>,
   ) {
     requests.on("change", this.refresh);
   }
   state(id: string): State {
     return { ...(this.policies.get(id) || { enabled: false, accepted: 0 }) };
   }
-  set(id: string, enabled: boolean, workspaceOnly = false) {
+  set(id: string, enabled: boolean) {
     const terminal = this.terminal(id);
     if (!terminal || terminal.exited)
       throw new Error("실행 중인 터미널을 찾을 수 없습니다.");
@@ -34,7 +28,6 @@ export class AutoApproval {
     const previous = this.policies.get(id);
     this.policies.set(id, {
       enabled,
-      ...(workspaceOnly && enabled ? { workspaceOnly: true } : {}),
       accepted: previous?.accepted || 0,
       ...(previous?.lastAcceptedAt
         ? { lastAcceptedAt: previous.lastAcceptedAt }
@@ -43,52 +36,14 @@ export class AutoApproval {
         ? { sessionId: terminal.agentSessionId }
         : {}),
     });
-    if (enabled && workspaceOnly)
-      this.checked.set(this.policies.get(id)!, new Set());
     this.refresh();
     this.changed();
     return this.state(id);
-  }
-  private async acceptWorkspaceRequest(
-    terminal: TerminalInfo,
-    policy: State,
-    request: HarborRequest,
-  ) {
-    const { id, hostId, agentKind, cwd, agentSessionId } = terminal;
-    try {
-      if (
-        !this.workspaceCheck ||
-        !(await this.workspaceCheck(terminal, request))
-      )
-        return;
-      const now = this.terminal(id);
-      if (
-        this.policies.get(id) !== policy ||
-        !policy.enabled ||
-        !now ||
-        now.exited ||
-        !now.agentConnected ||
-        now.integration !== "ready" ||
-        now.hostId !== hostId ||
-        now.cwd !== cwd ||
-        now.agentKind !== agentKind ||
-        now.agentSessionId !== agentSessionId ||
-        this.requests.result(id, request.id, false).status !== "pending"
-      )
-        return;
-      this.requests.acceptAutomatically(request.id);
-      policy.accepted++;
-      policy.lastAcceptedAt = Date.now();
-      this.changed();
-    } catch {
-      // Failed scope checks or a superseded request leave the ordinary approval flow in charge.
-    }
   }
   refresh = () => {
     if (this.draining) return;
     this.draining = true;
     let changed = false;
-    let requests: HarborRequest[] | undefined;
     try {
       for (const [id, policy] of this.policies) {
         const terminal = this.terminal(id);
@@ -111,18 +66,12 @@ export class AutoApproval {
           policy.sessionId = sessionId;
           changed = true;
         }
-        requests ??= this.requests.list();
-        const pending = requests.filter(
-          (r) => r.status === "pending" && r.terminal.terminalId === id,
-        );
-        const checked = this.checked.get(policy);
-        if (checked)
-          for (const key of checked)
-            if (!pending.some((r) => r.id === key)) checked.delete(key);
-        for (const request of pending) {
+        for (const request of this.requests.list()) {
           if (
             !policy.enabled ||
+            request.status !== "pending" ||
             request.kind !== "permission" ||
+            request.terminal.terminalId !== id ||
             request.permission?.sessionId !== sessionId
           )
             continue;
@@ -134,13 +83,6 @@ export class AutoApproval {
             )
           )
             continue;
-          if (checked) {
-            if (!checked.has(request.id)) {
-              checked.add(request.id);
-              void this.acceptWorkspaceRequest(terminal, policy, request);
-            }
-            continue;
-          }
           try {
             this.requests.acceptAutomatically(request.id);
             policy.accepted++;

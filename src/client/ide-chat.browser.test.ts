@@ -10,7 +10,7 @@ import { _electron } from "playwright";
 
 test(
   "IDE starts fresh without a terminal, resumes provider history and sends bound structured messages",
-  { skip: process.platform !== "win32", timeout: 240000 },
+  { skip: process.platform !== "win32", timeout: 150000 },
   async () => {
     const root = resolve(".cache/ide-chat-browser-tests");
     await mkdir(root, { recursive: true });
@@ -20,28 +20,18 @@ test(
       String.raw`
 import React,{useState}from'react';import{createRoot}from'react-dom/client';
 import IdeChatPanel from'/src/client/ide/IdeChatPanel';
-import {ManagedSideRail,newSideChat,sideStorageKey} from'/src/client/ide/ManagedSideChat';
 import IdeWorkspace from'/src/client/ide/IdeWorkspace';
-import'/src/client/styles.css';import'/src/client/themes.css';import'/src/client/terminal-layout.css';
+import'/src/client/styles.css';import'/src/client/themes.css';
 window.calls=[];window.snapshots={};window.nextStatus='submitted';window.afterSendStatus='idle';window.created=new Map();window.sequence=0;window.deferSend=false;window.liveSources={};window.terminalActions=[];
 const json=(value,status=200)=>new Response(JSON.stringify(value),{status});
 const items=id=>[{id:id+'-q',kind:'user',text:'기존 질문 '+id},{id:id+'-tool',kind:'command',text:'echo synthetic',detail:'synthetic tool output',status:'completed'},{id:id+'-a',kind:'assistant',text:'# Answer '+id+'\n\n| Check | Value |\n| --- | --- |\n| Native | yes |\n\n~~~ts\nconst answer = 42;\n~~~'.replaceAll('\\n','\n')}];
-function conversation(body){const id=body.resumeId?'resumed-'+body.hostId+'-'+body.provider+'-'+body.resumeId:'created-'+(++window.sequence);return{id,runtimeId:'runtime-fixture',hostId:body.hostId,provider:body.provider,nativeId:body.resumeId||'native-'+id,title:body.resumeId?'이전 대화 이어가기':'새 대화',cwd:body.cwd||'/fixture/home',model:body.model||'default',configuredModel:body.model,permission:body.permission||'default',autoAccept:body.reviewOnly?undefined:!!body.autoAccept,effort:body.effort,reviewOnly:body.reviewOnly,status:'idle',items:body.resumeId?items(id):[],approvals:[],historyCursor:body.resumeId?'older':null,revision:1,updatedAt:1,...(window.liveSources[body.resumeId]?{live:window.liveSources[body.resumeId]}:{})};}
+function conversation(body){const id=body.resumeId?'resumed-'+body.hostId+'-'+body.provider+'-'+body.resumeId:'created-'+(++window.sequence);return{id,runtimeId:'runtime-fixture',hostId:body.hostId,provider:body.provider,nativeId:body.resumeId||'native-'+id,title:body.resumeId?'이전 대화 이어가기':'새 대화',cwd:body.cwd||'/fixture/home',model:body.model||'default',status:'idle',items:body.resumeId?items(id):[],approvals:[],historyCursor:body.resumeId?'older':null,revision:1,updatedAt:1,...(window.liveSources[body.resumeId]?{live:window.liveSources[body.resumeId]}:{})};}
 async function request(path,init){const body=init?.body?JSON.parse(init.body):undefined;window.calls.push({path,body,headers:Object.fromEntries(new Headers(init?.headers))});
- if(path.startsWith('/hosts/')){const url=new URL(path,'http://fixture');
- if(url.pathname.endsWith('/folders')){const chosen=url.searchParams.get('path')||'/fixture/home';return json({path:chosen,parent:'/fixture',folders:chosen==='/fixture/home'?[{name:'work',path:'/fixture/work'}]:[],truncated:false});}
- if(url.pathname.endsWith('/models'))return json({models:[{id:'fixture-model',name:'Fixture model',isDefault:true,efforts:['low','high'],defaultEffort:'low'}]});
- if(url.pathname.endsWith('/history') && url.searchParams.get('provider')==='codex' && url.searchParams.has('cwd')){
-   const current=url.searchParams.get('cwd'),more=url.searchParams.has('cursor'),title=(url.searchParams.get('query')||'Recent')+' '+(more?'elsewhere':current);
-   return json({preferredCwd:current,data:[{id:more?'outside':'inside',provider:'codex',hostId:url.pathname.split('/')[2],cwd:more?'/another':current,title,preview:'',updatedAt:more?3000:1000,historyScope:more?'global':'folder'}],nextCursor:more?null:'scope-next'});
- }
- const provider=url.searchParams.get('provider'),older=url.searchParams.has('cursor');return json({data:[{id:older?'old-thread':'history-thread',hostId:url.pathname.split('/')[2],provider,title:older?'Older history':'Saved '+provider+' conversation',preview:'이전 대화 내용',cwd:'/fixture/project',updatedAt:1700000000000,source:'cli',active:false}],nextCursor:older?null:'history-cursor'});}
+ if(path.startsWith('/hosts/')){const url=new URL(path,'http://fixture');const provider=url.searchParams.get('provider'),older=url.searchParams.has('cursor');return json({data:[{id:older?'old-thread':'history-thread',hostId:url.pathname.split('/')[2],provider,title:older?'Older history':'Saved '+provider+' conversation',preview:'이전 대화 내용',cwd:'/fixture/project',updatedAt:1700000000000,source:'cli',active:false}],nextCursor:older?null:'history-cursor'});}
  if(path==='/conversations'){if(window.created.has(body.requestId))return json(window.created.get(body.requestId));const value=conversation(body);window.created.set(body.requestId,value);window.snapshots[value.id]=value;if(window.deferResumeId&&body.resumeId===window.deferResumeId)return new Promise(resolve=>window.releaseResume=()=>{window.deferResumeId='';resolve(json(value));});return json(value);}
  const [, ,id,action]=path.split('/');const value=window.snapshots[id];if(!value)return json({error:'No such conversation'},404);
  if(!body)return json(value);
  if(action==='messages'){const finish=()=>{if(window.nextStatus==='submitted'){value.items.push({id:body.requestId,kind:'user',text:body.text},{id:body.requestId+'-a',kind:'assistant',text:'# 직접 대화 응답\n\n| 결과 | 값 |\n| --- | --- |\n| 확인 | 성공 |\n\n~~~ts\nconst answer = 42;\n~~~'.replaceAll('\\n','\n')},{id:body.requestId+'-tool',kind:'command',text:'echo synthetic',detail:'synthetic tool output',status:'completed'});value.status=window.afterSendStatus;value.revision++;}return json({ok:true,requestId:body.requestId,status:window.nextStatus});};if(window.deferSend)return new Promise(resolve=>window.resolveSend=()=>{window.deferSend=false;resolve(finish());});return finish();}
- if(action==='auto-accept'){value.autoAccept=body.enabled;value.revision++;if(window.losePolicyAck){window.losePolicyAck=false;return json({error:'fixture acknowledgement lost'},503);}return json(value);}
- if(action==='settings'){value.configuredModel=body.model;value.model=body.model||'default';value.effort=body.effort;value.permission=body.permission||'default';value.revision++;return json(value);}
  if(action==='history'){value.items.unshift({id:id+'-older',kind:'user',text:'더 오래된 질문'});value.historyCursor=null;value.revision++;return json(value);}
  if(action==='interrupt'){value.status='idle';value.approvals=[];value.revision++;return json({ok:true});}
  if(action==='approvals'){value.status='idle';value.approvals=[];value.revision++;return json({ok:true});}
@@ -49,14 +39,7 @@ async function request(path,init){const body=init?.body?JSON.parse(init.body):un
 }
 const file={terminalId:'fixture-terminal',hostId:'host-a',root:'/fixture',cwd:'/fixture',path:'/fixture/example.ts',content:'// 코드와 AI 대화\nexport function answer(): number {\n  return 42;\n}\n'.replaceAll('\\n','\n'),version:'1',binding:'fixture-binding',encoding:'utf-8',bom:false};
 const editorApi={tree:async()=>({...file,path:'/fixture',parent:null,entries:[{name:'example.ts',path:file.path,kind:'file',size:100,modifiedAt:0,mode:0}],truncated:false}),read:async()=>({...file}),save:async(_old,content)=>({...file,content})};
-function Fixture(){const[presentation,setPresentation]=useState();window.setPresentation=setPresentation;const[host,setHost]=useState('host-a');const[workspace,setWorkspace]=useState(false);const[attachment,setAttachment]=useState();const[terminal,setTerminal]=useState();const[active,setActive]=useState(true);window.setHost=setHost;window.setAttachment=setAttachment;window.setTerminal=setTerminal;window.setActive=setActive;window.showWorkspace=()=>setWorkspace(true);return <div style={{width:workspace||presentation==='terminal'?'100vw':520,height:workspace||presentation==='terminal'?'100vh':740,display:'flex',background:'#f4f6fa',color:'#15243c'}}>{workspace&&<div style={{flex:1,minWidth:0}}><IdeWorkspace api={editorApi} terminalId="fixture-terminal" hostId="host-a" hostLabel="Fixture" workspaceCwd="/fixture" visible={true}/></div>}<div style={{width:workspace?420:presentation==='terminal'?'100%':520,minWidth:0,height:'100%',display:'flex',flexDirection:'column'}}><IdeChatPanel rememberScope={presentation==="terminal"?"chat-window.fixture":undefined} presentation={presentation} hostId={host} terminal={terminal} hostName={host==='host-a'?'Fixture A':'Fixture B'} active={active} request={request} attachment={attachment} onAttachmentConsumed={()=>setAttachment(undefined)} onShowTerminal={()=>window.terminalActions.push('show')} onFocusTerminal={id=>window.terminalActions.push(id)}/></div></div>}
-let testSideRoot;
-window.mountDetachedSide=win=>{
-  testSideRoot?.unmount();
-  let mount=document.querySelector('[data-side-validation]');if(!mount){mount=document.createElement('div');mount.dataset.sideValidation='true';mount.style.cssText='position:fixed;right:0;top:0;width:350px;height:650px;background:white;z-index:100;display:flex';document.body.appendChild(mount);}
-  const p=window.snapshots['created-1'];
-  testSideRoot=createRoot(mount);testSideRoot.render(<ManagedSideRail storageScope={sideStorageKey(win,'direct:host-a',p.provider,p.nativeId)} state={newSideChat(p.provider)} parent={p} provider={p.provider} hostId={p.hostId} active={true} request={request} selection={()=>''} append={()=>{}}/>);
-};
+function Fixture(){const[host,setHost]=useState('host-a');const[workspace,setWorkspace]=useState(false);const[attachment,setAttachment]=useState();const[terminal,setTerminal]=useState();const[active,setActive]=useState(true);window.setHost=setHost;window.setAttachment=setAttachment;window.setTerminal=setTerminal;window.setActive=setActive;window.showWorkspace=()=>setWorkspace(true);return <div style={{width:workspace?'100vw':520,height:workspace?'100vh':740,display:'flex',background:'#f4f6fa',color:'#15243c'}}>{workspace&&<div style={{flex:1,minWidth:0}}><IdeWorkspace api={editorApi} terminalId="fixture-terminal" hostId="host-a" hostLabel="Fixture" workspaceCwd="/fixture" visible={true}/></div>}<div style={{width:workspace?420:520,minWidth:0,height:'100%',display:'flex',flexDirection:'column'}}><IdeChatPanel hostId={host} terminal={terminal} hostName={host==='host-a'?'Fixture A':'Fixture B'} active={active} request={request} attachment={attachment} onAttachmentConsumed={()=>setAttachment(undefined)} onShowTerminal={()=>window.terminalActions.push('show')} onFocusTerminal={id=>window.terminalActions.push(id)}/></div></div>}
 createRoot(document.getElementById('root')).render(<Fixture/>);
 `,
     );
@@ -126,33 +109,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         0,
       );
       await input.fill("Codex draft A");
-      const folderButton=page.getByRole("button",{name:"작업 폴더 선택",exact:true});
-      await folderButton.getByText("/fixture/home",{exact:true}).waitFor();
-      const historyButton = page.getByRole("button", {name:"대화 기록",exact:true});
-      await historyButton.click();
-      await page.getByRole("button",{name:/Recent \/fixture\/home/}).waitFor();
-      await folderButton.click();
-      await page.getByRole("dialog").getByRole("button",{name:"work",exact:true}).click();
-      await page.getByRole("dialog").getByRole("button",{name:"이 폴더 선택"}).click();
-      await folderButton.getByText("/fixture/work",{exact:true}).waitFor();
-      await page.getByRole("button",{name:/Recent \/fixture\/work/}).waitFor();
-      assert.equal(await page.getByRole("button",{name:/Recent \/fixture\/home/}).count(),0);
-      const historyRegion = page.getByRole("region",{name:"Codex 대화 기록"});
-      await historyRegion.getByLabel("대화 기록 검색").fill("needle");
-      await historyRegion.getByRole("button",{name:/needle \/fixture\/work/}).waitFor();
-      await historyRegion.getByRole("button",{name:"기록 더 보기"}).click();
-      await historyRegion.getByRole("button",{name:/needle elsewhere/}).waitFor();
-      assert.deepEqual(await historyRegion.getByRole("heading").allTextContents(),["선택한 폴더","다른 폴더"]);
-      assert.equal(await page.evaluate(()=>(window as any).calls.filter((c:any)=>{
-        const params=new URL(c.path,"http://fixture").searchParams;
-        return params.get("cwd")==="/fixture/work" && params.get("query")==="needle" && params.get("cursor")==="scope-next";
-      }).length),1);
-      await historyButton.click();
-      assert.equal(await input.inputValue(),"Codex draft A");
-      await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
-      await page.getByLabel("AI 모델",{exact:true}).selectOption("fixture-model");
-      await page.getByLabel("추론 강도",{exact:true}).selectOption("high");
-      await page.getByRole("dialog").getByRole("button",{name:"적용"}).click();
       await provider.selectOption("claude");
       assert.equal(await input.inputValue(), "");
       await input.fill("Claude draft A");
@@ -172,46 +128,16 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       assert.equal(first[0].path, "/conversations");
       assert.deepEqual(
         Object.keys(first[0].body).sort(),
-        ["hostId", "provider", "requestId","cwd","model","effort"].sort(),
+        ["hostId", "provider", "requestId"].sort(),
       );
       assert.equal(first[0].body.hostId, "host-a");
       assert.equal(first[0].body.provider, "codex");
-      assert.equal(first[0].body.cwd,"/fixture/work");
-      assert.equal(first[0].body.effort,"high");
-      assert.equal(first[0].body.model,"fixture-model");
-      assert.equal(first[0].body.permission,undefined);
-      assert.equal(await page.getByRole("button",{name:"현재 작업 폴더"}).isDisabled(),true);
       assert.equal(first[1].path, "/conversations/created-1/messages");
       assert.deepEqual(
         Object.keys(first[1].body).sort(),
         ["runtimeId", "requestId", "text"].sort(),
       );
       assert.equal(first[1].body.text, "Codex draft A");
-      await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
-      const policy=page.getByRole("switch",{name:"Harbor 자동 수락"});
-      await page.evaluate(()=>(window as any).losePolicyAck=true);
-      await policy.click();
-      await page.getByRole("dialog").getByRole("alert").waitFor();
-      assert.equal(await policy.getAttribute("aria-checked"),"true","recover the authoritative setting after a lost acknowledgement");
-      assert.equal(await page.getByLabel("AI 권한",{exact:true}).inputValue(),"default");
-      await policy.click();
-      await page.waitForFunction(()=>document.querySelector('[role=switch][aria-label="Harbor 자동 수락"]')?.getAttribute("aria-checked")==="false");
-      await page.getByLabel("AI 권한",{exact:true}).selectOption("read-only");
-      await page.getByRole("dialog").getByRole("button",{name:"적용"}).click();
-      await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).getByText(/읽기 전용/).waitFor();
-      const change=(await posts()).at(-1);
-      assert.equal(change.path,"/conversations/created-1/settings");
-      assert.equal(change.body.permission,"read-only");
-      assert.equal(change.body.model,"fixture-model");
-      // Saved choices survive another read, including an older worker which
-      // knows the actual model but does not expose a configuredModel override.
-      await page.evaluate(()=>{const c=(window as any).snapshots["created-1"];delete c.configuredModel;c.title="검증용 이전 세션";c.revision++;});
-      await page.locator(".ide-chat-conversation-title").getByText("검증용 이전 세션",{exact:true}).waitFor();
-      await page.getByRole("button",{name:"모델·추론 강도·권한 설정"}).click();
-      assert.equal(await page.getByLabel("AI 모델",{exact:true}).inputValue(),"fixture-model");
-      assert.equal(await page.getByLabel("추론 강도",{exact:true}).inputValue(),"high");
-      assert.equal(await page.getByLabel("AI 권한",{exact:true}).inputValue(),"read-only");
-      await page.getByRole("dialog").getByRole("button",{name:"닫기",exact:true}).last().click();
       assert.equal(
         await page.locator(".ide-chat-message.assistant table").count(),
         1,
@@ -220,176 +146,12 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         await page.locator(".ide-chat-message.assistant pre").innerText(),
         /const answer = 42/,
       );
-      const savedWork=page.locator(".conversation-work");
-      await savedWork.locator(":scope > summary").click();
+      await page.locator(".ide-chat-tool summary").click();
       assert.match(
-        await savedWork.locator(".transcript-output pre").innerText(),
+        await page.locator(".ide-chat-tool pre").innerText(),
         /synthetic tool output/,
       );
-      await savedWork.getByRole("button", {name:"작업 과정 접기"}).click();
 
-      await input.fill("화면 변경 중 작성하던 초안");
-      await page.evaluate(() => (window as any).setPresentation("terminal"));
-      const transcript=page.locator(".managed-transcript");
-      await transcript.getByRole("table").waitFor();
-      assert.equal(await transcript.locator(".history-message.user .conversation-question").innerText(),"Codex draft A");
-      assert.equal(await transcript.locator(".history-message.assistant table").count(),1);
-      const work=transcript.locator(".conversation-work");
-      assert.equal(await work.getAttribute("open"),null);
-      await transcript.locator(".history-message.assistant table").evaluate(node=>{
-        const selection=window.getSelection()!;const range=document.createRange();range.selectNodeContents(node);
-        selection.removeAllRanges();selection.addRange(range);
-        document.addEventListener("copy",event=>{event.preventDefault();(window as any).copiedFixtureText=selection.toString();},{once:true});
-        document.execCommand("copy");
-      });
-      assert.match(await page.evaluate(()=>(window as any).copiedFixtureText),/성공/);
-      await page.evaluate(()=>window.getSelection()?.removeAllRanges());
-      await work.locator("summary").first().click();
-      await work.locator(".transcript-output").first().waitFor({timeout:4000});
-      assert.match(await work.innerText(),/synthetic tool output/);
-      await page.screenshot({path:resolve(".cache/managed-terminal-presentation.png")});
-      await work.getByRole("button",{name:"작업 과정 접기"}).click();
-      assert.equal(await work.getAttribute("open"),null);
-      assert.equal(await input.inputValue(),"화면 변경 중 작성하던 초안");
-      await page.setViewportSize({width:1200,height:800});
-      await page.evaluate(()=>{
-        const parent=(window as any).snapshots["created-1"];parent.status="running";parent.revision++;
-        parent.items.push(
-          {id:"progress-report",turnId:"live-work",kind:"assistant",phase:"commentary",text:"회귀 테스트를 실행하고 있습니다."},
-          {id:"progress-command",turnId:"live-work",kind:"command",text:"npm test -- parser",detail:"checking parser",status:"inProgress"},
-        );
-      });
-      await transcript.getByText("회귀 테스트를 실행하고 있습니다.",{exact:true}).waitFor();
-      const currentWork=transcript.locator("[data-work-item=progress-command]");
-      await currentWork.getByText("checking parser",{exact:true}).waitFor();
-      await page.locator(".ide-chat-progress").getByText(/npm test -- parser/).waitFor();
-      await currentWork.evaluate(node=>{(window as any).currentWorkNode=node;});
-      await page.evaluate(()=>{
-        const parent=(window as any).snapshots["created-1"];
-        parent.items.at(-1).detail+="\nparser suite passed";parent.revision++;
-      });
-      await currentWork.getByText(/parser suite passed/).waitFor();
-      assert.ok(await currentWork.evaluate(node=>node===(window as any).currentWorkNode));
-      await page.screenshot({path:resolve(".cache/208-managed-running-work.png")});
-      await page.evaluate(()=>(window as any).setPresentation(undefined));
-      await page.locator("[data-work-item=progress-command] .transcript-output").getByText(/parser suite passed/).waitFor();
-      await page.evaluate(()=>(window as any).setPresentation("terminal"));
-      await transcript.getByRole("table").waitFor();
-      await page.evaluate(()=>{
-        const c=(window as any).snapshots["created-1"];c.items=c.items.filter((i:any)=>i.turnId!=="live-work");c.revision++;
-      });
-      const initialCalls=(await posts()).length;
-      await transcript.locator(".history-message.assistant table").evaluate(node=>{
-        const range=document.createRange();range.selectNodeContents(node);
-        const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);
-      });
-      const openSide=page.locator(".terminal-usage-header").getByRole("button",{name:"옆 대화",exact:true});
-      await openSide.click();
-      const side=page.getByRole("region",{name:"옆 대화",exact:true});
-      const sideInput=side.getByLabel("옆 대화 메시지");
-      await sideInput.fill("표를 해석해줘");
-      assert.equal((await posts()).length,initialCalls, "opening the rail must not start any conversation");
-      await page.evaluate(()=>{
-        const fixture=window as any, parent=fixture.snapshots["created-1"];
-        parent.items.push({id:"just-finished",kind:"command",text:"npm test -- parser",detail:"parser suite passed",status:"completed"});
-        parent.revision++;
-        fixture.deferSend=true;
-      });
-      await side.getByRole("button",{name:"옆 대화 보내기"}).click();
-      await page.waitForFunction(()=>typeof (window as any).resolveSend==="function");
-      const branch=(await posts()).slice(initialCalls);
-      assert.equal(branch[0].body.reviewOnly,true);
-      assert.equal(branch[0].body.cwd,"/fixture/work");
-      assert.match(branch[1].body.text,/원래 대화에서 인용/);
-      assert.match(branch[1].body.text,/npm test -- parser/);
-      assert.match(branch[1].body.text,/parser suite passed/);
-      assert.match(branch[1].body.text,/성공/);
-      assert.doesNotMatch(branch[1].body.text,/Codex draft A/);
-      assert.notEqual(branch[1].path,"/conversations/created-1/messages");
-      await page.getByRole("button",{name:"Harbor 상태"}).click();
-      assert.ok(await page.locator(".ide-chat-progress").isVisible());
-      await input.fill("본 대화 작업 중인 새 초안");
-      const mainTabTitle=await page.getByRole("tab",{selected:true}).getAttribute("aria-label");
-      await page.getByRole("button",{name:"새 대화",exact:true}).click();
-      await input.fill("다른 탭의 초안");
-      await page.evaluate(()=>{(window as any).resolveSend();});
-      assert.equal(await input.inputValue(),"다른 탭의 초안");
-      assert.equal(await page.getByRole("region",{name:"옆 대화",exact:true}).count(),0);
-      await page.getByRole("tab",{name:mainTabTitle!,exact:true}).click();
-      assert.equal(await input.inputValue(),"본 대화 작업 중인 새 초안");
-      await openSide.click();
-      await side.getByRole("button",{name:"답을 원래 초안에 담기"}).waitFor();
-      assert.equal(await input.inputValue(),"본 대화 작업 중인 새 초안");
-      await page.screenshot({path:resolve(".cache/managed-side-chat-active.png")});
-      await side.getByRole("button",{name:"답을 원래 초안에 담기"}).click();
-      assert.match(await input.inputValue(),/^본 대화 작업 중인 새 초안\s+# 직접 대화 응답/);
-      assert.equal((await posts()).length,initialCalls+2,"switching panels and copying an answer do not send to the parent");
-      const childPath=branch[1].path.replace(/\/messages$/,""), childId=childPath.split("/").at(-1);
-      const mockPending=async(kind:"question"|"permissions"|"running")=>{
-        await page.getByRole("button",{name:"Harbor 상태"}).click();
-        await page.evaluate(({id,kind})=>{
-          const v=(window as any).snapshots[id];
-          v.approvals=kind==="running"?[]:[{id:"side-check",requestId:"fixture",method:"fixture",kind,title:"옆 대화 확인",detail:"",
-            ...(kind==="question"?{questions:[{id:"scale",question:"비교 기준은?"}]}:{})}];
-          v.status=kind==="running"?"running":"waiting";v.revision++;
-        },{id:childId,kind});
-        await openSide.click();
-      };
-      await mockPending("question");
-      await side.getByLabel("비교 기준은?").fill("동일 주파수");
-      await side.getByRole("button",{name:"답변 보내기"}).click();
-      await side.getByRole("button",{name:"답을 원래 초안에 담기"}).waitFor();
-      const answered=(await posts()).at(-1);
-      assert.equal(answered.path,childPath+"/approvals/side-check");
-      assert.deepEqual(answered.body.answers,{scale:"동일 주파수"});
-      await mockPending("permissions");
-      await side.getByRole("button",{name:"거절"}).waitFor();
-      assert.equal(await side.getByRole("button",{name:"이번만 허용"}).count(),0);
-      await side.getByRole("button",{name:"거절"}).click();
-      await side.getByRole("button",{name:"답을 원래 초안에 담기"}).waitFor();
-      await mockPending("running");
-      await side.getByRole("button",{name:"옆 응답 중단"}).waitFor();
-      await page.getByRole("button",{name:"Harbor 상태"}).click();
-      const sideReads=()=>page.evaluate(p=>(window as any).calls.filter((c:any)=>!c.body&&c.path===p).length,childPath);
-      const baseline=await sideReads(); await page.waitForTimeout(850); assert.equal(await sideReads(),baseline);
-      await openSide.click();
-      await side.getByRole("button",{name:"옆 응답 중단"}).click();
-      await side.getByRole("button",{name:"답을 원래 초안에 담기"}).waitFor();
-      assert.equal((await posts()).at(-1).path,childPath+"/interrupt");
-      assert.ok(await page.locator(".ide-chat-progress").isVisible());
-      await page.getByRole("button",{name:"Harbor 상태"}).click();
-      await page.evaluate(()=>{const p=(window as any).snapshots["created-1"];p.status="idle";p.revision++;});
-      await page.setViewportSize({width:780,height:820});
-      await page.evaluate(()=>(window as any).setPresentation(undefined));
-      await page.locator(".ide-chat-message.assistant table").waitFor();
-      await input.fill("");
-      const beforeBranch = (await posts()).length;
-      const showActions=async()=>{const menu=page.getByLabel("대화 메뉴",{exact:true});if(await menu.getAttribute("aria-expanded")!=="true")await menu.click();};
-      await showActions();
-      await page.getByRole("button", { name: "옆 대화", exact: true }).click();
-      assert.match(await input.inputValue(), /참고 기록/);
-      await showActions();
-      await page
-        .getByRole("button", { name: "원래 대화", exact: true })
-        .click();
-      await showActions();
-      await page
-        .getByRole("button", { name: "작업 인계", exact: true })
-        .click();
-      await page
-        .getByRole("button", { name: "Claude로 인계", exact: true })
-        .click();
-      assert.equal(await provider.inputValue(), "claude");
-      assert.match(await input.inputValue(), /이어갈 작업/);
-      assert.equal(
-        (await posts()).length,
-        beforeBranch,
-        "drafting a handoff or side question never starts an engine",
-      );
-      await showActions();
-      await page
-        .getByRole("button", { name: "원래 대화", exact: true })
-        .click();
       await provider.selectOption("claude");
       assert.equal(await input.inputValue(), "Claude draft A");
       await page
@@ -482,7 +244,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         (await posts()).some((call: any) => call.path.endsWith("/interrupt")),
       );
 
-      const beforeUncertain=(await messages()).length;
       await input.fill("uncertain draft");
       await page.evaluate(() => {
         (window as any).nextStatus = "uncertain";
@@ -495,15 +256,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       assert.equal(await input.inputValue(), "uncertain draft");
       await send.click();
       await page.waitForFunction(
-        (expected) =>
+        () =>
           (window as any).calls.filter((call: any) =>
             call.path.endsWith("/messages"),
-          ).length === expected, beforeUncertain+2,
+          ).length === 3,
       );
       const attempts = await messages();
       assert.deepEqual(
-        attempts[beforeUncertain].body,
-        attempts[beforeUncertain+1].body,
+        attempts[1].body,
+        attempts[2].body,
         "uncertain retry uses the identical idempotency key and input",
       );
       await page.evaluate(() => {
@@ -557,19 +318,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
       );
       assert.equal(await input.inputValue(), "");
       await input.fill("이 부분을 설명해 줘");
-      const png = Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jfgAAAABJRU5ErkJggg==",
-        "base64",
-      );
-      await page
-        .getByLabel("첨부 이미지 파일")
-        .setInputFiles({
-          name: "figure.png",
-          mimeType: "image/png",
-          buffer: png,
-        });
-      await page.getByRole("img", { name: "첨부: figure.png" }).waitFor();
-      assert.equal(await input.inputValue(), "이 부분을 설명해 줘");
       await send.click();
       await page.locator(".ide-chat-quoted summary").waitFor();
       assert.equal(
@@ -581,9 +329,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         "이 부분을 설명해 줘",
       );
       const selectedMessage = (await messages()).at(-1);
-      assert.deepEqual(selectedMessage.body.images, [
-        "data:image/png;base64," + png.toString("base64"),
-      ]);
       assert.match(selectedMessage.body.text, /const original = 42;/);
       assert.match(
         selectedMessage.body.text,
@@ -626,7 +371,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Running Codex",
           agentKind: "codex",
           agentSessionId: "live-codex",
-          agentConnected: true,
           agentState: "idle",
           connectionState: "connected",
           exited: false,
@@ -638,8 +382,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           exact: true,
         })
         .waitFor();
-      assert.equal(await page.getByText("열린 터미널과 연결됨", { exact: true }).count(), 0);
-      assert.equal((await posts()).at(-1).headers["x-harbor-terminal"], "running-codex");
+      await page.getByText("열린 터미널과 연결됨", { exact: true }).waitFor();
       assert.equal(await provider.inputValue(), "codex");
       assert.equal((await posts()).at(-1).body.resumeId, "live-codex");
       await page.evaluate(() => {
@@ -649,7 +392,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         fixture.snapshots["resumed-live-host-codex-live-codex"].revision++;
         fixture.nextStatus = "queued";
       });
-      await page.locator(".ide-chat-progress").getByText("다음 작업 기록 대기 중", { exact: true }).waitFor();
+      await page.getByText("Codex가 작업 중입니다.", { exact: true }).waitFor();
       await input.fill("작업 중인 같은 Codex에 질문합니다.");
       await send.click();
       await page
@@ -668,9 +411,9 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         await page.getByRole("button", { name: "AI 작업 중단" }).count(),
         0,
       );
-      await page.getByLabel("대화 메뉴", {exact:true}).click();
-      await page.getByRole("button", { name: "원본 터미널 열기 · Running Codex", exact: true }).click();
-      await page.waitForFunction(()=>(window as any).terminalActions.at(-1)==="running-codex");
+      await page
+        .getByRole("button", { name: "터미널 보기", exact: true })
+        .click();
       assert.deepEqual(
         await page.evaluate(() => (window as any).terminalActions),
         ["show", "running-codex"],
@@ -710,7 +453,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Running Claude",
           agentKind: "claude",
           agentSessionId: "live-claude",
-          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -726,9 +468,8 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
         .waitFor();
       assert.equal(await input.isDisabled(), true);
       await page
-        .getByRole("button", { name: "원본 터미널 열기 · Running Claude", exact: true })
+        .getByRole("button", { name: "터미널에서 입력", exact: true })
         .click();
-      await page.waitForFunction(()=>(window as any).terminalActions.at(-1)==="running-claude");
       assert.deepEqual(
         (await page.evaluate(() => (window as any).terminalActions)).slice(-2),
         ["show", "running-claude"],
@@ -767,7 +508,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Slow session",
           agentKind: "codex",
           agentSessionId: "live-slow",
-          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -807,7 +547,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "First session",
           agentKind: "codex",
           agentSessionId: "live-first",
-          agentConnected: true,
           connectionState: "connected",
           exited: false,
         });
@@ -822,7 +561,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           title: "Second session",
           agentKind: "codex",
           agentSessionId: "live-second",
-          agentConnected: true,
           connectionState: "connected",
           exited: false,
         }),
@@ -843,25 +581,6 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
           .count(),
         0,
       );
-      await page.setViewportSize({width:1200,height:800});
-      const afterLegacy=(await posts()).length;
-      const restoreSide = async (win:string)=>{
-        await page.evaluate(win=>(window as any).mountDetachedSide(win),win);
-        const mount=page.locator("[data-side-validation]");
-        await mount.getByRole("button",{name:"옆 대화",exact:true}).click();
-        return mount.getByRole("region",{name:"옆 대화",exact:true});
-      };
-      await page.evaluate(()=>(window as any).setActive(false));
-      const unrelated=await restoreSide("chat-window.other");
-      assert.equal(await unrelated.getByRole("heading",{name:"직접 대화 응답"}).count(),0);
-      const same=await restoreSide("chat-window.fixture");
-      await same.getByRole("heading",{name:"직접 대화 응답"}).waitFor();
-      assert.equal((await posts()).length,afterLegacy,"same-window reopen reattaches existing child by GET only");
-      await page.evaluate(id=>{delete (window as any).snapshots[id]},childId);
-      const missing=await restoreSide("chat-window.fixture");
-      await missing.getByRole("button",{name:"새 옆 대화"}).waitFor();
-      assert.match(await missing.getByRole("alert").innerText(),/기록/);
-      assert.equal((await posts()).length,afterLegacy,"worker restart cannot silently start a new side conversation");
       assert.deepEqual(errors, []);
     } catch (error) {
       if (app) {

@@ -8,7 +8,6 @@ export interface IdeLiveBinding {
   hostId: string;
   provider: IdeChatProvider;
   nativeId: string;
-  origin?: IdeChatLive["origin"];
 }
 type Guard = () => void | Promise<void>;
 export interface IdeLiveOperations {
@@ -30,16 +29,11 @@ export interface IdeLiveOperations {
     ): Promise<"queued" | "uncertain">;
   };
   claude: {
-    available(
-      id: string,
-      nativeId: string,
-      provider: "claude" | "antigravity",
-    ): boolean;
+    available(id: string, nativeId: string): boolean;
     send(
       id: string,
       input: { requestId: string; sessionId: string; text: string },
       beforeDispatch: () => Promise<void>,
-      provider: "claude" | "antigravity",
     ): Promise<"queued" | "uncertain">;
   };
   now?(): number;
@@ -53,7 +47,6 @@ function providerOf(terminal: TerminalInfo): IdeChatProvider | undefined {
     return "claude";
   if (terminal.program === "codex" || terminal.program === "resume")
     return "codex";
-  if (terminal.program === "antigravity") return "antigravity";
 }
 function nativeOf(terminal: TerminalInfo) {
   // Once the CLI reports its identity, a stale launch-time resume ID must not
@@ -63,14 +56,9 @@ function nativeOf(terminal: TerminalInfo) {
 function rejected(message: string, status = 409) {
   return Object.assign(new Error(message), { status, definiteRejection: true });
 }
-export function ideLiveRequestId(
-  { terminalId, hostId, provider, nativeId }: IdeLiveBinding,
-  requestId: string,
-) {
+export function ideLiveRequestId(binding: IdeLiveBinding, requestId: string) {
   return createHash("sha256")
-    .update(
-      JSON.stringify([{ terminalId, hostId, provider, nativeId }, requestId]),
-    )
+    .update(JSON.stringify([binding, requestId]))
     .digest("hex");
 }
 
@@ -91,37 +79,18 @@ export class IdeLiveChats {
     hostId: string,
     provider: IdeChatProvider,
     nativeId: string,
-    terminalId?: string,
   ): IdeLiveBinding | undefined {
-    const matches = this.operations
+    const terminal = this.operations
       .terminals()
-      .filter(
-        (t) =>
-          !t.exited &&
-          (!terminalId || t.id === terminalId) &&
-          t.hostId === hostId &&
-          providerOf(t) === provider &&
-          nativeOf(t) === nativeId,
+      .find(
+        (terminal) =>
+          !terminal.exited &&
+          terminal.hostId === hostId &&
+          providerOf(terminal) === provider &&
+          nativeOf(terminal) === nativeId,
       );
-    // A reconnecting terminal may still reserve its launch-time resume ID.
-    // Prefer the terminal that is actually running that native conversation.
-    const terminal =
-      matches.find(
-        (t) =>
-          t.agentSessionId === nativeId &&
-          t.agentConnected &&
-          t.connectionState === "connected",
-      ) ??
-      matches.find((t) => t.agentSessionId === nativeId) ??
-      matches[0];
     return terminal
-      ? {
-          terminalId: terminal.id,
-          hostId,
-          provider,
-          nativeId,
-          origin: terminal.managedChatAdapter ? "managed" : "terminal",
-        }
+      ? { terminalId: terminal.id, hostId, provider, nativeId }
       : undefined;
   }
   get(binding: IdeLiveBinding): {
@@ -130,19 +99,14 @@ export class IdeLiveChats {
     status: SessionStatus;
   } {
     const terminal = this.operations.terminal(binding.terminalId);
-    const origin = binding.origin ?? "terminal";
-    const managed = origin === "managed";
-    const destination = { terminalId: binding.terminalId, origin };
     const unavailable = (
       reason: string,
       status: SessionStatus = "offline",
-      confirmed?: TerminalInfo,
     ) => ({
-      terminal: confirmed,
+      terminal,
       status,
       live: {
-        ...destination,
-        ...(confirmed && !managed && { terminalTitle: confirmed.title }),
+        terminalId: binding.terminalId,
         canSend: false,
         canInterrupt: false,
         transport: "unavailable" as const,
@@ -156,21 +120,15 @@ export class IdeLiveChats {
       nativeOf(terminal) !== binding.nativeId
     )
       return unavailable(
-        managed
-          ? "Antigravity 실행 연결이 끝났습니다. 저장된 대화는 계속 볼 수 있습니다."
-          : "이 터미널의 대화가 바뀌었습니다. 저장된 대화는 계속 볼 수 있습니다.",
+        "이 터미널의 대화가 바뀌었습니다. 저장된 대화는 계속 볼 수 있습니다.",
       );
     if (
       terminal.exited ||
       terminal.connectionState !== "connected" ||
-      !terminal.agentConnected ||
-      terminal.agentSessionId !== binding.nativeId ||
-      terminal.agentKind !== binding.provider
+      !terminal.agentConnected
     )
       return unavailable(
-        managed
-          ? "Antigravity 실행 연결을 기다리고 있습니다."
-          : "터미널 연결을 기다리고 있습니다. 저장된 대화는 계속 볼 수 있습니다.",
+        "터미널 연결을 기다리고 있습니다. 저장된 대화는 계속 볼 수 있습니다.",
       );
     const status =
       terminal.agentState === "working"
@@ -178,14 +136,10 @@ export class IdeLiveChats {
         : terminal.agentState === "waiting"
           ? "waiting"
           : "idle";
-    const terminalTitle = origin === "terminal" ? terminal.title : undefined;
     if (status === "waiting")
       return unavailable(
-        managed
-          ? "Antigravity가 승인 또는 답변을 기다리고 있습니다."
-          : "승인이나 질문에 대한 응답은 연결된 터미널에서 진행해 주세요.",
+        "승인이나 질문에 대한 응답은 연결된 터미널에서 진행해 주세요.",
         status,
-        terminal,
       );
     const codex =
       binding.provider === "codex" &&
@@ -193,29 +147,21 @@ export class IdeLiveChats {
       this.operations.codex.currentSession(terminal.id) === binding.nativeId;
     const claude =
       binding.provider !== "codex" &&
-      this.operations.claude.available(
-        terminal.id,
-        binding.nativeId,
-        binding.provider,
-      );
+      this.operations.claude.available(terminal.id, binding.nativeId);
     if (!codex && !claude)
       return unavailable(
         binding.provider === "antigravity"
-          ? managed
-            ? "Antigravity 입력 연결을 준비하고 있습니다."
-            : "Antigravity 입력 연결을 준비하고 있습니다. 같은 터미널에서 연결 상태를 확인하세요."
+          ? "Antigravity 입력 연결을 준비하고 있습니다. 같은 터미널에서 연결 상태를 확인하세요."
           : binding.provider === "claude"
             ? "이 Claude 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다."
             : "이 Codex 세션은 IDE 입력 채널이 연결되지 않았습니다. 답변은 여기서 보고, 입력은 연결된 터미널에서 계속할 수 있습니다.",
         status,
-        terminal,
       );
     return {
       terminal,
       status,
       live: {
-        ...destination,
-        ...(terminalTitle && { terminalTitle }),
+        terminalId: terminal.id,
         canSend: true,
         canInterrupt: false,
         transport: codex
@@ -237,13 +183,7 @@ export class IdeLiveChats {
     const now = this.operations.now?.() ?? Date.now();
     const existing = this.cache.get(key);
     if (existing?.pending) return existing.pending;
-    const refreshMs =
-      !cursor &&
-      binding.provider === "antigravity" &&
-      this.get(binding).status === "running"
-        ? 600
-        : 2000;
-    if (existing && now - existing.at < refreshMs) {
+    if (existing && now - existing.at < 2000) {
       if (existing.error) throw existing.error;
       if (existing.value) return structuredClone(existing.value);
     }
@@ -328,11 +268,6 @@ export class IdeLiveChats {
     };
     return binding.provider === "codex"
       ? this.operations.codex.submitUser(binding.terminalId, submission, guard)
-      : this.operations.claude.send(
-          binding.terminalId,
-          submission,
-          guard,
-          binding.provider,
-        );
+      : this.operations.claude.send(binding.terminalId, submission, guard);
   }
 }

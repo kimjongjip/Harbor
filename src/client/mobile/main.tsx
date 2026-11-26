@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   memo,
   useCallback,
   useEffect,
@@ -22,14 +20,10 @@ import { restoreTerminalReplay, writeTerminal } from "../terminalReplay";
 import { terminalPathForPaste } from "../terminalClipboard";
 import { MobileTerminalRich } from "./MobileTerminalRich";
 import { MobileConversation } from "./MobileConversation";
-import { clearDrafts, readDraft, saveDraft } from "./draft-storage";
 import { MobileScreenCache } from "./screen-cache";
 import { activityLabel, mobileActivity } from "./session-activity";
 import { codexWorkingFooter } from "../../shared/codex-working-footer";
 import { MobileNotifications } from "./MobileNotifications";
-import { discoverSessions, useSessionDiscovery } from "../session-discovery";
-import { Pin } from "lucide-react";
-import { LabQuestions } from "../LabQuestions";
 import { useSharedInputControl } from "./useSharedInputControl";
 import {
   MobileSessionPreloader,
@@ -56,21 +50,6 @@ import "@xterm/xterm/css/xterm.css";
 import "katex/dist/katex.min.css";
 import "./mobile.css";
 
-const ManagedChatPanel = lazy(() => import("../ide/IdeChatPanel"));
-const mobileChatRequest = (path: string, init?: RequestInit) =>
-  fetch("/mobile-api/ide-chat" + path, {
-    ...init,
-    credentials: "same-origin",
-    headers: { ...init?.headers, "X-Harbor-Mobile": "1" },
-  });
-const renderPhoneMarkdown = (text: string) => (
-  <ReactMarkdown
-    remarkPlugins={[remarkGfm, remarkMath]}
-    rehypePlugins={[rehypeKatex]}
-  >
-    {text}
-  </ReactMarkdown>
-);
 async function api<T = any>(
   path: string,
   body?: unknown,
@@ -210,10 +189,7 @@ function RequestCard({
 function App() {
   const [state, setState] = useState<MobileState>(),
     [selected, setSelected] = useState(initialTerminal);
-  const [mobileLab, setMobileLab] = useState<"ask" | "debate" | null>(null);
-  const [managedHost, setManagedHost] = useState("");
-  const [chatOpened, setChatOpened] = useState(false);
-  const [tab, setTab] = useState<"sessions" | "terminal" | "settings" | "chat">(
+  const [tab, setTab] = useState<"sessions" | "terminal" | "settings">(
     selected ? "terminal" : "sessions",
   );
   const [status, setStatus] = useState("연결 확인 중"),
@@ -486,23 +462,13 @@ function App() {
       setPreview(false);
     }
     drafts.current.set(selected, draft);
-    const target = state?.terminals.find((t) => t.id === id);
-    const previous = drafts.current.get(id);
-    const saved =
-      previous !== undefined &&
-      draftSessions.current.get(id) === target?.agentSessionId
-        ? previous
-        : state?.viewer
-          ? readDraft(state.viewer.deviceId, id, target?.agentSessionId)
-          : "";
-    if (saved) draftSessions.current.set(id, target?.agentSessionId);
-    drafts.current.set(id, saved);
-    setDraft(saved);
+    setDraft(drafts.current.get(id) || "");
     selectedRef.current = id;
     setSelected(id);
     setTab("terminal");
     setViewOptions(false);
     setKeysOpen(false);
+    viewportRef.current?.latest();
     setError("");
   }
   function prepare(id: string) {
@@ -609,22 +575,6 @@ function App() {
         setUnread(fresh);
       },
     );
-    const readingKey = state?.viewer && selected ? "harbor.reading." + state.viewer.deviceId : "";
-    function saveReading() {
-      if (!readingKey || !selected) return;
-      try {
-        const saved = JSON.parse(sessionStorage.getItem(readingKey) || "[]");
-        const entries = Array.isArray(saved) ? saved.filter(entry => Array.isArray(entry) && entry[0] !== cacheKey) : [];
-        const top = viewport.savedPosition();
-        if (top !== undefined) entries.unshift([cacheKey,top]);
-        sessionStorage.setItem(readingKey,JSON.stringify(entries.slice(0,16)));
-      } catch {}
-    }
-    if (readingKey) try {
-      const entry = JSON.parse(sessionStorage.getItem(readingKey) || "[]").find((e:unknown) => Array.isArray(e) && e[0]===cacheKey);
-      if (entry && Number.isFinite(entry[1]) && entry[1]>=0) viewport.restorePosition(entry[1]);
-    } catch {}
-    window.addEventListener("pagehide",saveReading);
     viewportRef.current = viewport;
     termRef.current = term;
     setNativeTerminal(term);
@@ -858,8 +808,6 @@ function App() {
       window.removeEventListener("offline", offline);
       window.removeEventListener("pageshow", restored);
       if (!reuseSocket.current) socketRef.current?.close();
-      saveReading();
-      window.removeEventListener("pagehide",saveReading);
       viewport.dispose();
       viewportRef.current = undefined;
       term.dispose();
@@ -923,6 +871,7 @@ function App() {
       blocks: screenCache.current.get(cacheKey)?.blocks || [],
     });
     setAnswerError("");
+    viewportRef.current?.latest();
   }, [cacheKey]);
   useEffect(() => {
     if (!paired || !selected) return;
@@ -1038,8 +987,6 @@ function App() {
         draftSessions.current.get(target) === draftSession
       ) {
         drafts.current.set(target, "");
-        if (state.viewer)
-          saveDraft(state.viewer.deviceId, target, draftSession, "");
         draftSessions.current.delete(target);
         // A receipt can arrive after switching sessions. Clear only the sent
         // session's draft, never the new session's composer or scroll position.
@@ -1119,8 +1066,6 @@ function App() {
     !control.otherOwner &&
     terminal?.connectionState === "connected" &&
     !terminal.exited;
-  const chatHost =
-    state?.hosts.find((h) => h.id === managedHost) || state?.hosts[0];
   const selectedHost = state?.hosts.find((h) => h.id === terminal?.hostId);
   const sessionRequests = pending.filter(
     (r) => r.terminal.terminalId === selected,
@@ -1137,18 +1082,12 @@ function App() {
     !terminal || !ready || control.otherOwner || !inputEnabled
       ? "unavailable"
       : activity(terminal);
-  const discovery = useSessionDiscovery(state?.viewer?.deviceId);
-  const matchingTerminals = discoverSessions(
-    openTerminals,
-    state?.hosts || [],
-    new Set(
-      pending
-        .map((r) => r.terminal.terminalId)
-        .filter((id): id is string => !!id),
-    ),
-    query,
-    discovery,
-  );
+  const matchingTerminals =
+    openTerminals.filter((t) =>
+      `${t.title} ${state?.hosts.find((h) => h.id === t.hostId)?.name || ""} ${t.agentKind || ""}`
+        .toLocaleLowerCase()
+        .includes(query.toLocaleLowerCase()),
+    ) || [];
   return (
     <div className={`mobile-app ${keyboardOpen ? "keyboard-open" : ""}`}>
       <header className="app-header">
@@ -1276,33 +1215,6 @@ function App() {
               </div>
               <span className="count">{openTerminals.length}개</span>
             </div>
-            {state?.viewer?.managedChat && state.hosts.length ? (
-              <details
-                onToggle={(e) => {
-                  if (!e.currentTarget.open) setMobileLab(null);
-                }}
-              >
-                <summary>연구실</summary>
-                <div className="lab-actions">
-                  <button onClick={() => setMobileLab("ask")}>
-                    각자에게 묻기
-                  </button>
-                  <button onClick={() => setMobileLab("debate")}>
-                    함께 토론하기
-                  </button>
-                </div>
-                {mobileLab && tab === "sessions" && (
-                  <LabQuestions
-                    key={mobileLab}
-                    hosts={state.hosts}
-                    hostId={selectedHost?.id || state.hosts[0].id}
-                    debate={mobileLab === "debate"}
-                    request={api}
-                    RenderAnswer={Markdown}
-                  />
-                )}
-              </details>
-            ) : null}
             <label className="session-search">
               <Search size={18} />
               <input
@@ -1317,13 +1229,6 @@ function App() {
                 </button>
               )}
             </label>
-            <button
-              className="session-attention-filter"
-              aria-pressed={discovery.attention}
-              onClick={discovery.toggleAttention}
-            >
-              내 확인 필요
-            </button>
             {state?.hosts.map((host) => (
               <section
                 className="host-group"
@@ -1344,55 +1249,41 @@ function App() {
                   .map((t) => {
                     const sessionActivity = activity(t);
                     return (
-                      <div className="session-card-entry" key={t.id}>
-                        <button
-                          className={`session card ${selected === t.id ? "selected" : ""}`}
-                          data-activity={sessionActivity}
-                          disabled={busy}
-                          key={t.id}
-                          onClick={() => choose(t.id)}
-                          onPointerDown={() => prepare(t.id)}
-                          onFocus={() => prepare(t.id)}
-                        >
-                          <span className="session-icon">
-                            <TerminalIcon size={20} />
-                          </span>
-                          <span className="session-copy">
-                            <strong>{t.title}</strong>
-                            <small>
-                              {t.agentKind === "antigravity"
-                                ? "Antigravity"
-                                : t.agentKind === "claude"
-                                  ? "Claude"
-                                  : t.agentKind === "codex"
-                                    ? "Codex"
-                                    : t.program === "antigravity-cli"
-                                      ? "Antigravity CLI"
-                                      : "셸"}{" "}
-                              · {activityLabel[sessionActivity]}
-                            </small>
-                            <span className="session-cwd">{t.cwd}</span>
-                          </span>
-                          {pending.some(
-                            (r) => r.terminal.terminalId === t.id,
-                          ) ? (
-                            <span
-                              className="request-dot"
-                              aria-label="대기 요청 있음"
-                            />
-                          ) : (
-                            <span className="session-chevron">›</span>
-                          )}
-                        </button>
-                        <button
-                          className="session-pin"
-                          aria-label={`${t.title} 고정`}
-                          aria-pressed={discovery.pins.includes(t.id)}
-                          onClick={() => discovery.togglePin(t.id)}
-                        >
-                          <Pin size={15} />
-                        </button>
-                      </div>
+                      <button
+                        className={`session card ${selected === t.id ? "selected" : ""}`}
+                        data-activity={sessionActivity}
+                        disabled={busy}
+                        key={t.id}
+                        onClick={() => choose(t.id)}
+                        onPointerDown={() => prepare(t.id)}
+                        onFocus={() => prepare(t.id)}
+                      >
+                        <span className="session-icon">
+                          <TerminalIcon size={20} />
+                        </span>
+                        <span className="session-copy">
+                          <strong>{t.title}</strong>
+                          <small>
+                            {t.agentKind === "antigravity"
+                              ? "Antigravity"
+                              : t.agentKind === "claude"
+                                ? "Claude"
+                                : t.agentKind === "codex"
+                                  ? "Codex"
+                                  : t.program==="antigravity-cli" ? "Antigravity CLI" : "셸"}{" "}
+                            · {activityLabel[sessionActivity]}
+                          </small>
+                          <span className="session-cwd">{t.cwd}</span>
+                        </span>
+                        {pending.some((r) => r.terminal.terminalId === t.id) ? (
+                          <span
+                            className="request-dot"
+                            aria-label="대기 요청 있음"
+                          />
+                        ) : (
+                          <span className="session-chevron">›</span>
+                        )}
+                      </button>
                     );
                   })}
               </section>
@@ -1404,14 +1295,12 @@ function App() {
                 <p>PC에서 터미널을 열면 여기에 표시됩니다.</p>
               </div>
             )}
-            {(query || discovery.attention) &&
-              !!openTerminals.length &&
-              !matchingTerminals.length && (
-                <div className="empty-state">
-                  <Search size={28} />
-                  <p>검색 결과가 없습니다.</p>
-                </div>
-              )}
+            {query && !!openTerminals.length && !matchingTerminals.length && (
+              <div className="empty-state">
+                <Search size={28} />
+                <p>검색 결과가 없습니다.</p>
+              </div>
+            )}
           </main>
           <div className="terminal-page" hidden={tab !== "terminal"}>
             <div className="terminal-toolbar">
@@ -1632,21 +1521,13 @@ function App() {
                   aria-label="터미널에 보낼 입력"
                   value={draft}
                   onChange={(e) => {
-                    if (!terminalFollowRef.current)
-                      viewportRef.current?.latest();
+                    if (!terminalFollowRef.current) viewportRef.current?.latest();
                     if (!draft)
                       draftSessions.current.set(
                         selected,
                         terminal?.agentSessionId,
                       );
                     setDraft(e.target.value);
-                    if (state?.viewer)
-                      saveDraft(
-                        state.viewer.deviceId,
-                        selected,
-                        draftSessions.current.get(selected),
-                        e.target.value,
-                      );
                   }}
                   placeholder={
                     terminal
@@ -1707,37 +1588,6 @@ function App() {
               </div>
             </div>
           </div>
-          {chatOpened && state?.viewer?.managedChat && (
-            <main className="mobile-managed-chat" hidden={tab !== "chat"}>
-              <select
-                aria-label="AI 대화 서버"
-                value={chatHost?.id || ""}
-                onChange={(e) => setManagedHost(e.target.value)}
-              >
-                {state.hosts.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.name}
-                  </option>
-                ))}
-              </select>
-              <Suspense fallback={<p>대화를 여는 중…</p>}>
-                <ManagedChatPanel
-                  mobileWorkspace
-                  terminalInventory={state.terminals}
-                  onFocusTerminal={choose}
-                  labRequest={api}
-                  serverWorkspace={chatHost?.serverWorkspace}
-                  hostId={chatHost?.id}
-                  hostName={chatHost?.name}
-                  active={tab === "chat"}
-                  request={mobileChatRequest}
-                  renderMarkdown={renderPhoneMarkdown}
-                  antigravityIntegration={state.antigravityIntegration}
-                  rememberScope={state.viewer.deviceId}
-                />
-              </Suspense>
-            </main>
-          )}
           <main className="page" hidden={tab !== "settings"}>
             <h1>기기 설정</h1>
             <article className="card">
@@ -1754,7 +1604,6 @@ function App() {
                   .then(() => {
                     setPaired(false);
                     setState(undefined);
-                    if (state?.viewer) clearDrafts(state.viewer.deviceId);
                     drafts.current.clear();
                     setDraft("");
                   })
@@ -1768,15 +1617,11 @@ function App() {
             {(
               [
                 ["sessions", "세션"],
-                ...(state?.viewer?.managedChat
-                  ? ([["chat", "AI 대화"]] as const)
-                  : []),
                 ["terminal", "터미널"],
                 ["settings", "설정"],
               ] as const
             ).map(([id, label]) => {
               const Icon = {
-                chat: Inbox,
                 sessions: Layers,
                 terminal: TerminalIcon,
                 settings: Settings,
@@ -1789,7 +1634,6 @@ function App() {
                   disabled={busy}
                   onClick={() => {
                     inputRef.current?.blur();
-                    if (id === "chat") setChatOpened(true);
                     setTab(id);
                   }}
                 >

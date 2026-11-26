@@ -13,7 +13,6 @@ function usePoll<T>(
   path: string | undefined,
   interval: number,
   forceRefresh = false,
-  nextCheck?: (value:T)=>number | undefined,
 ) {
   const [value, setValue] = useState<{ path: string; data: T }>();
   const [error, setError] = useState("");
@@ -34,7 +33,6 @@ function usePoll<T>(
     let controller: AbortController | undefined;
     const read = async (manual = false) => {
       if (disposed) return;
-      let delay=interval;
       if (document.visibilityState !== "hidden") {
         controller = new AbortController();
         const timeout = setTimeout(() => controller?.abort(), 30000);
@@ -42,8 +40,6 @@ function usePoll<T>(
           const url = manual && forceRefresh ? `${path}?refresh=1` : path;
           const data = await api<T>(url, undefined, "GET", controller.signal);
           if (!disposed) {
-            const when=nextCheck?.(data);
-            if(when!==undefined)delay=Math.max(1000,Math.min(interval,when-Date.now()+250));
             setValue({ path, data });
             setError("");
           }
@@ -56,7 +52,7 @@ function usePoll<T>(
           clearTimeout(timeout);
         }
       }
-      if (!disposed) timer = setTimeout(() => void read(), delay);
+      if (!disposed) timer = setTimeout(() => void read(), interval);
     };
     void read(refresh > 0);
     return () => {
@@ -64,7 +60,7 @@ function usePoll<T>(
       clearTimeout(timer);
       controller?.abort();
     };
-  }, [path, interval, refresh, forceRefresh,nextCheck]);
+  }, [path, interval, refresh, forceRefresh]);
   return {
     data: value && value.path === path ? value.data : undefined,
     error,
@@ -88,159 +84,6 @@ function displayedWindows(account: AccountQuota) {
       },
   );
 }
-function nextQuotaCheck(account:AccountQuota){
-  const times=account.windows?.map(w=>w.resetsAt).filter((t):t is number=>!!t && t>Date.now());
-  return times?.length ? Math.min(...times) : undefined;
-}
-type DisplayLimit = ReturnType<typeof displayedWindows>[number];
-const quotaTime = (value: number) =>
-  new Date(value).toLocaleString("ko-KR", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-
-function CompactAccountQuota({
-  account,
-  hostName,
-}: {
-  account: AccountQuota;
-  hostName?: string;
-}) {
-  const provider = {
-    codex: "Codex",
-    claude: "Claude",
-    antigravity: "Antigravity",
-  }[account.provider];
-  const windows = displayedWindows(account);
-  const groups = new Map<string, { window: DisplayLimit; label: string }[]>();
-  for (const w of windows) {
-    const group =
-      account.provider === "antigravity"
-        ? w.label.match(/^(.*?)\s*·\s*(\d+(?:시간|일))(?: 한도)?$/)
-        : null;
-    const name = group?.[1] || "";
-    const label =
-      group?.[2] ||
-      (account.provider === "claude" && w.label === "7일 Fable 한도"
-        ? "Fable"
-        : w.label.replace(/ 한도$/, ""));
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push({ window: w, label });
-  }
-  const grouped = [...groups.keys()].some(Boolean);
-  const status =
-    account.stale && windows.some((w) => w.remaining !== null)
-      ? "이전 수치"
-      : account.error
-        ? "확인 필요"
-        : "";
-  return (
-    <details
-      className="account-quota"
-      data-provider={account.provider}
-      data-grouped={grouped}
-    >
-      <summary className="quota-summary">
-        <span className="quota-provider">
-          {provider}
-          {status && <small className="quota-status">{status}</small>}
-        </span>
-        <span className="quota-limits">
-          {[...groups].map(([group, entries]) => (
-            <span className="quota-group" key={group}>
-              {group && (
-                <span className="quota-group-name" title={group}>
-                  {group}
-                </span>
-              )}
-              <span className="quota-values">
-                {entries.map(({ window: w, label }, i) => (
-                  <span
-                    key={i}
-                    className="quota-window"
-                    title={
-                      w.label +
-                      (w.resetsAt
-                        ? " · " + quotaTime(w.resetsAt) + " 초기화"
-                        : "")
-                    }
-                  >
-                    <span className="quota-window-value">
-                      <span className="quota-period">{label}</span>
-                      <b
-                        className={
-                          w.remaining === null ? "quota-unavailable" : ""
-                        }
-                      >
-                        {w.remaining === null
-                          ? account.error
-                            ? "확인 불가"
-                            : "미제공"
-                          : (account.provider === "antigravity"
-                              ? Number(w.remaining.toFixed(2))
-                              : Math.round(w.remaining)) + "%"}
-                      </b>
-                    </span>
-                    {w.remaining !== null && (
-                      <progress
-                        max={100}
-                        value={w.remaining}
-                        className={
-                          w.remaining < 10
-                            ? "critical"
-                            : w.remaining < 30
-                              ? "low"
-                              : ""
-                        }
-                        aria-label={provider + " " + w.label + " 남은 비율"}
-                        aria-valuetext={w.remaining + "% 남음"}
-                      />
-                    )}
-                  </span>
-                ))}
-              </span>
-            </span>
-          ))}
-        </span>
-        <ChevronDown
-          className="quota-disclosure"
-          size={12}
-          aria-hidden="true"
-        />
-      </summary>
-      <div className="quota-detail">
-        <p>
-          {[hostName, account.account, account.plan]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
-        <p>
-          {quotaTime(account.updatedAt)}{" "}
-          {account.stale ? "마지막 측정" : "확인"}
-        </p>
-        {windows
-          .filter((w) => w.resetsAt)
-          .map((w, i) => (
-            <p key={i}>
-              {w.label} · {quotaTime(w.resetsAt!)} 초기화
-            </p>
-          ))}
-        {account.error && (
-          <p className="insights-warning">
-            {account.error}
-            {account.retryAt && (
-              <> · {quotaTime(account.retryAt)} 이후 다시 확인</>
-            )}
-          </p>
-        )}
-      </div>
-    </details>
-  );
-}
-
 export const AccountUsagePanel = memo(function AccountUsagePanel({
   hostId,
   hostName,
@@ -256,18 +99,8 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
     120000,
     true,
   );
-  const agy = usePoll<AccountQuota>(
-    hostId && open
-      ? `/hosts/${encodeURIComponent(hostId)}/antigravity-quota`
-      : undefined,
-    600000,
-    true,
-    nextQuotaCheck,
-  );
-  const accounts = [
-    ...(Array.isArray(data?.accounts) ? data.accounts : []),
-    ...(!agy.error && agy.data?.provider === "antigravity" ? [agy.data] : []),
-  ];
+  const agy = usePoll<AccountQuota>(hostId && open ? `/hosts/${encodeURIComponent(hostId)}/antigravity-quota` : undefined,600000,true);
+  const accounts = [...(Array.isArray(data?.accounts) ? data.accounts : []), ...(agy.data?.provider==="antigravity" ? [agy.data] : [])];
   if (!hostId || (data && !Array.isArray(data.accounts))) return null;
   return (
     <section className="account-usage-panel" aria-label="AI 구독 한도">
@@ -279,35 +112,99 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
         >
           <ChevronDown size={14} /> AI 사용 한도
         </button>
-        {open && <span className="quota-legend">남은 비율</span>}
         <button
           className="icon-button"
           title="사용 한도 새로고침 (최소 15초 간격, 요청 제한 시 대기)"
-          onClick={() => {
-            refresh();
-            agy.refresh();
-          }}
+          onClick={() => { refresh(); agy.refresh(); }}
         >
           <RefreshCw size={13} />
         </button>
       </header>
       {open && (
         <>
+          <small className="quota-host">
+            {hostName || "선택한 서버"} · CLI 계정
+          </small>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
           {accounts.map((account) => (
-            <CompactAccountQuota
-              key={hostId + ":" + account.provider}
-              account={account}
-              hostName={hostName}
-            />
+            <article key={account.provider} className="account-quota">
+              <header
+                className="quota-account-heading"
+                title={`${account.account || "CLI 로그인 계정"} · ${new Date(account.updatedAt).toLocaleString("ko-KR")} 확인`}
+              >
+                <strong>
+                  {account.provider === "antigravity" ? "Antigravity" : account.provider === "codex" ? "Codex" : "Claude"}{" "}
+                  <small>{account.plan}</small>
+                </strong>
+                <small>
+                  {new Date(account.updatedAt).toLocaleTimeString("ko-KR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false,
+                  })}
+                </small>
+              </header>
+              {displayedWindows(account).map((w, i) => (
+                <div className="quota-window" key={i}>
+                  <div>
+                    <span>{w.label}</span>
+                    <b
+                      title={
+                        w.remaining === null && !account.error
+                          ? "현재 계정의 Claude 응답에 이 한도가 제공되지 않았습니다."
+                          : undefined
+                      }
+                      className={
+                        w.remaining === null ? "quota-unavailable" : undefined
+                      }
+                    >
+                      {w.remaining === null
+                        ? account.error
+                          ? "확인 불가"
+                          : "미제공"
+                        : `${Math.round(w.remaining)}% 남음`}
+                    </b>
+                  </div>
+                  {w.remaining !== null && (
+                    <>
+                      <progress
+                        className={
+                          w.remaining < 10
+                            ? "critical"
+                            : w.remaining < 30
+                              ? "low"
+                              : ""
+                        }
+                        max={100}
+                        value={w.remaining}
+                        aria-label={`${w.label} 남은 비율`}
+                      />
+                      {w.resetsAt && (
+                        <small>
+                          {new Date(w.resetsAt).toLocaleString("ko-KR", {
+                            month: "numeric",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}{" "}
+                          초기화
+                        </small>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+              {account.error && (
+                <p className="insights-warning">
+                  {account.stale && account.windows.length
+                    ? "이전 수치 · "
+                    : ""}
+                  {account.error}
+                </p>
+              )}
+            </article>
           ))}
-          {(agy.error || agy.data?.provider !== "antigravity") && (
-            <div className="quota-unmeasured">
-              <strong>Antigravity</strong>{" "}
-              <span>{agy.error || agy.data ? "확인 불가" : "확인 중"}</span>
-            </div>
-          )}
         </>
       )}
     </section>
@@ -449,10 +346,6 @@ export const TerminalWorkList = memo(function TerminalWorkList({
     active ? `/terminals/${encodeURIComponent(terminalId)}/work` : undefined,
     10000,
   );
-  return <TerminalWorkDisplay data={data} error={error}/>;
-});
-
-export function TerminalWorkDisplay({data,error,showEmpty=false}:{data?:TerminalWorkSnapshot;error?:string;showEmpty?:boolean}) {
   const labels = {
     gpu: "GPU 작업",
     simulator: "시뮬레이터",
@@ -460,13 +353,12 @@ export function TerminalWorkDisplay({data,error,showEmpty=false}:{data?:Terminal
     background: "백그라운드",
   };
   const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-  if (!showEmpty && data && !error && !data.error && !jobs.length) return null;
+  if (data && !error && !data.error && !jobs.length) return null;
   return (
     <section className="terminal-work-list" aria-label="백그라운드 작업">
       <h4>
         <Activity size={14} /> 백그라운드 작업
       </h4>
-      {showEmpty && !jobs.length && !error && !data?.error && <p>{data ? "실행 중인 작업 없음" : "작업 정보 미수집"}</p>}
       {(error || data?.error) && (
         <p className="insights-warning">{error || data?.error}</p>
       )}
@@ -495,4 +387,4 @@ export function TerminalWorkDisplay({data,error,showEmpty=false}:{data?:Terminal
       {!data && !error && <p>작업 확인 중…</p>}
     </section>
   );
-}
+});

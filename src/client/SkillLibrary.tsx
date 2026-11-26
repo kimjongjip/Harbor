@@ -429,7 +429,7 @@ export function SkillLibraryDialog({
                   >
                     {origin.name} ↗
                   </a>
-                  {skill.source !== "harbor" && <span
+                  <span
                     title={`저장소 전체 별 수 · 개별 스킬 평가가 아닙니다. ${origin.repo} · ${"checkedAt" in origin ? origin.checkedAt : SKILL_CHECKED_AT} 확인`}
                   >
                     ★{" "}
@@ -437,7 +437,7 @@ export function SkillLibraryDialog({
                       notation: "compact",
                       maximumFractionDigits: 1,
                     }).format(origin.stars)}
-                  </span>}
+                  </span>
                 </div>
                 <p>{skill.description}</p>
                 <div className="skill-badges">
@@ -547,7 +547,7 @@ export function SkillLibraryDialog({
                       </p>
                     )}
                     <a
-                      href={skill.source === "harbor" ? `${skillSourceUrl(skill.source)}/blob/main/src/server/harbor-session-skill.ts` : `${skillSourceUrl(skill.source)}/tree/${origin.commit}${guide ? "" : `/${skillFolder(skill)}`}`}
+                      href={`${skillSourceUrl(skill.source)}/tree/${origin.commit}${guide ? "" : `/${skillFolder(skill)}`}`}
                       target="_blank"
                       rel="noreferrer"
                     >

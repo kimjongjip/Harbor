@@ -92,12 +92,6 @@ const paths = await packager({
     ProductName: "Harbor",
   },
 });
-// Electron Packager omits package-lock.json, including nested copies. The remote
-// installer needs the exact lock that belongs to this build.
-for (const packaged of paths) {
-  await cp(path.join(stage, "dist", "worker-manifest"),
-    path.join(packaged, "resources", "app", "dist", "worker-manifest"), {recursive: true});
-}
 if (!staged)
   writeDesktopReleasePointer(
     output,

@@ -23,7 +23,6 @@ export interface CatalogSkill {
   caveat?: string;
 }
 export const SKILL_CATALOG: CatalogSkill[] = [
-  { id: "harbor", title: "Harbor 세션 협업", category: "업무·학습", source: "harbor", description: "열려 있는 AI 세션에 질문과 자료를 보내고 답변을 원래 작업에 반영합니다.", example: "측정 세션에 최신 결과를 요청하고 조건이 다르면 다시 물어봐." },
   ...COMMUNITY_SKILLS,
   {
     id: "pdf",

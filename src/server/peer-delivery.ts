@@ -43,9 +43,8 @@ export interface PeerAnswer {
 export class PeerDelivery extends EventEmitter {
   private readonly runtimes = new Map<string, PeerRuntimeStatus>();
   private readonly waiting = new Map<string, Set<string>>();
-  private readonly inputReaders = new Map<string, {kind: "claude" | "antigravity"; sessionId?: string; at: number}>();
 
-  constructor(private readonly mailbox: Mailbox, private readonly now = () => performance.now()) {
+  constructor(private readonly mailbox: Mailbox) {
     super();
     this.setMaxListeners(256);
     mailbox.on("change", () => this.emit("change"));
@@ -54,13 +53,6 @@ export class PeerDelivery extends EventEmitter {
   setRuntime(terminalId: string, input: PeerRuntime): PeerRuntimeStatus {
     const { endpoint: _secretEndpoint, ...runtime } =
       peerRuntimeSchema.parse(input);
-    const reader = this.inputReaders.get(terminalId);
-    if (reader) {
-      if (reader.kind !== runtime.kind || runtime.state === "offline" || runtime.delivery !== "automatic" ||
-          runtime.userInputVersion !== 1 || (reader.sessionId && reader.sessionId !== runtime.sessionId))
-        this.inputReaders.delete(terminalId);
-      else reader.sessionId = runtime.sessionId;
-    }
     this.runtimes.set(terminalId, runtime);
     this.emit("change");
     return structuredClone(runtime);
@@ -71,23 +63,7 @@ export class PeerDelivery extends EventEmitter {
     return runtime ? structuredClone(runtime) : undefined;
   }
 
-  // Only an authenticated adapter registration or a real events poll proves a receiver.
-  // Ordinary hook updates and history/status reads must not extend its lifetime.
-  observeInputReader(terminalId: string, sessionId?: string) {
-    const runtime = this.runtimes.get(terminalId);
-    if (!runtime || (runtime.kind !== "claude" && runtime.kind !== "antigravity") ||
-        runtime.state === "offline" || runtime.delivery !== "automatic" || runtime.userInputVersion !== 1 ||
-        (sessionId && runtime.sessionId !== sessionId)) return;
-    this.inputReaders.set(terminalId, {kind:runtime.kind,sessionId:runtime.sessionId,at:this.now()});
-  }
-  inputAvailable(terminalId:string, nativeId:string, kind:"claude" | "antigravity") {
-    const reader = this.inputReaders.get(terminalId);
-    // Native adapters hold each request for up to 25s; allow the next poll and retry to arrive.
-    return !!reader && reader.kind === kind && reader.sessionId === nativeId && this.now() - reader.at < 45000;
-  }
-
   revoke(terminalId: string): void {
-    this.inputReaders.delete(terminalId);
     const previous = this.runtimes.get(terminalId);
     if (previous)
       this.runtimes.set(terminalId, {
@@ -105,22 +81,10 @@ export class PeerDelivery extends EventEmitter {
     purpose?: "question",
     labId?: string,
     labRevision?: number,
-    context: { requestKey?: string; followUpTo?: string } = {},
   ): MailboxMessage {
     const senderSessionId = this.runtime(from)?.sessionId;
     if (
       purpose &&
-      !(
-        context.requestKey &&
-        this.mailbox
-          .list(from)
-          .some(
-            (item) =>
-              item.sender.terminalId === from &&
-              item.sender.sessionId === senderSessionId &&
-              item.peerRequestKey === context.requestKey,
-          )
-      ) &&
       this.mailbox
         .list(from)
         .filter(
@@ -138,7 +102,6 @@ export class PeerDelivery extends EventEmitter {
       purpose,
       labId,
       labRevision,
-      ...context,
     });
   }
 
@@ -185,7 +148,6 @@ export class PeerDelivery extends EventEmitter {
           !item.consumedAt &&
           !item.offeredAt &&
           !item.queueAttemptedAt &&
-          this.mailbox.permits(item) &&
           (!accept || accept(item)) &&
           !(
             runtime.kind === "claude" &&
@@ -243,16 +205,6 @@ export class PeerDelivery extends EventEmitter {
         reply: delivered,
       };
     }
-    if (!this.mailbox.permits(message))
-      return {
-        requestId,
-        threadId: message.threadId,
-        message,
-        status: "unavailable",
-        reason: message.peerClosed
-          ? "This collaboration thread was closed."
-          : "Peer collaboration is paused.",
-      };
     const recipient = message.recipient.terminalId
       ? this.runtime(message.recipient.terminalId)
       : undefined;
@@ -282,8 +234,7 @@ export class PeerDelivery extends EventEmitter {
                 reason:
                   "No actual peer reply has arrived. Delivery is queued for Claude's next input, tool completion or response completion; an idle conversation needs a user-submitted inbox check.",
               }
-            : recipient?.delivery !== "automatic" &&
-                recipient?.delivery !== "shared"
+            : recipient?.delivery !== "automatic"
               ? {
                   reason:
                     "No actual peer reply has arrived. Automatic delivery is unavailable; the recipient must call harbor_inbox in its own native conversation.",
@@ -348,12 +299,10 @@ export class PeerDelivery extends EventEmitter {
     sessionId: string | undefined,
     waitMs: number,
     signal?: AbortSignal,
-    extraReady?:()=>boolean,
   ) {
     z.number().int().min(0).max(25000).parse(waitMs);
-    if (!signal?.aborted) this.observeInputReader(terminalId, sessionId);
     const current = this.events(terminalId, sessionId);
-    if (current.messages.length || current.reason || !waitMs || signal?.aborted || extraReady?.())
+    if (current.messages.length || current.reason || !waitMs || signal?.aborted)
       return current;
     await new Promise<void>((done) => {
       const finish = () => {
@@ -364,7 +313,7 @@ export class PeerDelivery extends EventEmitter {
       };
       const changed = () => {
         const next = this.events(terminalId, sessionId);
-        if (next.messages.length || next.reason || extraReady?.()) finish();
+        if (next.messages.length || next.reason) finish();
       };
       const timer = setTimeout(finish, waitMs);
       this.on("change", changed);

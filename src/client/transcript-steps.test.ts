@@ -96,7 +96,6 @@ test("CLI-like step titles use the primary argument relative to the session fold
   assert.equal(stepTitle(call("Bash", "command: cd x && python3 - <<'PY'\nprint(1)\nPY\ndescription: run")).target, "cd x && python3 - <<'PY'\nprint(1)\nPY");
   assert.equal(stepTitle(call("mcp__harbor__harbor_ask", "message: 확인해줘")).name, "harbor - harbor_ask (MCP)");
   assert.deepEqual(toolArguments("pattern: TODO\npath: src"), { pattern: "TODO", path: "src" });
-  assert.equal(stepTitle(call("Edit", JSON.stringify({file_path:"/fixture/src/a.ts",new_string:"replacement"})), "/fixture").target, "src/a.ts");
 });
 
 test("unified diffs keep old/new line numbers from hunk headers", () => {

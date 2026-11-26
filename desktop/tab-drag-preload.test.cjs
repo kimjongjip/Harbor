@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 // Exercise the capture listeners independently of a mounted React tab.
-function fixture(activated = false) {
+function fixture() {
   const listeners = new Map(),
     calls = [];
   let bridge, arm;
@@ -38,7 +38,6 @@ function fixture(activated = false) {
       document: { addEventListener: (name, fn) => listeners.set(name, fn) },
       Element,
       process: { platform: "win32" },
-      navigator: { userActivation: { isActive: activated } },
     },
   );
   return {
@@ -49,14 +48,6 @@ function fixture(activated = false) {
       listeners.get(name)({ target: new Element(), isTrusted: true, ...args }),
   };
 }
-test("current-window capture requires user activation and sends only the capture IPC", async () => {
-  const denied = fixture();
-  assert.equal(await denied.bridge.captureCurrentWindow(), null);
-  assert.deepEqual(denied.calls, []);
-  const allowed = fixture(true);
-  await allowed.bridge.captureCurrentWindow();
-  assert.deepEqual(allowed.calls, [["harbor:capture-current-window"]]);
-});
 test("a desktop move with no renderer drop target finishes once, even if native arming finishes after dragend", async () => {
   const f = fixture();
   f.event("dragstart");
