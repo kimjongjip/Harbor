@@ -18,6 +18,7 @@ import type { HarborRequest } from "../../shared/requests";
 import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { restoreTerminalReplay, writeTerminal } from "../terminalReplay";
 import { terminalPathForPaste } from "../terminalClipboard";
+import { useMobileHistoryAnswers } from "./useMobileHistoryAnswers";
 import { MobileTerminalRich } from "./MobileTerminalRich";
 import { MobileConversation } from "./MobileConversation";
 import { MobileScreenCache } from "./screen-cache";
@@ -322,6 +323,11 @@ function App() {
         : [],
     [answers, cacheKey, answerSession],
   );
+  const savedAnswers = useMobileHistoryAnswers(cacheKey, selected, answerSession, tab === "terminal" && ready, terminal?.agentCompletion?.textHash, terminal?.agentState === "idle");
+  const renderableAnswers = useMemo(() => {
+    const texts = new Set(currentAnswers.map(block => block.text));
+    return [...currentAnswers, ...savedAnswers.filter(block => !texts.has(block.text))];
+  }, [currentAnswers, savedAnswers]);
   const refreshAnswers = useRef<() => void>(() => {});
   const requestMissingAnswer = useCallback(() => refreshAnswers.current(), []);
   const answerNotifications = useRef(false);
@@ -1430,7 +1436,7 @@ function App() {
                   onFlow={setTerminalFlow}
                   onMissingAnswer={requestMissingAnswer}
                   term={nativeTerminal}
-                  blocks={currentAnswers}
+                  blocks={renderableAnswers}
                   active={tab === "terminal"}
                   updating={ready || preview}
                   following={following}

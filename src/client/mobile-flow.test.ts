@@ -61,6 +61,20 @@ test("markerless phone replies keep one rich answer across native line wraps and
     ),
   );
 });
+test("phone restores a formatted saved reply and preserves adjacent input", () => {
+  const saved = {...block,id:"history:claude:a",text:"**Measured** `results` are complete.",placement:"card" as const};
+  const lines = ["❯ prepare report", "• Measured results", "  are complete.", "❯ draft"];
+  assert.deepEqual(phoneFlowParts(lines,[saved]).map(p=>p.kind),["row","answer","row"]);
+  assert.ok(phoneFlowParts(lines.slice(0,2),[saved]).every(p=>p.kind==="row"));
+  const agy = {...saved,id:"history:antigravity:a"};
+  assert.deepEqual(phoneFlowParts(["Measured results are complete.","› draft"],[agy]).map(p=>p.kind),["answer","row"]);
+});
+test("phone renders the saved Markdown table when the CLI draws its own column borders", () => {
+  const saved={...block,text:"Evaluation results\n\n| Model | Score |\n|---|---|\n| One | 50% |\n| Two | 99% |"};
+  const lines=["• Evaluation results","  Model      Score","  ─────      ─────","  One        50%","  Two        99%","› "];
+  assert.deepEqual(phoneFlowParts(lines,[saved]).map(p=>p.kind),["answer","row"]);
+  assert.ok(phoneFlowParts(lines.map(l=>l.replace("99%","90%")),[saved]).every(p=>p.kind==="row"));
+});
 test("phone borders do not wrap while code punctuation remains literal", () => {
   assert.equal(nativeSeparator("─".repeat(180)), true);
   assert.equal(nativeSeparator("  " + "-".repeat(90)), true);

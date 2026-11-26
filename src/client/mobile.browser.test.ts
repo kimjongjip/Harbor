@@ -204,8 +204,8 @@ test(
         cards
           .filter({ has: page.getByText(title, { exact: true }) })
           .evaluate((el) => getComputedStyle(el).borderColor);
-      assert.equal(await cardBorder("테스트 Codex"), "rgb(165, 100, 16)");
-      assert.equal(await cardBorder("NPU PIM"), "rgb(57, 104, 199)");
+      assert.equal(await cardBorder("테스트 Codex"), "rgb(34, 131, 84)");
+      assert.equal(await cardBorder("NPU PIM"), "rgb(189, 65, 68)");
       assert.equal(await cardBorder("Compiler"), "rgb(34, 131, 84)");
       await mkdir(resolve(".cache/mobile-review"), { recursive: true });
       await page.screenshot({
@@ -217,7 +217,7 @@ test(
         .filter({ hasText: "Compiler" })
         .getByText(/작업 중/)
         .waitFor();
-      assert.equal(await cardBorder("Compiler"), "rgb(57, 104, 199)");
+      assert.equal(await cardBorder("Compiler"), "rgb(189, 65, 68)");
       idle.connectionState = "disconnected";
       f.gateway.changed();
       await cards
@@ -1335,6 +1335,9 @@ test(
       });
       const oldNativeUpload = await heldResponse();
       const subscriptionsBeforeChange = messages.length;
+      f.operations.conversation = async (_id,sessionId) => ({
+        sessionId, provider:"codex", items:[{kind:"assistant",id:"saved",text:"A **saved result** without a marker.",phase:"final_answer",turnStatus:"completed"}],nextCursor:null,
+      });
       f.state.terminals[0].agentSessionId = "replacement-native";
       f.gateway.changed();
       for (
@@ -1361,6 +1364,9 @@ test(
       assert.ok(messages.length >= 2);
       assert.ok(messages.every((m) => m.type === "subscribe"));
       assert.equal((await f.screen.snapshot()).replay.cols, 100);
+      const markerless = "\r\n• A saved result without a marker.\r\n› ";
+      f.screen.append(markerless);f.gateway.output(f.id,markerless);
+      await page.locator('[data-mobile-rich="history:codex:saved"] strong').filter({hasText:"saved result"}).waitFor({timeout:10000});
       assert.deepEqual(errors, []);
     } catch (error) {
       const page = app && (await app.firstWindow());

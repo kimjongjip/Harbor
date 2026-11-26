@@ -19,5 +19,5 @@ export const activityLabel = {
   waiting: "확인 필요",
   working: "작업 중",
   unknown: "상태 확인 중",
-  ready: "입력 가능",
+  ready: "입력 대기",
 } as const;

@@ -38,7 +38,7 @@ function hasPendingClaudeTool(items: ConversationTurn["items"]) {
  * Keep code spans/fences literal and leave ambiguous syntax unchanged. The
  * original text remains another candidate; this never changes the saved data.
  */
-function visibleMarkdownText(text: string): string {
+export function visibleMarkdownText(text: string): string {
   let result = "",
     at = 0;
   while (at < text.length) {

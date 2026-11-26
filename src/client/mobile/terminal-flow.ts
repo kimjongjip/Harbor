@@ -1,4 +1,5 @@
 import type { IBuffer, IBufferCell, IBufferLine, ITheme } from "@xterm/xterm";
+import { visibleMarkdownText } from "../terminal-transcript-boundary";
 import type { CSSProperties } from "react";
 import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { richFragments } from "../terminal-rich-layout";
@@ -71,7 +72,12 @@ export function terminalContentEnd(buffer: IBuffer) {
   return end;
 }
 
-const answerSignatures = new WeakMap<RichTerminalBlock, string>();
+type PhoneSignature = {text:string; table:boolean};
+const answerSignatures = new WeakMap<RichTerminalBlock, PhoneSignature[]>();
+function tableLine(line: string) {
+  if (/^[\s|:\-─━┌┬┐├┼┤└┴┘│]+$/u.test(line)) return "";
+  return line.replace(/[|│\s]/gu,"");
+}
 /** Some Codex answers have no reservation; Claude may redraw a reservation
  * as text. Replace only a complete match beginning at an assistant bullet.
  * Keep prompts, tool output and partial/ambiguous matches in their own rows. */
@@ -88,13 +94,25 @@ export function phoneFlowParts(
   );
   const candidates = blocks
     .filter((b) => !present.has(b.id))
-    .map((block) => {
-      let text = answerSignatures.get(block);
-      if (text === undefined) {
-        text = block.text.replace(/\s+/gu, "");
-        answerSignatures.set(block, text);
+    .flatMap(block => {
+      let variants = answerSignatures.get(block);
+      if (!variants) {
+        const raw = block.text.replace(/\s+/gu, "");
+        variants = [{text:raw,table:false}];
+        if (block.text.length < 128000) {
+          const prose = visibleMarkdownText(block.text)
+            .replace(/(\*\*|__)(.+?)\1/gs, "$2")
+            .replace(/`([^`\n]+)`/g, "$1")
+            .replace(/^ {0,3}#{1,6}\s+/gm, "");
+          const rendered = prose.replace(/\s+/gu, "");
+          if (rendered !== raw) variants.push({text:rendered,table:false});
+          if (/^\s*\|?\s*:?-{3,}:?\s*\|/m.test(block.text) && !block.text.includes("\u0060\u0060\u0060")) {
+            variants.push({text:prose.split("\n").map(tableLine).join(""),table:true});
+          }
+        }
+        answerSignatures.set(block, variants);
       }
-      return { block, text };
+      return variants.map(signature => ({block,...signature}));
     })
     .filter((c) => c.text.length >= 12);
   if (!candidates.length) return parts;
@@ -102,25 +120,29 @@ export function phoneFlowParts(
     const part = parts[i];
     if (part.kind !== "row" || part.start) continue;
     const marker = /^\s{0,2}[●•⏺]\s+(.+)$/u.exec(lines[part.row]);
-    if (!marker) continue;
-    const prefix = marker[1].replace(/\s+/gu, "");
-    let length = prefix.length;
-    let possible = candidates.filter(
-      (c) => !present.has(c.block.id) && c.text.startsWith(prefix),
-    );
+    const prefix = (marker ? marker[1] : lines[part.row]).replace(/\s+/gu, "");
+    if (!marker && (prefix.length < 16 || /^\s*[›❯»>]/u.test(lines[part.row]))) continue;
+    const possible = candidates.flatMap(c => {
+      if ((!marker && !c.block.id.startsWith("history:antigravity:")) || present.has(c.block.id)) return [];
+      const start = c.table ? tableLine(prefix) : prefix;
+      return start && c.text.startsWith(start) ? [{...c,length:start.length}] : [];
+    });
     let found: { block: RichTerminalBlock; end: number } | undefined;
     for (let j = i; possible.length; j++) {
-      const exact = possible.filter((c) => c.text.length === length);
-      if (exact.length === 1) found = { block: exact[0].block, end: j };
-      else if (exact.length > 1) found = undefined;
+      const exact = possible.filter(c => c.text.length === c.length);
+      if (exact.length) found = exact.every(c => c.block.id === exact[0].block.id)
+        ? {block:exact[0].block,end:j} : undefined;
       const next = parts[j + 1];
       if (!next || next.kind !== "row" || next.start) break;
       const line = lines[next.row];
       if (/^\s{0,2}[›❯»●•⏺]\s/u.test(line)) break;
       const chunk = line.replace(/\s+/gu, "");
       if (!chunk) continue;
-      possible = possible.filter((c) => c.text.startsWith(chunk, length));
-      length += chunk.length;
+      for (let n=possible.length-1;n>=0;n--) {
+        const c=possible[n], value=c.table ? tableLine(line) : chunk;
+        if (c.text.startsWith(value,c.length)) c.length+=value.length;
+        else possible.splice(n,1);
+      }
     }
     if (found) {
       // Keep trailing empty rows after the last text line.
