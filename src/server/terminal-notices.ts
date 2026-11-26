@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { TerminalNotice } from "../shared/notices.js";
 
 /** Parse attention OSCs as they arrive, including split sequences; never replay alerts. */
+export type RebootOutcome = "opening" | "ready" | "failed";
 export class TerminalNotices extends EventEmitter {
   private parsers = new Map<
     string,
@@ -13,6 +14,49 @@ export class TerminalNotices extends EventEmitter {
     }
   >();
   private notices: TerminalNotice[] = [];
+  private recovery = new Map<string, Map<string, RebootOutcome>>();
+  reboot(
+    hostId: string,
+    hostName: string,
+    boot: string,
+    terminalId: string,
+    outcome: RebootOutcome,
+  ) {
+    const id = "reboot-" + hostId + "-" + boot;
+    for (const group of this.recovery.keys())
+      if (!this.notices.some((n) => n.id === group))
+        this.recovery.delete(group);
+    const tabs = this.recovery.get(id) || new Map<string, RebootOutcome>();
+    if (tabs.get(terminalId) === outcome) return;
+    tabs.set(terminalId, outcome);
+    this.recovery.set(id, tabs);
+    const outcomes = [...tabs.values()];
+    const restored = outcomes.filter((v) => v === "ready").length;
+    const failed = outcomes.filter((v) => v === "failed").length;
+    const opening = tabs.size - restored - failed;
+    const body = [
+      restored && `대화 ${restored}개를 복구했습니다.`,
+      opening && `${opening}개 탭에서 원래 대화 재개를 요청했습니다.`,
+      failed && `${failed}개 탭은 대화 기록을 확인해 주세요.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const notice = this.notices.find((n) => n.id === id);
+    if (notice) notice.body = body;
+    else
+      this.notices = [
+        {
+          id,
+          title: hostName + " 서버 재부팅",
+          body,
+          terminalId,
+          at: Date.now(),
+          read: false,
+        },
+        ...this.notices,
+      ].slice(0, 100);
+    this.emit("change");
+  }
   list() {
     return this.notices.map((n) => ({ ...n }));
   }

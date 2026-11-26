@@ -80,7 +80,11 @@ export function disconnectCategory(error: unknown): DisconnectCategory {
     return "network";
   return "transport";
 }
+const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+
 export interface DurableRecord {
+  bootId?: string;
+  shutdownConversation?: {bootId:string; kind:NonNullable<TerminalInfo["agentKind"]>; id:string};
   info: TerminalInfo;
   target: string;
   socket: string;
@@ -320,11 +324,57 @@ export interface DurableSecrets {
   hookPath?: string;
   peerRuntime?: PeerRuntime;
 }
+export async function readLinuxBootId(connection: Client) {
+  const value = (
+    await execRemote(
+      connection,
+      "cat /proc/sys/kernel/random/boot_id 2>/dev/null || :",
+    )
+  ).trim();
+  return uuid.test(value) ? value : undefined;
+}
+
+export function rebootResume(
+  record: DurableRecord,
+  info: TerminalInfo,
+  bootId?: string,
+) {
+  if (
+    !bootId ||
+    !uuid.test(bootId) ||
+    !record.bootId ||
+    !uuid.test(record.bootId) ||
+    record.bootId === bootId
+  )
+    return;
+  const closing = record.shutdownConversation?.bootId === record.bootId ? record.shutdownConversation : undefined;
+  const liveId = info.agentSessionId || info.resumeThreadId;
+  const id = liveId || closing?.id;
+  if (!id || !uuid.test(id)) return;
+  const kind =
+    (liveId ? info.agentKind : closing?.kind) ||
+    (info.program === "claude-resume"
+      ? "claude"
+      : info.program === "resume"
+        ? "codex"
+        : undefined);
+  const program =
+    kind === "claude"
+      ? "claude-resume"
+      : kind === "codex"
+        ? "resume"
+        : kind === "antigravity"
+          ? "antigravity-cli"
+          : undefined;
+  return program ? ({ program, id } as const) : undefined;
+}
+
 export async function createDurableSession(
   connection: Client,
   record: DurableRecord,
   initialization: string,
   secrets?: DurableSecrets,
+  expectedBoot?: string,
 ) {
   const command = tmux(record),
     target = tmuxTarget(record);
@@ -332,6 +382,7 @@ export async function createDurableSession(
   const script =
     [
       "set +x +v; set -eu; umask 077",
+      ...(expectedBoot ? [`[ "$(cat /proc/sys/kernel/random/boot_id)" = ${shellQuote(expectedBoot)} ] || exit 1`] : []),
       "command -v tmux >/dev/null 2>&1 || exit 72",
       "command -v bash >/dev/null 2>&1 || exit 73",
       `if ${command} has-session -t ${target} 2>/dev/null; then exit 75; fi`,
@@ -373,7 +424,8 @@ export async function createDurableSession(
 export async function checkDurableSession(
   connection: Client,
   record: DurableRecord,
-): Promise<{ dead: boolean; code: number; signal?: string; cwd?: string }> {
+  includeBoot = false,
+): Promise<{ dead: boolean; code: number; signal?: string; cwd?: string; bootId?: string }> {
   // tmux 3.2a wraps ENOENT in parentheses. An unlinked socket can still have
   // a live server, so preserve it when Linux retains that kernel socket.
   const socketStillLive = `if [ -r /proc/net/unix ] && LC_ALL=C grep -F -q -- ${shellQuote(`/${record.socket}`)} /proc/net/unix; then exit 75; fi`;
@@ -383,9 +435,10 @@ export async function checkDurableSession(
 $harbor_sessions
 " in *'
 ${record.session}
-'*) exit 1;; *) exit 74;; esac; else case "$harbor_sessions" in 'no server running on '*|'error connecting to '*' (No such file or directory)'|'failed to connect to server: No such file or directory') ${socketStillLive}; exit 74;; *) exit 1;; esac; fi; fi; ${tmux(record)} display-message -p -t ${tmuxTarget(record)} '#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}\n#{pane_current_path}'`,
+'*) exit 1;; *) exit 74;; esac; else case "$harbor_sessions" in 'no server running on '*|'error connecting to '*' (No such file or directory)'|'failed to connect to server: No such file or directory') ${socketStillLive}; exit 74;; *) exit 1;; esac; fi; fi; ${tmux(record)} display-message -p -t ${tmuxTarget(record)} '#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}\n#{pane_current_path}'${includeBoot ? " && { printf 'HARBOR_BOOT='; cat /proc/sys/kernel/random/boot_id 2>/dev/null || :; }" : ""}`,
   );
-  const [status, path] = output.trimEnd().split("\n");
+  const [status, path, bootLine] = output.trimEnd().split("\n");
+  const bootId = bootLine?.startsWith("HARBOR_BOOT=") ? bootLine.slice(12) : undefined;
   const [dead, code, signal] = status.split("|");
   if (dead !== "0" && dead !== "1")
     throw new DurableSshError(
@@ -393,6 +446,7 @@ ${record.session}
       "서버의 유지 세션 상태 응답을 확인하지 못했습니다.",
     );
   return {
+    bootId: bootId && uuid.test(bootId) ? bootId : undefined,
     dead: dead === "1",
     // A signaled process has no normal exit status. Never call that success.
     code: /^\d+$/.test(code || "") ? Number(code) : -1,

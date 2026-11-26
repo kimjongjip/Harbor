@@ -109,6 +109,8 @@ export function remoteTerminalCommand(
       return "printf '%s\\n' 'Harbor: approval settings require a managed Bash connection. Use CLI settings or configure SSH forwarding.' >&2; exit 78";
     return `${directory}exec "\${SHELL:-/bin/sh}" -l`;
   }
+  if (program === "antigravity-cli" && resumeThreadId)
+    return `${directory}exec agy --conversation ${shellQuote(resumeThreadId)}`;
   if (program.startsWith("claude"))
     return `${directory}exec claude ${[
       ...cliApprovalArgs(host, "claude"),
@@ -267,7 +269,9 @@ export function bashInitialization(
     : `command claude ${claudeArgs} "$@"; local harbor_exit=$?;`;
   const claudeCwd = researchLaunch?.cwd || resumeCwd;
   const claudeLaunch = `${claudeCwd ? `cd ${shellDirectory(claudeCwd)} && ` : ""}claude${researchLaunch ? ` --harbor-peers ${researchArguments("claude", researchLaunch).map(shellQuote).join(" ")}` : ""}${program === "claude-resume" ? ` --resume ${resumeThreadId ? shellQuote(resumeThreadId) : ""}` : ""}`;
-  const launch = program.startsWith("claude")
+  const launch = program === "antigravity-cli" && resumeThreadId
+    ? `${interactive} -c ${shellQuote(`agy --conversation ${shellQuote(resumeThreadId)}; ${interactive}`)}`
+    : program.startsWith("claude")
     ? `${interactive} -c ${shellQuote(`${claudeLaunch}; ${interactive}`)}`
     : program === "shell"
       ? interactive

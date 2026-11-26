@@ -15,6 +15,7 @@ import { createServer } from "node:http";
 import express from "express";
 import ssh2, { type Client, type Connection } from "ssh2";
 import type { HostConfig } from "../shared/types.js";
+import { TerminalNotices } from "./terminal-notices.js";
 import { Terminals as DirectTerminals } from "./terminals.js";
 import { AgentBridge } from "./agent-bridge.js";
 import { Mailbox } from "./mailbox.js";
@@ -27,6 +28,7 @@ import {
   tmuxTarget,
   hostFingerprint,
   checkDurableSession,
+  rebootResume,
   type DurableRecord,
 } from "./durable-ssh.js";
 
@@ -149,6 +151,7 @@ async function sshFixture() {
     exitCode = 0,
     missing = false,
     latest: Connection | undefined;
+  let bootId = "", systemState = "running";
   let startup = "",
     token = "",
     hookToken = "",
@@ -237,6 +240,8 @@ async function sshFixture() {
           !command.includes("display-message")
         )
           done(haveTmux ? 0 : 72);
+        else if (command.startsWith("cat /proc/sys/kernel/random/boot_id")) done(0, bootId);
+        else if (command.startsWith("systemctl is-system-running")) done(0,systemState);
         else if (command.includes("display-message")) {
           if (checkExecutor) {
             const result = checkExecutor(command);
@@ -244,7 +249,7 @@ async function sshFixture() {
           } else
             done(
               missing ? 74 : 0,
-              `${dead ? 1 : 0}|${statusPresent ? exitCode : ""}|${signal}\n`,
+              `${dead ? 1 : 0}|${statusPresent ? exitCode : ""}|${signal}\n${bootId ? "/fixture\nHARBOR_BOOT="+bootId+"\n" : ""}`,
             );
         } else if (command.includes("show-environment"))
           done(
@@ -290,6 +295,8 @@ async function sshFixture() {
     forwarding,
     inputs,
     commands,
+    set boot(value:string) {bootId=value;},
+    set systemState(value:string) {systemState=value;},
     get startup() {
       return startup;
     },
@@ -1192,3 +1199,183 @@ test(
     }
   },
 );
+
+test("reboot recovery needs a different verified boot and the provider's exact saved ID", () => {
+  const first = "11111111-1234-4321-8000-123456789abc",
+    second = "22222222-1234-4321-8000-123456789abc";
+  const record = { bootId: first } as DurableRecord;
+  for (const [provider, program] of [
+    ["claude", "claude-resume"],
+    ["codex", "resume"],
+    ["antigravity", "antigravity-cli"],
+  ] as const) {
+    const info = {
+      agentKind: provider,
+      agentSessionId: first,
+    } as DurableRecord["info"];
+    assert.deepEqual(rebootResume(record, info, second), {
+      program,
+      id: first,
+    });
+    assert.equal(rebootResume(record, info, first), undefined);
+    assert.equal(rebootResume(record, info, undefined), undefined);
+    assert.equal(
+      rebootResume({ ...record, bootId: undefined }, info, second),
+      undefined,
+    );
+    assert.equal(
+      rebootResume(record, { ...info, agentSessionId: "" }, second),
+      undefined,
+    );
+  }
+});
+test("server reboot results share a single notification across tabs and SSH retries", () => {
+  const notices = new TerminalNotices();
+  notices.reboot("a", "Compiler", "boot", "tab1", "opening");
+  const notification = notices.list()[0];
+  notices.read("tab1");
+  notices.reboot("a", "Compiler", "boot", "tab2", "ready");
+  notices.reboot("a", "Compiler", "boot", "tab1", "ready");
+  notices.reboot("a", "Compiler", "boot", "tab1", "ready");
+  const [updated] = notices.list();
+  assert.equal(notices.list().length, 1);
+  assert.equal(updated.id, notification.id);
+  assert.equal(updated.read, true);
+  assert.match(updated.body, /대화 2개/);
+  notices.reboot("a", "Compiler", "new-boot", "tab1", "failed");
+  assert.equal(notices.list().length, 2);
+});
+
+test("a running Harbor automatically replaces its lost tmux pane after a reboot, once", async () => {
+  const fixture = await sshFixture();
+  const directory = mkdtempSync(join(resolve(".cache"), "boot-live-"));
+  const app = new Terminals({ directory, connect: fixture.connect });
+  const native = "89abcdef-1234-4321-8000-123456789abc";
+  const results: string[] = [];
+  app.on("host-reboot", (_host, _name, _boot, _tab, outcome) =>
+    results.push(outcome),
+  );
+  app.configureBridge({
+    port: 1,
+    issue: () => ({ token: "a".repeat(64), path: "/bridge/mcp" }),
+    revoke() {},
+  });
+  try {
+    fixture.boot = "11111111-1234-4321-8000-123456789abc";
+    const tab = await app.create(host, "/fixture", "fixture");
+    app.markPeerRuntime(tab.id, {
+      kind: "codex",
+      sessionId: native,
+      state: "idle",
+      delivery: "automatic",
+    });
+    fixture.job?.kill();
+    fixture.missing = true;
+    fixture.boot = "22222222-1234-4321-8000-123456789abc";
+    fixture.disconnect();
+    await until(
+      () => fixture.sessions === 2 && tab.connectionState === "connected",
+      "automatic re-creation",
+    );
+    assert.deepEqual(
+      app.list().map((t) => t.id),
+      [tab.id],
+    );
+    const encoded = fixture.startup.match(
+      /printf '%s' '([A-Za-z0-9+/=]+)'/,
+    )![1];
+    const script = Buffer.from(encoded, "base64").toString();
+    assert.match(script, /codex resume /);
+    assert.ok(script.includes(native));
+    assert.ok(script.includes("/fixture"));
+    assert.equal(fixture.inputs.length, 0);
+    assert.deepEqual(results, ["opening"]);
+    app.markPeerRuntime(tab.id, {
+      kind: "codex",
+      sessionId: native,
+      state: "idle",
+      delivery: "automatic",
+    });
+    assert.deepEqual(results, ["opening", "ready"]);
+  } finally {
+    await app.shutdown();
+    await fixture.cleanup();
+  }
+});
+
+test("restore a Claude tab by exact native ID after server reboot while Harbor was closed", async () => {
+  const fixture = await sshFixture();
+  const directory = mkdtempSync(join(resolve(".cache"), "boot-recovery-"));
+  const native = "01234567-1234-4321-8000-123456789abc";
+  const make = () => {
+    const app = new Terminals({ directory, connect: fixture.connect });
+    app.configureRecovery({
+      hosts: () => [host],
+      password: async () => "fixture",
+    });
+    return app;
+  };
+  let app = make();
+  try {
+    fixture.boot = "11111111-1234-4321-8000-123456789abc";
+    const info = await app.create(host, "/fixture", "fixture");
+    app.markPeerRuntime(info.id, {
+      kind: "claude",
+      state: "idle",
+      sessionId: native,
+      delivery: "automatic",
+    });
+    app.write(info.id, "old-experiment-command");
+    await until(() => fixture.inputs.includes("old-experiment-command"));
+    assert.equal(
+      new DurableRegistry(directory).list()[0].bootId,
+      "11111111-1234-4321-8000-123456789abc",
+    );
+    fixture.systemState="stopping";
+    app.markAgentState(info.id,"shell");
+    await until(()=>new DurableRegistry(directory).list()[0]?.shutdownConversation?.id===native,"identity retained on confirmed OS shutdown");
+    fixture.systemState="running";
+    await app.shutdown();
+    fixture.missing = true;
+    fixture.job?.kill();
+    fixture.boot = "22222222-1234-4321-8000-123456789abc";
+    app = make();
+    await app.restore();
+    await until(
+      () =>
+        app
+          .list()
+          .some((t) => t.id === info.id && t.connectionState === "connected"),
+      "reboot recovery",
+    );
+    assert.equal(fixture.sessions, 2);
+    const encoded = fixture.startup.match(
+      /printf '%s' '([A-Za-z0-9+/=]+)'/,
+    )![1];
+    const launch = Buffer.from(encoded, "base64").toString();
+    assert.match(launch, /claude.*--resume/);
+    assert.ok(launch.includes(native));
+    assert.ok(!launch.includes("old-experiment-command"));
+    assert.equal(
+      new DurableRegistry(directory).list()[0].bootId,
+      "22222222-1234-4321-8000-123456789abc",
+    );
+    fixture.disconnect();
+    await until(() => app.list()[0]?.connectionState !== "connected");
+    await app.reconnect(info.id);
+    assert.equal(fixture.sessions, 2);
+    // A manual tmux kill on the same boot is terminal even after another reboot.
+    fixture.missing = true;
+    fixture.job?.kill();
+    fixture.disconnect();
+    await until(() => app.list()[0]?.connectionState !== "connected");
+    await assert.rejects(app.reconnect(info.id), /tmux|세션/);
+    assert.equal(new DurableRegistry(directory).list()[0].bootId, undefined);
+    fixture.boot = "33333333-1234-4321-8000-123456789abc";
+    await assert.rejects(app.reconnect(info.id), /tmux|세션/);
+    assert.equal(fixture.sessions, 2);
+  } finally {
+    await app.shutdown();
+    await fixture.cleanup();
+  }
+});

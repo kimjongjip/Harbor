@@ -1043,6 +1043,7 @@ terminals.on("change", autoApproval.refresh);
 mailbox.on("change", broadcastState);
 requests.on("change", broadcastState);
 notices.on("change", broadcastState);
+terminals.on("host-reboot", (hostId,hostName,boot,id,resumed) => notices.reboot(hostId,hostName,boot,id,resumed));
 terminals.on("data", (id, data) => {
   const terminal = terminals.list().find((item) => item.id === id);
   if (terminal) notices.append(id, terminal.title, data);
@@ -1285,7 +1286,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.25" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.26" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

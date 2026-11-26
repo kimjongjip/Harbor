@@ -34,12 +34,15 @@ import {
   execRemote,
   hostFingerprint,
   restoreDurableSecrets,
+  readLinuxBootId,
+  rebootResume,
   tmux,
   tmuxTarget,
   type DurableRecord,
   type DurableSecrets,
   type DisconnectCategory,
 } from "./durable-ssh.js";
+import { shellDirectory } from "./ssh.js";
 import { TerminalScreen } from "./terminal-screen.js";
 import { TerminalColorResponder } from "./terminal-colors.js";
 import { TerminalCwdObserver } from "./terminal-cwd.js";
@@ -91,6 +94,7 @@ interface Entry {
     sockets: Set<Socket>;
     peerRuntime?: PeerRuntime;
     launching?: Promise<void>;
+    rebootPending?: {boot:string; nativeId:string; kind:TerminalInfo["agentKind"]};
   };
 }
 
@@ -160,7 +164,13 @@ export class Terminals extends EventEmitter {
   ) {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
-      if (entry.info.agentKind !== kind) delete entry.info.agentCompletion;
+      if (entry.info.agentKind !== kind) {
+        delete entry.info.agentCompletion;
+        if (entry.info.agentKind) {
+          delete entry.info.agentSessionId;
+          delete entry.info.resumeThreadId;
+        }
+      }
       entry.info.agentConnected = true;
       entry.info.agentKind = kind;
       this.persist(entry);
@@ -211,6 +221,8 @@ export class Terminals extends EventEmitter {
         }
       }
     }
+    if (runtime.state !== "offline" && runtime.sessionId)
+      this.confirmReboot(entry, runtime.kind, runtime.sessionId);
     entry.info.peerDelivery = runtime.delivery;
     entry.info.peerDetail = runtime.detail;
     if (runtime.state !== "offline") {
@@ -313,6 +325,10 @@ export class Terminals extends EventEmitter {
     const entry = this.entries.get(id);
     if (entry && !entry.info.exited) {
       delete entry.info.agentCompletion;
+      if (state === "shell") {
+        this.rememberShutdownExit(entry);
+        this.reportReboot(entry, "failed");
+      }
       entry.info.agentConnected = state === "codex";
       // Once Codex exits, this shell no longer owns the resumed conversation.
       if (state === "shell") {
@@ -360,6 +376,7 @@ export class Terminals extends EventEmitter {
       delete info.agentCompletion;
     if (event.hook_event_name === "SessionEnd") {
       if (info.agentSessionId !== event.session_id) return;
+      this.rememberShutdownExit(entry);
       if (entry.durable?.peerRuntime?.kind === "claude")
         delete entry.durable.peerRuntime;
       delete info.agentKind;
@@ -368,6 +385,7 @@ export class Terminals extends EventEmitter {
       delete info.resumeThreadId;
       info.agentConnected = false;
     } else {
+      this.confirmReboot(entry, "claude", event.session_id);
       info.agentKind = "claude";
       info.agentConnected = true;
       info.agentSessionId = event.session_id;
@@ -869,6 +887,46 @@ export class Terminals extends EventEmitter {
     });
     return remotePort;
   }
+  private durableInitialization(
+    host: HostConfig,
+    info: TerminalInfo,
+    remotePort: number,
+    secrets?: DurableSecrets,
+    resumeCwd?: string,
+    researchLaunch?: TerminalOptions["researchLaunch"],
+  ) {
+    if (!secrets)
+      return (
+        remoteTerminalCommand(
+          host,
+          info.cwd,
+          info.program || "shell",
+          info.resumeThreadId,
+        ) + "\n"
+      );
+    return bashInitialization(
+      host,
+      info.cwd,
+      info.program || "shell",
+      {
+        token: secrets.token,
+        url: `http://127.0.0.1:${remotePort}${secrets.path}`,
+        ...(secrets.hookToken && secrets.hookPath
+          ? {
+              hook: {
+                token: secrets.hookToken,
+                url: `http://127.0.0.1:${remotePort}${secrets.hookPath}`,
+              },
+            }
+          : {}),
+      },
+      info.resumeThreadId,
+      resumeCwd,
+      researchLaunch,
+      info.claudePeerChannel,
+    );
+  }
+
   private async remote(
     host: HostConfig,
     info: TerminalInfo,
@@ -922,29 +980,14 @@ export class Terminals extends EventEmitter {
         ? "SSH 연결이 끊겨도 서버의 같은 셸·AI 프로세스를 유지합니다. 터미널 탭의 X → 터미널 종료는 서버 작업도 종료합니다."
         : "서버 tmux에서 작업을 유지합니다. SSH TCP forwarding을 사용할 수 없어 Harbor AI 연동은 사용할 수 없습니다.";
       info.connectionState = "connecting";
-      const initialization = secrets
-        ? bashInitialization(
-            host,
-            info.cwd,
-            info.program || "shell",
-            {
-              token: secrets.token,
-              url: `http://127.0.0.1:${remotePort}${secrets.path}`,
-              ...(secrets.hookToken && secrets.hookPath
-                ? {
-                    hook: {
-                      token: secrets.hookToken,
-                      url: `http://127.0.0.1:${remotePort}${secrets.hookPath}`,
-                    },
-                  }
-                : {}),
-            },
-            info.resumeThreadId,
-            resumeCwd,
-            researchLaunch,
-            info.claudePeerChannel,
-          )
-        : `${remoteTerminalCommand(host, info.cwd, info.program || "shell", info.resumeThreadId)}\n`;
+      const initialization = this.durableInitialization(
+        host,
+        info,
+        remotePort,
+        secrets,
+        resumeCwd,
+        researchLaunch,
+      );
       const entry = this.durableEntry(
         host,
         info,
@@ -1069,8 +1112,11 @@ export class Terminals extends EventEmitter {
   private async attach(entry: Entry, connection: Client) {
     const durable = entry.durable!;
     entry.connection = connection;
-    const status = await checkDurableSession(connection, durable.record);
+    const status = await checkDurableSession(connection, durable.record, true);
+    if (status.bootId) durable.record.bootId = status.bootId;
+    if (status.cwd && !durable.rebootPending) entry.info.cwd = status.cwd;
     if (status.dead) {
+      await this.checkServerShutdown(connection, durable.record);
       this.finishRemote(entry, status.code, status.signal);
       return;
     }
@@ -1125,10 +1171,12 @@ export class Terminals extends EventEmitter {
       if (checking) return;
       checking = true;
       void checkDurableSession(connection, durable.record)
-        .then((status) => {
+        .then(async (status) => {
           if (!current()) return;
-          if (status.dead) this.finishRemote(entry, status.code, status.signal);
-          else if (status.cwd && status.cwd !== entry.info.cwd) {
+          if (status.dead) {
+            await this.checkServerShutdown(connection, durable.record);
+            if (current()) this.finishRemote(entry, status.code, status.signal);
+          } else if (status.cwd && status.cwd !== entry.info.cwd) {
             entry.info.cwd = status.cwd;
             this.persist(entry);
             this.emit("change");
@@ -1152,6 +1200,7 @@ export class Terminals extends EventEmitter {
   }
   private finishRemote(entry: Entry, code: number, signal?: string) {
     const durable = entry.durable!;
+    this.reportReboot(entry, "failed");
     durable.stopped = true;
     if (signal) {
       entry.info.exitSignal = signal;
@@ -1206,6 +1255,174 @@ export class Terminals extends EventEmitter {
     );
     durable.timer.unref();
   }
+  // SessionEnd can arrive before SSH disconnects during an orderly reboot.
+  private rememberShutdownExit(entry: Entry) {
+    const d = entry.durable, connection = entry.connection;
+    const id = entry.info.agentSessionId || entry.info.resumeThreadId, kind = entry.info.agentKind;
+    if (!d?.record.bootId || !connection || !id || !kind) return;
+    const bootId = d.record.bootId;
+    void execRemote(connection, "systemctl is-system-running 2>/dev/null || :").then(state => {
+      if (state.trim() === "stopping" && this.entries.get(entry.info.id) === entry &&
+          !d.stopped && d.record.bootId === bootId && !entry.info.agentSessionId) {
+        d.record.shutdownConversation = {bootId,kind,id};
+        this.persist(entry);
+      }
+    }).catch(() => { /* An unconfirmed exit does not authorize reopening a CLI. */ });
+  }
+  private async checkServerShutdown(connection: Client, record: DurableRecord) {
+    if (!record.bootId) return;
+    const state = await execRemote(
+      connection,
+      "systemctl is-system-running 2>/dev/null || :",
+    );
+    if (state.trim() === "stopping")
+      throw new DurableSshError(
+        "network",
+        "서버 종료 중입니다. 다시 접속되면 대화를 복구합니다.",
+      );
+  }
+  private reportReboot(
+    entry: Entry,
+    outcome: import("./terminal-notices.js").RebootOutcome,
+  ) {
+    const d = entry.durable;
+    if (!d?.rebootPending) return;
+    this.emit(
+      "host-reboot",
+      d.host.id,
+      d.host.name,
+      d.rebootPending.boot,
+      entry.info.id,
+      outcome,
+    );
+    if (outcome !== "opening") delete d.rebootPending;
+  }
+  private confirmReboot(
+    entry: Entry,
+    kind: TerminalInfo["agentKind"],
+    nativeId: string,
+  ) {
+    const pending = entry.durable?.rebootPending;
+    if (pending && pending.kind === kind)
+      this.reportReboot(
+        entry,
+        pending.nativeId === nativeId ? "ready" : "failed",
+      );
+  }
+  private readonly rebootClaims = new Set<string>();
+  private async resumeAfterReboot(
+    entry: Entry,
+    connection: Client,
+    host: HostConfig,
+    missing: DurableSshError,
+  ) {
+    const durable = entry.durable!;
+    const boot = await readLinuxBootId(connection);
+    if (boot && boot === durable.record.bootId && !durable.stopped) {
+      await this.checkServerShutdown(connection, durable.record);
+      // A session positively found missing on the original boot was removed externally.
+      delete durable.record.bootId;
+      this.persist(entry);
+      throw missing;
+    }
+    const plan = rebootResume(durable.record, entry.info, boot);
+    if (!boot || durable.stopped) throw missing;
+    if (!plan) {
+      this.emit(
+        "host-reboot",
+        host.id,
+        host.name,
+        boot,
+        entry.info.id,
+        "failed",
+      );
+      throw missing;
+    }
+    const key = JSON.stringify([host.id, plan.id]);
+    if (
+      this.rebootClaims.has(key) ||
+      [...this.entries.values()].some(
+        (e) =>
+          e !== entry &&
+          !e.info.exited &&
+          e.info.hostId === host.id &&
+          (e.info.connectionState === "connected" ||
+            (e.info.connectionState === "reconnecting" &&
+              e.durable?.record.bootId === boot)) &&
+          (e.info.agentSessionId || e.info.resumeThreadId) === plan.id,
+      )
+    ) {
+      this.emit(
+        "host-reboot",
+        host.id,
+        host.name,
+        boot,
+        entry.info.id,
+        "failed",
+      );
+      throw missing;
+    }
+    this.rebootClaims.add(key);
+    try {
+      const port = durable.record.remotePort
+        ? await this.forward(connection, durable.sockets)
+        : 0;
+      if (durable.stopped) throw missing;
+      const secrets = port ? this.bridge?.issue(entry.info.id) : undefined;
+      if (port && !secrets)
+        throw new DurableSshError(
+          "forwarding",
+          "AI 연결 인증을 다시 만들 수 없습니다.",
+        );
+      const info = {
+        ...entry.info,
+        program: plan.program,
+        resumeThreadId: plan.id,
+      };
+      const launch = this.durableInitialization(
+        { ...host, cliApprovalMode: info.cliApprovalMode },
+        info,
+        port,
+        secrets,
+        info.cwd,
+      );
+      durable.rebootPending = {
+        boot,
+        nativeId: plan.id,
+        kind:
+          plan.program === "resume"
+            ? "codex"
+            : plan.program === "claude-resume"
+              ? "claude"
+              : "antigravity",
+      };
+      durable.record.remotePort = port;
+      durable.peerRuntime = undefined;
+      durable.secrets = secrets;
+      entry.info.resumeThreadId = plan.id;
+      entry.info.agentKind = durable.rebootPending.kind;
+      entry.info.agentConnected = false;
+      delete entry.info.peerDelivery;
+      delete entry.info.peerDetail;
+      delete entry.info.agentState;
+      delete entry.info.agentCompletion;
+      this.persist(entry);
+      await createDurableSession(
+        connection,
+        durable.record,
+        (info.cwd ? `cd -- ${shellDirectory(info.cwd)} || exit 1\n` : "") +
+          launch,
+        secrets,
+        boot,
+      );
+      durable.record.bootId = boot;
+      delete durable.record.shutdownConversation;
+      this.persist(entry);
+    } finally {
+      this.rebootClaims.delete(key);
+    }
+  }
+
   async reconnect(id: string, password?: string): Promise<TerminalInfo> {
     const entry = this.entries.get(id),
       durable = entry?.durable;
@@ -1239,8 +1456,30 @@ export class Terminals extends EventEmitter {
           connection.end();
           return entry.info;
         }
-        await checkDurableSession(connection, durable.record);
-        if (durable.record.remotePort) {
+        let recreated = false;
+        try {
+          await checkDurableSession(connection, durable.record);
+        } catch (error) {
+          if (
+            !(error instanceof DurableSshError) ||
+            error.category !== "remote-missing" ||
+            !durable.record.bootId
+          )
+            throw error;
+          durable.launching = this.resumeAfterReboot(
+            entry,
+            connection,
+            host,
+            error,
+          );
+          await durable.launching;
+          recreated = true;
+        }
+        if (durable.stopped) {
+          connection.end();
+          return entry.info;
+        }
+        if (!recreated && durable.record.remotePort) {
           await this.forward(
             connection,
             durable.sockets,
@@ -1267,14 +1506,16 @@ export class Terminals extends EventEmitter {
         }
         if (password) durable.password = password;
         await this.attach(entry, connection);
+        this.reportReboot(entry, entry.info.exited ? "failed" : "opening");
         return entry.info;
       } catch (error) {
         connection?.destroy();
         for (const socket of durable.sockets) socket.destroy();
         durable.sockets.clear();
+        if (durable.stopped) return entry.info;
         const category = disconnectCategory(error);
         this.state(entry, "disconnected", category);
-        // Authentication and a missing remote job need explicit user action, never a new CLI.
+        // An unverified disappearance or an authentication failure requires user action.
         if (
           category !== "authentication" &&
           category !== "remote-missing" &&
@@ -1576,7 +1817,9 @@ export class Terminals extends EventEmitter {
   buffer(id: string) {
     return this.entries.get(id)?.buffer.history.read() || "";
   }
-  async sideContext(id:string) { return this.entries.get(id)?.buffer.sideContext() || ""; }
+  async sideContext(id: string) {
+    return this.entries.get(id)?.buffer.sideContext() || "";
+  }
   async bufferSnapshot(id: string) {
     return (
       this.entries.get(id)?.buffer.snapshot() || {
