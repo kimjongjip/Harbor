@@ -92,13 +92,23 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         () => (window as any).requests.length,
       );
       await page.evaluate(async (footer) => {
+        // Output can grow before the resize observer pins the bottom. A scroll
+        // notification at the same offset must not be treated as scrolling up.
+        const body=document.querySelector<HTMLElement>(".terminal-conversation-body")!;
+        const filler=document.createElement("div");
+        filler.style.height="2000px";
+        body.firstElementChild!.append(filler);
+        body.dispatchEvent(new Event("scroll"));
+        filler.remove();
         (window as any).stage = 1;
+        // Model a reconnect mid-synchronized paint, with no closing marker or user input.
+        await (window as any).echo("\x1b[?2026h");
         await (window as any).frame(
           "› SYNTHETIC QUESTION\r\nLIVE NATIVE WORK\r\nVERIFIED COMPLETE FINAL ANSWER\r\n" + footer + "\r\n› DRAFT",
         );
       }, provider === "claude" ? "✻ Cooked for 2s · done Monday 7:58 PM" : "• Worked for 2s");
       await page.waitForFunction(
-        (count) => (window as any).requests.length === count + 1,
+        (count) => (window as any).requests.length > count,
         initial,
         { timeout: 2500 },
       );
@@ -139,6 +149,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         .waitFor({ timeout: 2500 });
       assert.equal(await page.locator(".conversation-work").count(), 1);
       assert.equal(await page.locator(".conversation-work[open]").count(), 0);
+      await page.evaluate(()=>(window as any).echo("\x1b[?2026l"));
       await page.waitForTimeout(4500);
       const afterComplete = await page.evaluate(
         () => (window as any).requests.length,

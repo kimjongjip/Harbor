@@ -68,6 +68,7 @@ interface View {
 const typingWindowMs = 250;
 const outputCoalesceMs = 40;
 const incompleteFrameGraceMs = 160;
+const maxSynchronizedPaintMs = 1000;
 
 function composerStart(view: View) {
   const { lines, end, baseY } = view.frame;
@@ -139,6 +140,7 @@ export function TerminalNativeFlow({
   frozen = false,
   nativeInteraction = false,
   onFrozenFrame,
+  observeFrame,
   codexComposer = false,
   startRow = 0,
   workTarget,
@@ -157,6 +159,7 @@ export function TerminalNativeFlow({
   frozen?: boolean;
   nativeInteraction?: boolean;
   onFrozenFrame?(): void;
+  observeFrame?(frame: NativeFlowFrame): void;
   codexComposer?: boolean;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
@@ -171,6 +174,7 @@ export function TerminalNativeFlow({
   const composer = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
+    observeFrame,
     onFrozenFrame,
     blocks,
     active,
@@ -182,6 +186,7 @@ export function TerminalNativeFlow({
     workTarget,
   });
   latest.current = {
+    observeFrame,
     onFrozenFrame,
     blocks,
     active,
@@ -201,6 +206,7 @@ export function TerminalNativeFlow({
       timer: ReturnType<typeof setTimeout> | undefined,
       lastInput = 0,
       lastCapture = 0;
+    let syncSince: number | undefined;
     let incompleteSince: number | undefined;
     let pasteStarted = -Infinity,
       lastPasteOutput = -Infinity;
@@ -244,12 +250,14 @@ export function TerminalNativeFlow({
         timer = setTimeout(capture, remaining);
         return;
       }
-      if (!atFrameEnd && term.modes.synchronizedOutputMode) {
-        timer = setTimeout(() => {
-          timer = undefined;
-          schedule();
-        }, 60);
-        return;
+      if (atFrameEnd || !term.modes.synchronizedOutputMode) syncSince = undefined;
+      else {
+        // A dropped end-of-paint marker must not hold the reader indefinitely.
+        syncSince ??= now;
+        if (now - syncSince < maxSynchronizedPaintMs) {
+          timer = setTimeout(capture, 60);
+          return;
+        }
       }
       lastCapture = performance.now();
       if (latest.current.frozen || hasSelection) {
@@ -257,6 +265,7 @@ export function TerminalNativeFlow({
         return;
       }
       const frame = reader.frame();
+      latest.current.observeFrame?.(frame);
       const requested =
         typeof latest.current.startRow === "function"
           ? latest.current.startRow(frame)

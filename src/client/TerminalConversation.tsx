@@ -163,7 +163,7 @@ export function TerminalConversation({
     [selected, setSelected] = useState(false);
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(following);
-  followingRef.current = following;
+  const lastScrollTop = useRef(0);
   const [, setBoundaryRevision] = useState(0);
   const [proofRevision, setProofRevision] = useState(0);
   const verifiedHistory = useRef(new Map<string, string>());
@@ -353,6 +353,8 @@ export function TerminalConversation({
     olderCursors.current.clear();
     selectedPrepend.current = null;
     setSelected(false);
+    followingRef.current = true;
+    lastScrollTop.current = 0;
     setFollowing(true);
     verifiedHistory.current.clear();
     setDetail(null);
@@ -417,9 +419,13 @@ export function TerminalConversation({
       }
     };
     node.ownerDocument.addEventListener("selectionchange", changed);
+    node.ownerDocument.addEventListener("visibilitychange", changed);
+    window.addEventListener("focus", changed);
     return () => {
       dispose();
       node.ownerDocument.removeEventListener("selectionchange", changed);
+      node.ownerDocument.removeEventListener("visibilitychange", changed);
+      window.removeEventListener("focus", changed);
     };
   }, [term]);
   const resumeFollowing = () => {
@@ -431,7 +437,10 @@ export function TerminalConversation({
       pending.current = null;
     }
     anchor.current = "bottom";
-    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+    if (body.current) {
+      body.current.scrollTop = body.current.scrollHeight;
+      lastScrollTop.current = body.current.scrollTop;
+    }
   };
   useEffect(() => {
     const input = term.onData?.((data) => {
@@ -640,7 +649,8 @@ export function TerminalConversation({
         // screen on every animation/status refresh. Only a positively recognized
         // dialog, shell/exit or buffer switch can replace the committed reader.
         defer:
-          publishedLayout.current?.live && !next.live
+          publishedLayout.current?.live && !next.live &&
+          !(turns.at(-1)?.complete && next.historyCount === turns.length && next.nativeStart > 0)
             ? !info.exited &&
               publishedBuffer.current === frame.bufferType &&
               !nativeInteractiveReplacement(
@@ -660,6 +670,7 @@ export function TerminalConversation({
       info.exited,
       info.agentState,
       nativeBusy,
+      turns,
       revealInsetDialog,
     ],
   );
@@ -676,7 +687,7 @@ export function TerminalConversation({
     () => () => completionCue.timers.forEach(clearTimeout),
     [completionCue, active, mode],
   );
-  const updateNativeFrame = useCallback(
+  const observeNativeCompletion = useCallback(
     (frame: NativeFlowFrame) => {
       // Some existing sessions have no peer event transport. A new native
       // footer merely asks for a read; saved turn status still decides folding.
@@ -693,6 +704,10 @@ export function TerminalConversation({
           setTimeout(() => void load.current(false, true), delay),
         );
       }
+    }, [completionCue, provider, term, modSurface],
+  );
+  const updateNativeFrame = useCallback(
+    (frame: NativeFlowFrame) => {
       const next = layoutForFrame(frame);
       const current = publishedLayout.current;
       publishedBuffer.current = frame.bufferType;
@@ -714,7 +729,7 @@ export function TerminalConversation({
           .some((line) => line.includes("esc to interrupt"));
       setNativeBusy((value) => (value === busy ? value : busy));
     },
-    [layoutForFrame, completionCue, provider, term, modSurface],
+    [layoutForFrame],
   );
   // A completed answer the CLI reserved rows for is typeset at once from its
   // received text, instead of raw Markdown until history catches up.
@@ -793,31 +808,48 @@ export function TerminalConversation({
       restoreConversationSelection(node, selectedPrepend.current.selection);
       selectedPrepend.current = null;
     } else if (hasSelection()) return;
-    if (saved && (saved !== "bottom" || followingRef.current))
+    if (saved && (saved !== "bottom" || followingRef.current)) {
       node.scrollTop =
         saved === "bottom"
           ? node.scrollHeight
           : saved.top + node.scrollHeight - saved.height;
+      lastScrollTop.current = node.scrollTop;
+    }
     anchor.current = null;
   }, [detail, visible]);
   useLayoutEffect(() => {
     const node = body.current;
     // Opening/closing a native panel changes the reader's viewport, even when
     // its document height is unchanged. Keep an existing bottom follow pinned.
-    if (node && visible && followingRef.current && !hasSelection())
+    if (node && visible && followingRef.current && !hasSelection()) {
       node.scrollTop = node.scrollHeight;
+      lastScrollTop.current = node.scrollTop;
+    }
   }, [modSurface, visible]);
+  function trackReadingPosition(node: HTMLDivElement) {
+    if (!visible || menuVisible.current || !node.clientHeight) return;
+    const moved = Math.abs(node.scrollTop - lastScrollTop.current) > 1;
+    lastScrollTop.current = node.scrollTop;
+    if (moved && followingRef.current && node.scrollHeight - node.clientHeight - node.scrollTop >= 40) {
+      followingRef.current = false;
+      setFollowing(false);
+    }
+  }
   useEffect(() => {
     const node = body.current;
     if (!node) return;
     const observer = new ResizeObserver(() => {
       // Images, fonts and math can finish layout later than the history response.
-      if (followingRef.current && !hasSelection())
+      trackReadingPosition(node);
+      if (visible && followingRef.current && !hasSelection()) {
         node.scrollTop = node.scrollHeight;
+        lastScrollTop.current = node.scrollTop;
+      }
     });
+    observer.observe(node);
     if (node.firstElementChild) observer.observe(node.firstElementChild);
     return () => observer.disconnect();
-  }, [following]);
+  }, [following, visible, term]);
   const mount = term.element?.parentElement;
   if (!mount) return null;
   return createPortal(
@@ -848,16 +880,10 @@ export function TerminalConversation({
         className="terminal-conversation-body"
         ref={body}
         onScroll={() => {
-          if (menuVisible.current) return;
+          if (!visible || menuVisible.current) return;
           const node = body.current;
-          if (!node) return;
-          if (
-            followingRef.current &&
-            node.scrollHeight - node.clientHeight - node.scrollTop >= 40
-          ) {
-            followingRef.current = false;
-            setFollowing(false);
-          }
+          if (!node || !node.clientHeight) return;
+          trackReadingPosition(node);
           if (node.scrollTop < 24 && detail?.nextCursor && !error)
             void load.current(true, true);
         }}
@@ -960,6 +986,7 @@ export function TerminalConversation({
             onFrozenFrame={provider === "codex" ? revealInsetDialog : undefined}
             startRow={nativeRange}
             workTarget={running ? workTarget : null}
+            observeFrame={observeNativeCompletion}
             onFrame={updateNativeFrame}
             onLink={onLink}
             renderAnswer={renderNativeAnswer}

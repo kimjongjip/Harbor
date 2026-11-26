@@ -107,31 +107,33 @@ export function mergeTimeline(
     Object.keys(a).every(
       (name) => a[name as keyof MessageItem] === b[name as keyof MessageItem],
     );
-  const result = current.map((item) => {
-    const update = byId.get(key(item));
-    return !older && update && !equal(item, update) ? update : item;
-  });
-  const ordered = [...byId.values()];
-  const known = new Set(result.map(key));
-  let previous: string | undefined;
-  for (let index = 0; index < ordered.length; index++) {
-    const item = ordered[index],
-      id = key(item);
+  if (!current.length) return [...byId.values()];
+  const known = new Set(current.map(key));
+  const before = new Map<string, MessageItem[]>();
+  let additions: MessageItem[] = [];
+  let lastAnchor: string | undefined;
+  for (const [id, item] of byId) {
     if (!known.has(id)) {
-      const next = ordered
-        .slice(index + 1)
-        .find((entry) => known.has(key(entry)));
-      const position = next
-        ? result.findIndex((entry) => key(entry) === key(next))
-        : previous
-          ? result.findIndex((entry) => key(entry) === previous) + 1
-          : older
-            ? 0
-            : result.length;
-      result.splice(position, 0, item);
-      known.add(id);
+      additions.push(item);
+      continue;
     }
-    previous = id;
+    if (additions.length) before.set(id, additions);
+    additions = [];
+    lastAnchor = id;
   }
-  return result;
+  const result: MessageItem[] = [];
+  let changed = before.size > 0 || additions.length > 0;
+  for (const item of current) {
+    const id = key(item);
+    const group = before.get(id);
+    if (group) for (const entry of group) result.push(entry);
+    const update = byId.get(id);
+    if (update && !equal(item, update)) {
+      result.push(update);
+      changed = true;
+    } else result.push(item);
+    if (id === lastAnchor) for (const entry of additions) result.push(entry);
+  }
+  if (!lastAnchor) for (const entry of additions) result.push(entry);
+  return changed ? result : current;
 }

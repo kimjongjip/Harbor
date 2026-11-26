@@ -188,6 +188,15 @@ test("older pages preserve newer complete text and its position while refreshing
   assert.equal(current[1].text, "Complete answer");
 });
 
+test("large output batches retain their anchors and identical polls reuse the timeline", () => {
+  const row = (id: string): MessageItem => ({id, kind:"command", text:id});
+  const left=row("left"), right=row("right"), other=row("other");
+  const middle=Array.from({length:4000},(_,i)=>row("batch-"+i));
+  const merged=mergeTimeline([left,right,other],[left,...middle,right,row("tail")],false);
+  assert.deepEqual(merged,[left,...middle,right,row("tail"),other]);
+  assert.equal(mergeTimeline(merged,merged.map(item=>({...item})),false),merged);
+});
+
 test("overlapping incoming records render once and different message kinds retain their identity", () => {
   const repeated = [
     item("same", "assistant", { text: "Partial" }),
