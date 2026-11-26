@@ -84,6 +84,25 @@ function displayedWindows(account: AccountQuota) {
       },
   );
 }
+function QuotaSummary({ account }: { account: AccountQuota }) {
+  const windows = displayedWindows(account);
+  const name = {codex:"Codex", claude:"Claude", antigravity:"Antigravity"}[account.provider];
+  const known = windows.filter(w => w.remaining !== null);
+  const minimum = known.reduce<typeof windows[number] | undefined>((lowest, w) =>
+    !lowest || w.remaining! < lowest.remaining! ? w : lowest, undefined);
+  const aggregate = windows.length > 2 || account.provider === "antigravity";
+  const shown = aggregate ? (minimum ? [minimum] : []) : windows;
+  return <summary className="quota-summary">
+    <strong>{name}</strong>
+    <span className="quota-numbers">
+      {account.stale && known.length > 0 && <small>이전</small>}
+      {shown.length ? shown.map(w => {
+        const label = aggregate ? (windows.length > 1 ? "최저" : "잔여") : w.label.replace(/^codex\s+/i, "").replace(/ 한도$/, "").replace("7일 Fable", "Fable");
+        return <span key={w.label} title={w.label}><small>{label}</small><b>{w.remaining === null ? "—" : Math.round(w.remaining)+"%"}</b></span>;
+      }) : <small>{account.error ? "확인 불가" : "미제공"}</small>}
+    </span><ChevronDown aria-hidden="true" size={12}/>
+  </summary>;
+}
 export const AccountUsagePanel = memo(function AccountUsagePanel({
   hostId,
   hostName,
@@ -110,8 +129,9 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
           onClick={() => setOpen(!open)}
           aria-expanded={open}
         >
-          <ChevronDown size={14} /> AI 사용 한도
+          <ChevronDown size={14} /> AI 잔여 한도
         </button>
+        <small className="quota-server" title={hostName}>{hostName}</small>
         <button
           className="icon-button"
           title="사용 한도 새로고침 (최소 15초 간격, 요청 제한 시 대기)"
@@ -122,19 +142,17 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
       </header>
       {open && (
         <>
-          <small className="quota-host">
-            {hostName || "선택한 서버"} · CLI 계정
-          </small>
           {error && <p role="status">{error}</p>}
           {!data && !error && <p>구독 한도를 확인하고 있습니다…</p>}
           {accounts.map((account) => (
-            <article key={account.provider} className="account-quota">
+            <details key={account.provider} className="account-quota">
+              <QuotaSummary account={account}/>
               <header
                 className="quota-account-heading"
                 title={`${account.account || "CLI 로그인 계정"} · ${new Date(account.updatedAt).toLocaleString("ko-KR")} 확인`}
               >
                 <strong>
-                  {account.provider === "antigravity" ? "Antigravity" : account.provider === "codex" ? "Codex" : "Claude"}{" "}
+                  {account.account || "CLI 계정"}{" "}
                   <small>{account.plan}</small>
                 </strong>
                 <small>
@@ -203,7 +221,7 @@ export const AccountUsagePanel = memo(function AccountUsagePanel({
                   {account.error}
                 </p>
               )}
-            </article>
+            </details>
           ))}
         </>
       )}

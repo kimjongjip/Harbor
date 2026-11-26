@@ -66,6 +66,7 @@ test(
         ],
       }),
     );
+    app.get("/api/hosts/fixture/antigravity-quota", (_req,res) => res.json({provider:"antigravity",updatedAt:Date.now(),windows:[{label:"Model A",remaining:65},{label:"Model B",remaining:20}]}));
     app.get("/api/hosts/fixture/codex-context", (_req, res) =>
       res.json(context),
     );
@@ -135,7 +136,7 @@ test(
       const page = await desktop.firstWindow();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.getByText("75% 남음", { exact: true }).waitFor();
+      await page.locator("summary").getByText("75%", { exact: true }).waitFor();
       await page.getByText("tail · experiment.log", { exact: true }).waitFor();
       assert.equal(await page.locator("progress.critical").count(), 1);
       const panel = page.locator(".account-usage-panel");
@@ -145,9 +146,16 @@ test(
         "quota fills sidebar width",
       );
       assert.ok(
-        (await panel.boundingBox())!.height < 260,
+        (await panel.boundingBox())!.height < 132,
         "quota panel must leave room for servers",
       );
+      const rows=panel.locator(".quota-summary");
+      await rows.nth(2).waitFor();
+      assert.equal(await panel.locator("details[open]").count(),0);
+      assert.match(await rows.nth(2).innerText(),/20%/);
+      await rows.nth(2).focus();await page.keyboard.press("Enter");
+      await panel.getByText("Model A",{exact:true}).waitFor();
+      await rows.nth(2).click();await rows.nth(1).click();
       await panel.getByText("7일 Fable 한도", { exact: true }).waitFor();
       assert.equal(
         await panel.getByText("5시간 한도", { exact: true }).count(),
@@ -161,8 +169,8 @@ test(
       await refreshRequest;
       await panel.getByText("미제공", { exact: true }).waitFor();
       assert.equal(
-        await panel.locator("progress").count(),
-        2,
+        await panel.locator("details[open] progress").count(),
+        1,
         "missing Fable must never show an invented percentage",
       );
       assert.match(
