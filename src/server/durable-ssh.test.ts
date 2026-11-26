@@ -151,7 +151,7 @@ async function sshFixture() {
     exitCode = 0,
     missing = false,
     latest: Connection | undefined;
-  let bootId = "", systemState = "running";
+  let bootId = "", systemState = "running", nativeAgy = "";
   let startup = "",
     token = "",
     hookToken = "",
@@ -240,6 +240,7 @@ async function sshFixture() {
           !command.includes("display-message")
         )
           done(haveTmux ? 0 : 72);
+        else if (command.startsWith("python3 -c ") && command.endsWith(" 4321")) done(0,nativeAgy);
         else if (command.startsWith("cat /proc/sys/kernel/random/boot_id")) done(0, bootId);
         else if (command.startsWith("systemctl is-system-running")) done(0,systemState);
         else if (command.includes("display-message")) {
@@ -295,6 +296,7 @@ async function sshFixture() {
     forwarding,
     inputs,
     commands,
+    set nativeAgy(id:string){nativeAgy=id;},
     set boot(value:string) {bootId=value;},
     set systemState(value:string) {systemState=value;},
     get startup() {
@@ -1199,6 +1201,33 @@ test(
     }
   },
 );
+
+test("a tmux shell tracks the agy lock in its own pane and forgets it on exit", async () => {
+  const fixture = await sshFixture(),
+    app = new Terminals({ connect: fixture.connect, monitorIntervalMs: 100 });
+  let command = "agy";
+  fixture.checkExecutor = () => ({
+    status: 0,
+    output: "0||\nHARBOR_FOREGROUND=4321|" + command + "\n/fixture\n",
+  });
+  const id = "f0000000-0000-4000-8000-000000000001";
+  fixture.nativeAgy = id;
+  try {
+    const t = await app.create(host, "/fixture", "fixture");
+    assert.equal(t.agentKind, "antigravity");
+    assert.equal(t.nativeAgySessionId, id);
+    fixture.nativeAgy = "f0000000-0000-4000-8000-000000000002";
+    await until(() => t.agentSessionId !== id);
+    assert.equal(t.agentSessionId, "f0000000-0000-4000-8000-000000000002");
+    command = "bash";
+    await until(() => !t.nativeAgySessionId);
+    assert.equal(t.agentKind, undefined);
+    assert.deepEqual(fixture.inputs, []);
+  } finally {
+    await app.shutdown();
+    await fixture.cleanup();
+  }
+});
 
 test("reboot recovery needs a different verified boot and the provider's exact saved ID", () => {
   const first = "11111111-1234-4321-8000-123456789abc",

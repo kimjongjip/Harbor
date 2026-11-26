@@ -1,3 +1,5 @@
+import { agyId, agyStep } from "./native-agy-transcript.js";
+import type { HistoryDetail } from "../shared/history.js";
 import { createReadStream, createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -233,6 +235,9 @@ export class Files {
     if (!stat.isFile()) throw new Error("파일을 선택해 다운로드해 주세요.");
     return {
       size: stat.size,
+      modifiedAt: sftp
+        ? Number((stat as Stats).mtime) * 1000
+        : Number((stat as import("node:fs").Stats).mtimeMs),
       name: (host.kind === "ssh" ? path.posix : path).basename(filename),
       read: (range?: { start: number; end: number }) =>
         sftp
@@ -245,43 +250,173 @@ export class Files {
     return { size: file.size, name: file.name, stream: file.read() };
   }
   /** Bounded read-only telemetry, using the existing file transport. */
+  private agyPages = new Map<
+    string,
+    { stamp: string; at: number; page: HistoryDetail }
+  >();
+  async nativeAgyPage(
+    host: HostConfig,
+    id: string,
+    cwd: string,
+    cursor?: string,
+  ): Promise<HistoryDetail> {
+    if (!agyId.test(id) || (cursor !== undefined && !/^\d{1,16}$/.test(cursor)))
+      throw Error("잘못된 Antigravity 대화 위치입니다.");
+    const filename = await this.resolvePath(
+      host,
+      "~/.gemini/antigravity-cli/brain/" +
+        id +
+        "/.system_generated/logs/transcript_full.jsonl",
+      "",
+    );
+    const file = await this.readableFile(host, filename);
+    const end = cursor === undefined ? file.size : Number(cursor);
+    if (!Number.isSafeInteger(end) || end < 0 || end > file.size)
+      throw Error("Antigravity 기록 위치가 바뀌었습니다.");
+    const key = JSON.stringify([
+      host.id,
+      host.kind,
+      host.username,
+      host.address,
+      host.port,
+      host.identityFile,
+      id,
+      cwd,
+      cursor,
+    ]);
+    const stamp = file.size + ":" + file.modifiedAt,
+      cached = this.agyPages.get(key);
+    if (cached?.stamp === stamp && Date.now() - cached.at < 15000)
+      return cached.page;
+    const start = Math.max(0, end - 2 * 1024 * 1024),
+      chunks: Buffer[] = [];
+    if (end > start) {
+      const stream = file.read({ start, end: end - 1 });
+      const timer = setTimeout(
+        () => stream.destroy(new Error("Antigravity 기록 조회 시간 초과")),
+        10000,
+      );
+      try {
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      } finally {
+        clearTimeout(timer);
+        stream.destroy();
+      }
+    }
+    const bytes = Buffer.concat(chunks);
+    const firstBreak = bytes.indexOf(10);
+    const offset =
+      start === 0 ? 0 : firstBreak < 0 ? bytes.length : firstBreak + 1;
+    let older =
+      start && firstBreak >= 0 && firstBreak < bytes.length - 1
+        ? start + offset
+        : start;
+    const items: HistoryDetail["items"] = [];
+    let count = 0;
+    for (let right = bytes.length; right > offset;) {
+      if (bytes[right - 1] === 10) right--;
+      if (right <= offset) break;
+      const left = Math.max(offset, bytes.lastIndexOf(10, right - 1) + 1);
+      const item = agyStep(bytes.toString("utf8", left, right));
+      if (item) {
+        if (
+          items.length &&
+          (items.length >= 60 || count + item.text.length > 256000)
+        ) {
+          older = start + right;
+          break;
+        }
+        items.push(item);
+        count += item.text.length;
+      }
+      right = left;
+    }
+    items.reverse();
+    const page: HistoryDetail = {
+      thread: {
+        id,
+        hostId: host.id,
+        provider: "antigravity",
+        title: "Antigravity",
+        cwd,
+        preview: "",
+        updatedAt: file.modifiedAt,
+        source: "cli",
+        active: true,
+      },
+      items,
+      nextCursor: older > 0 ? String(older) : null,
+    };
+    this.agyPages.set(key, { stamp, at: Date.now(), page });
+    if (this.agyPages.size > 12)
+      this.agyPages.delete(this.agyPages.keys().next().value!);
+    return page;
+  }
   async usageSnapshot(host: HostConfig, filename: string) {
-    const resolved=await this.resolvePath(host,filename,'');
-    const file=await this.readableFile(host,resolved);
-    if (file.size > 16384) throw new Error('Usage snapshot is too large');
-    const chunks: Buffer[]=[];
-    const stream=file.read({start:0,end:16383});
-    const timer=setTimeout(()=>stream.destroy(new Error('Usage read timed out')),4000);
-    try {for await(const chunk of stream) chunks.push(Buffer.from(chunk));return Buffer.concat(chunks).toString('utf8');}
-    finally {clearTimeout(timer);stream.destroy();}
+    const resolved = await this.resolvePath(host, filename, "");
+    const file = await this.readableFile(host, resolved);
+    if (file.size > 16384) throw new Error("Usage snapshot is too large");
+    const chunks: Buffer[] = [];
+    const stream = file.read({ start: 0, end: 16383 });
+    const timer = setTimeout(
+      () => stream.destroy(new Error("Usage read timed out")),
+      4000,
+    );
+    try {
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks).toString("utf8");
+    } finally {
+      clearTimeout(timer);
+      stream.destroy();
+    }
   }
 
   /** Bounded read-only telemetry, using the existing file transport. */
   async usageTail(host: HostConfig, filename: string) {
     const file = await this.readableFile(host, filename);
-    if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error("Invalid usage file size");
+    if (!Number.isSafeInteger(file.size) || file.size < 0)
+      throw new Error("Invalid usage file size");
     const start = Math.max(0, file.size - 256 * 1024);
     if (!file.size) return "";
     const chunks: Buffer[] = [];
     const stream = file.read({ start, end: file.size - 1 });
-    const timer = setTimeout(() => stream.destroy(new Error("Usage read timed out")), 8000);
+    const timer = setTimeout(
+      () => stream.destroy(new Error("Usage read timed out")),
+      8000,
+    );
     try {
       for await (const part of stream) chunks.push(Buffer.from(part));
       const text = Buffer.concat(chunks).toString("utf8");
       return start ? text.slice(text.indexOf("\n") + 1) : text;
-    } finally { clearTimeout(timer); stream.destroy(); }
+    } finally {
+      clearTimeout(timer);
+      stream.destroy();
+    }
   }
   async usageChunk(host: HostConfig, filename: string, start: number) {
-    if(!Number.isSafeInteger(start)||start<0)throw new Error('Invalid usage offset');
-    const file=await this.readableFile(host,filename);
-    if(!Number.isSafeInteger(file.size)||file.size<0)throw new Error('Invalid usage file size');
-    const size=file.size;
-    if(start>=size)return {size,data:Buffer.alloc(0)};
-    const stream=file.read({start,end:Math.min(size,start+256*1024)-1});
-    const timer=setTimeout(()=>stream.destroy(new Error('Usage read timed out')),8000);
-    const chunks:Buffer[]=[];
-    try {for await(const chunk of stream)chunks.push(Buffer.from(chunk));return {size,data:Buffer.concat(chunks)};}
-    finally {clearTimeout(timer);stream.destroy();}
+    if (!Number.isSafeInteger(start) || start < 0)
+      throw new Error("Invalid usage offset");
+    const file = await this.readableFile(host, filename);
+    if (!Number.isSafeInteger(file.size) || file.size < 0)
+      throw new Error("Invalid usage file size");
+    const size = file.size;
+    if (start >= size) return { size, data: Buffer.alloc(0) };
+    const stream = file.read({
+      start,
+      end: Math.min(size, start + 256 * 1024) - 1,
+    });
+    const timer = setTimeout(
+      () => stream.destroy(new Error("Usage read timed out")),
+      8000,
+    );
+    const chunks: Buffer[] = [];
+    try {
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      return { size, data: Buffer.concat(chunks) };
+    } finally {
+      clearTimeout(timer);
+      stream.destroy();
+    }
   }
   async resolvePath(host: HostConfig, filename: string, cwd: string) {
     if (!filename || /[\0\r\n]/.test(filename))
@@ -542,25 +677,62 @@ export class Files {
     }
     return { path: file, bytes: Buffer.concat(chunks) };
   }
-  async antigravityQuotaConsole(host:HostConfig,cols:number,rows:number):Promise<import("./antigravity-quota.js").QuotaConsole>{
-    const verify=[
-      'umask 077','cd "$HOME" || exit 1','home=$(pwd -P)','d="$home/.cache/harbor/agy-quota-view"',
+  async antigravityQuotaConsole(
+    host: HostConfig,
+    cols: number,
+    rows: number,
+  ): Promise<import("./antigravity-quota.js").QuotaConsole> {
+    const verify = [
+      "umask 077",
+      'cd "$HOME" || exit 1',
+      "home=$(pwd -P)",
+      'd="$home/.cache/harbor/agy-quota-view"',
       'for p in "$home/.cache" "$home/.cache/harbor" "$d"; do [ ! -L "$p" ] && { [ -d "$p" ] || mkdir -m 700 "$p"; } && [ -O "$p" ] || exit 1; done',
       'cd "$d" && [ "$(pwd -P)" = "$d" ] && [ -z "$(ls -A)" ] || exit 1',
     ].join("; ");
-    const ownedPath=()=>this.researchCommand(host,verify+'; printf "%s" "$d"');
-    const cwd=(await ownedPath()).trim();
-    if(!path.posix.isAbsolute(cwd) || !cwd.endsWith("/.cache/harbor/agy-quota-view") || /[\r\n\0]/.test(cwd))throw Error("한도 조회용 폴더를 확인하세요.");
-    const connection=this.connections.get(host.id)?.connection;if(!connection)throw Error("SSH 연결이 종료되었습니다.");
-    const launch=verify+'; export PATH="$HOME/.local/bin:$HOME/.agy/bin:$PATH"; exec agy --sandbox';
-    return new Promise((resolve,reject)=>{
-      connection.exec("exec bash -lc "+shellQuote(launch),{pty:{term:"xterm-256color",cols,rows,width:0,height:0}},(error,channel)=>{
-        if(error){reject(error);return;}
-        channel.setEncoding("utf8");
-        const cleanup=()=>{channel.close();};
-        channel.on("error",()=>{});
-        resolve({cwd,ownedEmpty:async()=>(await ownedPath()).trim()===cwd,write:s=>channel.write(s),close:cleanup,onData:f=>{channel.on("data",f);},onExit:f=>{channel.once("close",f);channel.once("error",f);}});
-      });
+    const ownedPath = () =>
+      this.researchCommand(host, verify + '; printf "%s" "$d"');
+    const cwd = (await ownedPath()).trim();
+    if (
+      !path.posix.isAbsolute(cwd) ||
+      !cwd.endsWith("/.cache/harbor/agy-quota-view") ||
+      /[\r\n\0]/.test(cwd)
+    )
+      throw Error("한도 조회용 폴더를 확인하세요.");
+    const connection = this.connections.get(host.id)?.connection;
+    if (!connection) throw Error("SSH 연결이 종료되었습니다.");
+    const launch =
+      verify +
+      '; export PATH="$HOME/.local/bin:$HOME/.agy/bin:$PATH"; exec agy --sandbox';
+    return new Promise((resolve, reject) => {
+      connection.exec(
+        "exec bash -lc " + shellQuote(launch),
+        { pty: { term: "xterm-256color", cols, rows, width: 0, height: 0 } },
+        (error, channel) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          channel.setEncoding("utf8");
+          const cleanup = () => {
+            channel.close();
+          };
+          channel.on("error", () => {});
+          resolve({
+            cwd,
+            ownedEmpty: async () => (await ownedPath()).trim() === cwd,
+            write: (s) => channel.write(s),
+            close: cleanup,
+            onData: (f) => {
+              channel.on("data", f);
+            },
+            onExit: (f) => {
+              channel.once("close", f);
+              channel.once("error", f);
+            },
+          });
+        },
+      );
     });
   }
   async researchCommand(host: HostConfig, command: string): Promise<string> {

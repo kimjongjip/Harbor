@@ -188,6 +188,7 @@ export interface TerminalInfo {
   agentKind?: import("./agent-provider.js").AgentProvider;
   agentState?: "working" | "idle" | "waiting";
   agentSessionId?: string;
+  nativeAgySessionId?: string;
   /** Exact native Stop answer proof; contains no answer text and is not persisted. */
   agentCompletion?: { sessionId: string; textHash: string };
   integration?: "ready" | "unavailable";

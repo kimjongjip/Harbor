@@ -99,7 +99,7 @@ async function nativeSessions(exe: string): Promise<HistoryThread[]> {
   }
 }
 export class AntigravityHistory {
-  constructor(private root: string) {}
+  constructor(private root: string, private boundNativeRead?: (host:HostConfig,id:string,cursor?:string)=>Promise<HistoryDetail|undefined>) {}
   private catalog?: { at: number; pages: Promise<HistoryThread[]> };
   private native() {
     const exe = findAntigravity();
@@ -196,6 +196,8 @@ export class AntigravityHistory {
     cursor?: string,
     _options?: unknown,
   ): Promise<HistoryDetail> {
+    const native=await this.boundNativeRead?.(host,id,cursor);
+    if(native)return native;
     const dir = this.folder(host, id),
       thread = await this.summary(host, pass, id);
     const names = (
@@ -228,6 +230,7 @@ export class AntigravityHistory {
     };
   }
   async usage(host: HostConfig, id: string): Promise<TerminalUsage | null> {
+    if (host.kind !== "local") return null;
     const dir = this.folder(host, id);
     return readFile(join(dir, "usage.json"), "utf8")
       .then((text) => JSON.parse(text))

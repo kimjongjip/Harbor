@@ -798,12 +798,12 @@ export function TerminalConversation({
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
   // A newly started turn may not exist in history yet. Keep reading even if
   // the last saved turn is complete; otherwise it can wait for the 30s poll.
-  const refreshing = visible && agentBusy;
+  const refreshing = visible && (agentBusy || !!info.nativeAgySessionId);
   useEffect(() => {
     if (!refreshing) return;
-    const timer = setInterval(() => void load.current(false, true), 2000);
+    const timer = setInterval(() => void load.current(false, true), info.nativeAgySessionId ? 3500 : 2000);
     return () => clearInterval(timer);
-  }, [refreshing]);
+  }, [refreshing, info.nativeAgySessionId]);
   const [workOpen, setWorkOpen] = useState<Record<string, boolean>>({});
   const [workTarget, setWorkTarget] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {

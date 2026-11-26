@@ -1114,6 +1114,7 @@ export class Terminals extends EventEmitter {
     entry.connection = connection;
     const status = await checkDurableSession(connection, durable.record, true);
     if (status.bootId) durable.record.bootId = status.bootId;
+    this.observeNativeAgy(entry, status.agySession);
     if (status.cwd && !durable.rebootPending) entry.info.cwd = status.cwd;
     if (status.dead) {
       await this.checkServerShutdown(connection, durable.record);
@@ -1176,7 +1177,8 @@ export class Terminals extends EventEmitter {
           if (status.dead) {
             await this.checkServerShutdown(connection, durable.record);
             if (current()) this.finishRemote(entry, status.code, status.signal);
-          } else if (status.cwd && status.cwd !== entry.info.cwd) {
+          } else this.observeNativeAgy(entry, status.agySession);
+          if (!status.dead && status.cwd && status.cwd !== entry.info.cwd) {
             entry.info.cwd = status.cwd;
             this.persist(entry);
             this.emit("change");
@@ -1257,18 +1259,64 @@ export class Terminals extends EventEmitter {
   }
   // SessionEnd can arrive before SSH disconnects during an orderly reboot.
   private rememberShutdownExit(entry: Entry) {
-    const d = entry.durable, connection = entry.connection;
-    const id = entry.info.agentSessionId || entry.info.resumeThreadId, kind = entry.info.agentKind;
+    const d = entry.durable,
+      connection = entry.connection;
+    const id = entry.info.agentSessionId || entry.info.resumeThreadId,
+      kind = entry.info.agentKind;
     if (!d?.record.bootId || !connection || !id || !kind) return;
     const bootId = d.record.bootId;
-    void execRemote(connection, "systemctl is-system-running 2>/dev/null || :").then(state => {
-      if (state.trim() === "stopping" && this.entries.get(entry.info.id) === entry &&
-          !d.stopped && d.record.bootId === bootId && !entry.info.agentSessionId) {
-        d.record.shutdownConversation = {bootId,kind,id};
-        this.persist(entry);
-      }
-    }).catch(() => { /* An unconfirmed exit does not authorize reopening a CLI. */ });
+    void execRemote(connection, "systemctl is-system-running 2>/dev/null || :")
+      .then((state) => {
+        if (
+          state.trim() === "stopping" &&
+          this.entries.get(entry.info.id) === entry &&
+          !d.stopped &&
+          d.record.bootId === bootId &&
+          !entry.info.agentSessionId
+        ) {
+          d.record.shutdownConversation = { bootId, kind, id };
+          this.persist(entry);
+        }
+      })
+      .catch(() => {
+        /* An unconfirmed exit does not authorize reopening a CLI. */
+      });
   }
+  private observeNativeAgy(entry: Entry, id: string | null | undefined) {
+    if (
+      id === undefined ||
+      (!id && !entry.info.nativeAgySessionId) ||
+      (id &&
+        id === entry.info.nativeAgySessionId &&
+        entry.info.agentKind === "antigravity" &&
+        entry.info.agentSessionId === id)
+    )
+      return;
+    const t = entry.info;
+    if (id) {
+      t.nativeAgySessionId = id;
+      t.agentKind = "antigravity";
+      t.agentSessionId = id;
+      t.agentConnected = false;
+      delete t.agentState;
+      delete t.agentCompletion;
+      this.confirmReboot(entry, "antigravity", id);
+    } else {
+      if (
+        t.agentKind === "antigravity" &&
+        t.agentSessionId === t.nativeAgySessionId
+      ) {
+        delete t.agentSessionId;
+        delete t.agentKind;
+        delete t.agentState;
+        if (t.resumeThreadId === t.nativeAgySessionId) delete t.resumeThreadId;
+      }
+      delete t.nativeAgySessionId;
+    }
+    this.persist(entry);
+    this.emit("change");
+  }
+
   private async checkServerShutdown(connection: Client, record: DurableRecord) {
     if (!record.bootId) return;
     const state = await execRemote(

@@ -118,6 +118,13 @@ const codexAgentTelemetry = new CodexAgentTelemetry();
 const claudeHistory = new ClaudeHistory();
 const antigravityHistory = new AntigravityHistory(
   join(store.directory, "antigravity"),
+  async(host,id,cursor)=>{
+    const match=()=>terminals.list().find(t=>!t.exited && t.hostId===host.id && t.nativeAgySessionId===id && t.agentSessionId===id && t.agentKind==="antigravity");
+    const t=match();if(!t)return;
+    const page=await files.nativeAgyPage(host,id,t.cwd,cursor);
+    if(match()?.id!==t.id)throw Error("조회 중 Antigravity 세션이 바뀌었습니다.");
+    return page;
+  },
 );
 const historyProvider = z
   .enum(["codex", "claude", "antigravity"])
@@ -1286,7 +1293,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.27" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.28" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

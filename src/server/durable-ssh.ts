@@ -1,3 +1,4 @@
+import { agyId, agyPresenceProbe } from "./native-agy-transcript.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -425,7 +426,7 @@ export async function checkDurableSession(
   connection: Client,
   record: DurableRecord,
   includeBoot = false,
-): Promise<{ dead: boolean; code: number; signal?: string; cwd?: string; bootId?: string }> {
+): Promise<{ dead: boolean; code: number; signal?: string; cwd?: string; bootId?: string; agySession?: string | null }> {
   // tmux 3.2a wraps ENOENT in parentheses. An unlinked socket can still have
   // a live server, so preserve it when Linux retains that kernel socket.
   const socketStillLive = `if [ -r /proc/net/unix ] && LC_ALL=C grep -F -q -- ${shellQuote(`/${record.socket}`)} /proc/net/unix; then exit 75; fi`;
@@ -435,9 +436,12 @@ export async function checkDurableSession(
 $harbor_sessions
 " in *'
 ${record.session}
-'*) exit 1;; *) exit 74;; esac; else case "$harbor_sessions" in 'no server running on '*|'error connecting to '*' (No such file or directory)'|'failed to connect to server: No such file or directory') ${socketStillLive}; exit 74;; *) exit 1;; esac; fi; fi; ${tmux(record)} display-message -p -t ${tmuxTarget(record)} '#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}\n#{pane_current_path}'${includeBoot ? " && { printf 'HARBOR_BOOT='; cat /proc/sys/kernel/random/boot_id 2>/dev/null || :; }" : ""}`,
+'*) exit 1;; *) exit 74;; esac; else case "$harbor_sessions" in 'no server running on '*|'error connecting to '*' (No such file or directory)'|'failed to connect to server: No such file or directory') ${socketStillLive}; exit 74;; *) exit 1;; esac; fi; fi; ${tmux(record)} display-message -p -t ${tmuxTarget(record)} '#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}\nHARBOR_FOREGROUND=#{pane_pid}|#{pane_current_command}\n#{pane_current_path}'${includeBoot ? " && { printf 'HARBOR_BOOT='; cat /proc/sys/kernel/random/boot_id 2>/dev/null || :; }" : ""}`,
   );
-  const [status, path, bootLine] = output.trimEnd().split("\n");
+  const [status, second, ...extra] = output.trimEnd().split("\n");
+  const foreground=second?.startsWith("HARBOR_FOREGROUND=") ? second : undefined;
+  const path=foreground ? extra[0] : second;
+  const bootLine=includeBoot ? extra.at(-1) : undefined;
   const bootId = bootLine?.startsWith("HARBOR_BOOT=") ? bootLine.slice(12) : undefined;
   const [dead, code, signal] = status.split("|");
   if (dead !== "0" && dead !== "1")
@@ -445,7 +449,20 @@ ${record.session}
       "management",
       "서버의 유지 세션 상태 응답을 확인하지 못했습니다.",
     );
+  let agySession: string | null | undefined;
+  if (foreground) {
+    const pid=/^HARBOR_FOREGROUND=([1-9]\d{0,9})\|agy$/.exec(foreground)?.[1];
+    if (!pid) agySession=null;
+    else {
+      // Discovery is optional. Failure must never disconnect a healthy tmux.
+      try {
+        const found=(await execRemote(connection,"python3 -c "+shellQuote("import base64;exec(base64.b64decode('"+Buffer.from(agyPresenceProbe).toString("base64")+"'))")+" "+pid)).trim();
+        agySession=agyId.test(found)?found:null;
+      } catch { agySession=null; }
+    }
+  }
   return {
+    ...(agySession!==undefined && {agySession}),
     bootId: bootId && uuid.test(bootId) ? bootId : undefined,
     dead: dead === "1",
     // A signaled process has no normal exit status. Never call that success.

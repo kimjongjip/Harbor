@@ -1,0 +1,84 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { resolve, join, sep } from "node:path";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import express from "express";
+import { build } from "esbuild";
+import { _electron } from "playwright";
+
+test(
+  "native Antigravity saved Markdown renders in the existing tmux terminal",
+  { skip: process.platform !== "win32", timeout: 90000 },
+  async () => {
+    const root = resolve(".cache/native-agy-browser-tests");
+    await mkdir(root, { recursive: true });
+    const directory = await mkdtemp(join(root, "run-"));
+    await build({
+      stdin: {
+        contents: `
+import React,{useState,useEffect} from "react";import{createRoot}from"react-dom/client";
+import{Terminal}from"@xterm/xterm";import{TerminalConversation}from"./src/client/TerminalConversation";
+import"./src/client/styles.css";import"./src/client/terminal-conversation.css";
+Object.defineProperty(document,"visibilityState",{get:()=>"visible"});
+const info={id:"fixture",hostId:"test",cwd:"/fixture",title:"Orion",agentKind:"antigravity",agentSessionId:"agy-native",nativeAgySessionId:"agy-native",exited:false};
+const table="| Method | Score |\\n|---|---|\\n| Native model | 42 |";
+window.nativeWrites=[];window.fetch=async(url)=>{if(!String(url).includes("/history/agy-native?")||!String(url).includes("provider=antigravity"))throw Error("wrong history binding");
+return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"}],nextCursor:null}));};
+function Fixture(){const [term,setTerm]=useState(null);useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>window.nativeWrites.push(data));return()=>t.dispose();},[]);
+return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<TerminalConversation term={term} info={info} active/>}</>;}
+createRoot(document.getElementById("root")).render(<Fixture/>);`,
+        resolveDir: process.cwd(),
+        sourcefile: "terminal-conversation-fixture.tsx",
+        loader: "tsx",
+      },
+      bundle: true,
+      outfile: join(directory, "fixture.js"),
+      format: "esm",
+      logLevel: "silent",
+      loader: { ".woff": "file", ".woff2": "file", ".ttf": "file" },
+    });
+    const app = express();
+    app.use(express.static(directory));
+    app.get("/", (_req, res) =>
+      res
+        .type("html")
+        .send(
+          '<!doctype html><html><head><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>',
+        ),
+    );
+    const server = createServer(app);
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const main = join(directory, "electron.cjs");
+    await writeFile(
+      main,
+      `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(directory, "profile"))});app.commandLine.appendSwitch('disable-gpu');app.whenReady().then(()=>{new BrowserWindow({show:false,width:1050,height:850,webPreferences:{backgroundThrottling:false,contextIsolation:true,sandbox:true}}).loadURL('http://127.0.0.1:${(server.address() as { port: number }).port}/');});app.on('window-all-closed',()=>app.quit());`,
+    );
+    let desktop: Awaited<ReturnType<typeof _electron.launch>> | undefined;
+    try {
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
+        ),
+      );
+      delete env.ELECTRON_RUN_AS_NODE;
+      desktop = await _electron.launch({ args: [main], env });
+      const page = await desktop.firstWindow();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const table=page.locator(".terminal-conversation table");
+      await table.getByRole("cell",{name:"Native model",exact:true}).waitFor();
+      assert.equal(await table.getByRole("cell",{name:"42",exact:true}).count(),1);
+      assert.deepEqual(await page.evaluate(()=>(window as any).nativeWrites),[]);
+      assert.deepEqual(errors, []);
+    } finally {
+      await desktop?.close();
+      server.closeAllConnections();
+      await new Promise<void>((done) => server.close(() => done()));
+      assert.ok(resolve(directory).startsWith(root + sep));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
