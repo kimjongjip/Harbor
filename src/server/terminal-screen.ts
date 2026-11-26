@@ -96,6 +96,19 @@ export class TerminalScreen {
     void this.schedule(() => this.terminal.resize(cols, rows));
     return true;
   }
+  // Read only output preceding a recognizable CLI input prompt. A partially typed
+  // or recalled main prompt must never become part of an independent request.
+  sideContext(): Promise<string> {
+    return this.schedule(() => {
+      const buffer=this.terminal.buffer.active;
+      const rows:string[]=[];
+      for(let row=Math.max(0,buffer.baseY+buffer.cursorY-120);row<=buffer.baseY+buffer.cursorY;row++)
+        rows.push(buffer.getLine(row)?.translateToString(true) || "");
+      let prompt=rows.length-1;
+      while(prompt>=0 && !/^\s*[›❯»>](?:\s|$)/u.test(rows[prompt]))prompt--;
+      return prompt<0?"":rows.slice(0,prompt).join("\n").trim().slice(-12000);
+    });
+  }
   snapshot(): Promise<{ data: string; replay: TerminalReplayMetadata }> {
     const raw = this.history.snapshot();
     const pending = this.history.pendingControl();

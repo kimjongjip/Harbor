@@ -1,4 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { insetChoiceDialog } from "./terminal-native-chrome";
+import { TerminalSideChat } from "./TerminalSideChat";
+import { sideBinding, validateSidePaste, type SideReply } from "../shared/side-question";
+import { Markdown as SideMarkdown } from "./RichMarkdown";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
@@ -139,6 +143,7 @@ export default function TerminalPane({
     info,
     active,
   );
+  const side = sideBinding(info);
   const canSwitchView = Boolean(
     historySessionId || info.agentKind || info.agentConnected,
   );
@@ -1624,6 +1629,19 @@ export default function TerminalPane({
                       ? "일반 SSH 연결"
                       : "")}
         </span>
+        {side && <TerminalSideChat key={JSON.stringify([info.id,side])} active={active} binding={side} disabled={!connected}
+          renderAnswer={text=><SideMarkdown text={text}/>}
+          ask={(messages,signal)=>api<SideReply>("/terminals/"+info.id+"/side-question",{binding:side,messages},"POST",signal)}
+          insert={text=>{
+            const term=termRef.current;
+            if(!term || !connected || !visibilityRef.current.active || readOnlyRef.current ||
+                insetChoiceDialog(term.buffer.active) || term.options.disableStdin || term.options.ignoreBracketedPasteMode || !term.modes.bracketedPasteMode ||
+                JSON.stringify(sideBinding(infoRef.current))!==JSON.stringify(side))
+              throw Error("원래 AI 터미널의 입력 연결을 확인하세요. 대화는 옆창에 보관됩니다.");
+            validateSidePaste(text);
+            term.paste(text);
+            term.focus();
+          }}/>}
         {canSwitchView && (
           <button
             type="button"

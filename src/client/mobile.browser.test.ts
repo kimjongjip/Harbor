@@ -1367,6 +1367,19 @@ test(
       const markerless = "\r\n• A saved result without a marker.\r\n› ";
       f.screen.append(markerless);f.gateway.output(f.id,markerless);
       await page.locator('[data-mobile-rich="history:codex:saved"] strong').filter({hasText:"saved result"}).waitFor({timeout:10000});
+      f.operations.sideQuestions=async(_id,value,_signal,guard)=>{
+        guard();assert.equal(value.binding.sessionId,"replacement-native");
+        return {text:"모바일 최종 답변",context:true};
+      };
+      const beforeSide=f.writes.length;
+      await page.getByRole("button",{name:"옆 대화",exact:true}).click();
+      const side=page.getByRole("dialog",{name:"옆 대화"});
+      await side.getByLabel("옆 질문",{exact:true}).fill("모바일 질문");
+      await side.getByRole("button",{name:"옆 질문 보내기"}).click();
+      await side.getByText("모바일 최종 답변",{exact:true}).waitFor();
+      await side.getByRole("button",{name:"본 대화에 넣기"}).click();
+      assert.match(await composer.inputValue(),/나\n모바일 질문\n\nCodex\n모바일 최종 답변/);
+      assert.equal(f.writes.length,beforeSide,"side transcript is a local draft until explicit submit");
       assert.deepEqual(errors, []);
     } catch (error) {
       const page = app && (await app.firstWindow());

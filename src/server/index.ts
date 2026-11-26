@@ -1,3 +1,4 @@
+import { createSideQuestions, serveSideQuestion } from "./side-question.js";
 import express from "express";
 import { MobileAccess } from "./mobile-access.js";
 import { MobileGateway } from "./mobile-gateway.js";
@@ -720,6 +721,30 @@ const ideChats = new IdeChats({
           (terminal.agentSessionId || terminal.resumeThreadId) === nativeId,
       ),
 });
+const sideQuestions = createSideQuestions({
+  terminal:id=>terminals.list().find(t=>t.id===id), screen:id=>terminals.sideContext(id),
+  host:id=>hub.host(id), password:passwordFor,
+  history:(b,host,password)=>historyReader(b.provider).read(host,password,b.sessionId,undefined,{includeActivity:true}),
+  settings:async(b,host,password)=>{
+    if(b.provider==="antigravity")return {model:(await antigravityHistory.usage(host,b.sessionId))?.model};
+    if(b.provider==="claude")return {model:(await claudeHistory.usage(host,password,b.sessionId,b.cwd))?.model};
+    const file=await history.usagePath(host,password,b.sessionId);
+    if (!file) return {};
+    for(const line of (await files.usageTail(host,file)).split("\n").reverse()){
+      if(!line.includes('"turn_context"')) continue;
+      try{
+        const row=JSON.parse(line);
+        if(row.type!=="turn_context" || typeof row.payload?.model!=="string") continue;
+        const effort=row.payload.effort ?? row.payload.collaboration_mode?.settings?.reasoning_effort;
+        return {model:row.payload.model,effort:typeof effort==="string" && /^(none|minimal|low|medium|high|xhigh|max|ultra)$/.test(effort)?effort:undefined};
+      }catch{ /* truncated or unrelated record */ }
+    }
+    return {model:(await codexUsageHistory.read(host.id,b.sessionId,file,
+      start=>files.usageChunk(host,file,start),()=>files.usageTail(host,file)))?.model};
+  },
+});
+app.post("/api/terminals/:id/side-question",(req,res)=>serveSideQuestion(req,res,sideQuestions,
+  ()=>desktop.authorize(req,String(req.params.id),true)));
 const editorFiles = new EditorFiles({
   files,
   terminal: (id) => terminals.list().find((t) => t.id === id),
@@ -788,6 +813,7 @@ const mobile: MobileGateway = new MobileGateway(
     snapshot: (id) => terminals.bufferSnapshot(id),
     write: (id, data) => terminals.write(id, data),
     answer: (id, answer) => requests.respond(id, answer),
+    sideQuestions,
     answers: (id) => richTerminals.list(id),
     conversation: (id, sessionId, cursor, options) =>
       mobileConversations.read(id, sessionId, cursor, options),
@@ -1259,7 +1285,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.23" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.24" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>

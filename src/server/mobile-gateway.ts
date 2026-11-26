@@ -1,3 +1,4 @@
+import {serveSideQuestion,type SideQuestions} from "./side-question.js";
 import express from "express";
 import compression from "compression";
 import { constants as zlibConstants } from "node:zlib";
@@ -53,6 +54,7 @@ export interface MobileOperations {
   write(id: string, data: string): void;
   answer(id: string, answer: z.infer<typeof answerSchema>): unknown;
   upload(id: string, name: string, input: Readable): Promise<unknown>;
+  sideQuestions?: SideQuestions;
   answers(id: string): unknown;
   conversation?(
     id: string,
@@ -862,6 +864,15 @@ export class MobileGateway {
           }),
         ),
       );
+    });
+    app.post("/mobile-api/terminals/:id/side-question",async(req,res)=>{
+      if(!this.operations.sideQuestions){res.sendStatus(404);return;}
+      const id=uuid.parse(req.params.id);
+      const guard=()=>{
+        this.authenticated(req,res.locals.deviceId);
+        this.controls.assert(id,res.locals.deviceId,req.get("X-Harbor-Client"),req.get("X-Harbor-Control"));
+      };
+      await serveSideQuestion(req,res,this.operations.sideQuestions,guard);
     });
     app.get("/mobile-api/terminals/:id/answers", async (req, res) => {
       const id = uuid.parse(req.params.id);

@@ -505,6 +505,34 @@ test(
         ),
         null,
       );
+      await page.getByRole("button",{name:"터미널",exact:true}).click();
+      const sidePane=page.locator('[data-terminal-id="one"]');
+      const startInputs=input.length;
+      let questions=0;
+      await page.route("**/api/terminals/one/side-question",async route=>{
+        const body=route.request().postDataJSON();
+        assert.equal(body.binding.sessionId,"native-one");
+        assert.equal(body.messages.length,++questions*2-1);
+        await route.fulfill({json:{text:"**답변 "+questions+"**\n원문",context:true}});
+      });
+      await sidePane.getByRole("button",{name:"옆 대화",exact:true}).click();
+      const chat=sidePane.getByRole("dialog",{name:"옆 대화"});
+      for(const question of ["첫 질문","그 다음은?"]){
+        await chat.getByRole("textbox",{name:"옆 질문"}).fill(question);
+        await chat.getByRole("textbox",{name:"옆 질문"}).press("Enter");
+        await chat.getByText("답변 "+(question==="첫 질문"?1:2),{exact:true}).waitFor();
+      }
+      assert.equal(input.length,startInputs,"side questions never write to the PTY");
+      await chat.getByRole("button",{name:"옆 대화 닫기"}).click();
+      await sidePane.getByRole("button",{name:"옆 대화",exact:true}).click();
+      for(const sock of sockets.clients)sock.send(JSON.stringify({type:"terminal-data",id:"one",data:"\x1b[?2004h"}));
+      await chat.getByRole("button",{name:"본 대화에 넣기"}).click();
+      await chat.waitFor({state:"detached"});
+      await page.waitForTimeout(150);
+      assert.deepEqual(input.slice(startInputs),[{id:"one",text:"\x1b[200~나\r첫 질문\r\rCodex\r**답변 1**\r원문\r\r나\r그 다음은?\r\rCodex\r**답변 2**\r원문\x1b[201~"}]);
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(120);
+      assert.deepEqual(input.slice(startInputs+1),[{id:"one",text:"\r"}],"only the user's Enter submits the staged conversation");
       assert.deepEqual(errors, []);
     } finally {
       await desktop

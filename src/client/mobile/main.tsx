@@ -19,6 +19,8 @@ import type { RichTerminalBlock } from "../../shared/rich-terminal";
 import { restoreTerminalReplay, writeTerminal } from "../terminalReplay";
 import { terminalPathForPaste } from "../terminalClipboard";
 import { useMobileHistoryAnswers } from "./useMobileHistoryAnswers";
+import { TerminalSideChat } from "../TerminalSideChat";
+import { sideBinding, validateSidePaste, type SideReply } from "../../shared/side-question";
 import { MobileTerminalRich } from "./MobileTerminalRich";
 import { MobileConversation } from "./MobileConversation";
 import { MobileScreenCache } from "./screen-cache";
@@ -313,6 +315,7 @@ function App() {
     (node: HTMLElement | null) => viewportRef.current?.setFlow(node),
     [],
   );
+  const side = terminal && sideBinding(terminal);
   const answerSession = terminal?.agentSessionId || terminal?.resumeThreadId;
   const currentAnswers = useMemo(
     () =>
@@ -1483,6 +1486,31 @@ function App() {
               )}
             </div>
             <div className="composer" data-activity={composerState}>
+              {side && terminal && <TerminalSideChat key={JSON.stringify([cacheKey,side])} active={tab==="terminal"} binding={side} disabled={!inputEnabled}
+                renderAnswer={text=><Markdown text={text}/>}
+                ask={async(messages,signal)=>{
+                  const credentials=await control.authorize();
+                  const response=await fetch("/mobile-api/terminals/"+selected+"/side-question",{method:"POST",credentials:"same-origin",signal,
+                    headers:{"Content-Type":"application/json","X-Harbor-Mobile":"1",
+                      ...(credentials.clientId?{"X-Harbor-Client":credentials.clientId}:{}),
+                      ...(credentials.controlToken?{"X-Harbor-Control":credentials.controlToken}:{})},
+                    body:JSON.stringify({binding:side,messages})});
+                  const result=await response.json();
+                  if(!response.ok)throw Error(result.error || "옆 질문 연결을 확인하세요.");
+                  return result as SideReply;
+                }}
+                insert={text=>{
+                  if(selectedRef.current!==selected || !inputEnabled)throw Error("원래 세션의 입력 연결을 확인하세요.");
+                  validateSidePaste(text);
+                  const field=inputRef.current, start=field?.selectionStart ?? draft.length, end=field?.selectionEnd ?? start;
+                  const next=draft.slice(0,start)+text+draft.slice(end);
+                  validateSidePaste(next);
+                  if(next.length>32000) throw Error("모바일 입력 한도(32,000자)를 초과해 기존 초안을 유지했습니다.");
+                  drafts.current.set(selected,next);draftSessions.current.set(selected,terminal.agentSessionId);
+                  setDraft(next);
+                  requestAnimationFrame(()=>{field?.focus();field?.setSelectionRange(start+text.length,start+text.length);});
+                }}/>}
+
               <div className="keys" hidden={!keysOpen}>
                 {[
                   "Escape",
