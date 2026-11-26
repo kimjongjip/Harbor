@@ -501,6 +501,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       });
       const readAbove = async () => {
         await reader.evaluate((el) => {
+          el.dispatchEvent(new WheelEvent("wheel",{bubbles:true,deltaY:-120}));
           el.scrollTop = 20;
         });
         await latest.waitFor();

@@ -42,6 +42,7 @@ import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
 import {
   insetChoiceDialog,
+  claudeWorkTimer,
   nativeInteractiveReplacement,
   nativeMenuVisible,
 } from "./terminal-native-chrome";
@@ -164,6 +165,9 @@ export function TerminalConversation({
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(following);
   const lastScrollTop = useRef(0);
+  const scrollIntentUntil = useRef(0);
+  const scrollDownUntil = useRef(0);
+  const noteScrollIntent = () => { scrollIntentUntil.current = performance.now() + 1200; };
   const [, setBoundaryRevision] = useState(0);
   const [proofRevision, setProofRevision] = useState(0);
   const verifiedHistory = useRef(new Map<string, string>());
@@ -430,6 +434,8 @@ export function TerminalConversation({
   }, [term]);
   const resumeFollowing = () => {
     followingRef.current = true;
+    scrollIntentUntil.current = 0;
+    scrollDownUntil.current = 0;
     setFollowing(true);
     if (!hasSelection() && pending.current) {
       latest.current = pending.current;
@@ -726,10 +732,10 @@ export function TerminalConversation({
         next.live &&
         frame.lines
           .slice(next.chromeStart, frame.end)
-          .some((line) => line.includes("esc to interrupt"));
+          .some((line) => line.includes("esc to interrupt") || (provider === "claude" && claudeWorkTimer(line)));
       setNativeBusy((value) => (value === busy ? value : busy));
     },
-    [layoutForFrame],
+    [layoutForFrame,provider],
   );
   // A completed answer the CLI reserved rows for is typeset at once from its
   // received text, instead of raw Markdown until history catches up.
@@ -830,7 +836,7 @@ export function TerminalConversation({
     if (!visible || menuVisible.current || !node.clientHeight) return;
     const moved = Math.abs(node.scrollTop - lastScrollTop.current) > 1;
     lastScrollTop.current = node.scrollTop;
-    if (moved && followingRef.current && node.scrollHeight - node.clientHeight - node.scrollTop >= 40) {
+    if (moved && (performance.now() < scrollIntentUntil.current || hasSelection()) && followingRef.current && node.scrollHeight - node.clientHeight - node.scrollTop >= 40) {
       followingRef.current = false;
       setFollowing(false);
     }
@@ -879,11 +885,26 @@ export function TerminalConversation({
       <div
         className="terminal-conversation-body"
         ref={body}
+        onWheelCapture={event => {
+          if (event.deltaY < 0) { noteScrollIntent(); scrollDownUntil.current = 0; }
+          if (event.deltaY > 0) {
+            scrollDownUntil.current = performance.now() + 1000;
+            const node=event.currentTarget;
+            if (!followingRef.current && !hasSelection() && node.scrollHeight-node.clientHeight-node.scrollTop<=1)
+              resumeFollowing();
+          }
+        }}
+        onTouchMoveCapture={noteScrollIntent}
+        onPointerDownCapture={event => { if (event.target === event.currentTarget || event.button === 1) noteScrollIntent(); }}
+        onPointerMoveCapture={event => { if(event.buttons && (event.target === event.currentTarget || hasSelection())) noteScrollIntent(); }}
+        onKeyDownCapture={event => { if(["PageUp","Home","ArrowUp"].includes(event.key)) noteScrollIntent(); }}
         onScroll={() => {
           if (!visible || menuVisible.current) return;
           const node = body.current;
           if (!node || !node.clientHeight) return;
           trackReadingPosition(node);
+          if (!followingRef.current && performance.now() < scrollDownUntil.current &&
+              !hasSelection() && node.scrollHeight - node.clientHeight - node.scrollTop <= 1) resumeFollowing();
           if (node.scrollTop < 24 && detail?.nextCursor && !error)
             void load.current(true, true);
         }}

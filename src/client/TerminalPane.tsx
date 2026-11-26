@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { insetChoiceDialog } from "./terminal-native-chrome";
+import { watchClaudeClock } from "./claude-clock-recovery";
 import { TerminalSideChat } from "./TerminalSideChat";
 import { sideBinding, validateSidePaste, type SideReply } from "../shared/side-question";
 import { Markdown as SideMarkdown } from "./RichMarkdown";
@@ -184,7 +185,7 @@ export default function TerminalPane({
       controlClaimedRef.current?.();
     }
   };
-  const reconnectViewRef = useRef<(() => void) | null>(null);
+  const reconnectViewRef = useRef<((reason?: string) => void) | null>(null);
   const recoveryFailures = useRef(0);
   const infoRef = useRef(info);
   infoRef.current = info;
@@ -1206,8 +1207,8 @@ export default function TerminalPane({
             reason === "replay-timeout" && replayReceived,
           ),
       });
-      reconnectViewRef.current = () => {
-        reportViewConnection(info.id, "manual");
+      reconnectViewRef.current = (reason = "manual") => {
+        reportViewConnection(info.id, reason);
         setViewEpoch((value) => value + 1);
       };
       type LiveOutput = string | { cols: number; rows: number };
@@ -1519,6 +1520,15 @@ export default function TerminalPane({
     });
     return () => cancelAnimationFrame(frame);
   }, [active, focused]);
+  useEffect(() => {
+    if (!nativeTerminal || !active || rawOutput || !connected || info.exited || info.agentKind !== "claude") return;
+    return watchClaudeClock(nativeTerminal,info.id,()=>visibilityRef.current.active &&
+      !!container.current?.querySelector('.terminal-conversation[data-following="true"]:not([hidden])') &&
+      !nativeTerminal.hasSelection() && window.getSelection()?.isCollapsed !== false,
+      ()=>`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${getToken()}`,
+      ()=>new Terminal({allowProposedApi:true,scrollback:0}),
+      ()=>reconnectViewRef.current?.("restore-failed"));
+  }, [nativeTerminal,active,rawOutput,connected,info.id,info.exited,info.agentKind,info.agentSessionId]);
   return (
     <div
       ref={container}

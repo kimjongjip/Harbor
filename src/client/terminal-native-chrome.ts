@@ -199,6 +199,13 @@ export function nativeMenuVisible(
 // Claude's activity line: a glyph in column 0, then a verb/elapsed status.
 const spinnerRow =
   /^[·✢✳✶✻✽✦✧*∗]\s+\S.*(?:…|\.\.\.|\bfor \d|\(\d+(?:m \d+)?s|esc to interrupt)/;
+/** Claude status text from the PTY, including verb/spinner variations. */
+export function claudeWorkTimer(line: string) {
+  return /^\s*[·✢✳✶✻✽✦✧*∗]\s+.+?(?:…|\.\.\.)\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b/u.test(line);
+}
+export function claudeElapsedFooter(line: string) {
+  return claudeWorkTimer(line) || /^\s*[·✢✳✶✻✽✦✧*∗]\s+.+? for \d+(?:\.\d+)?(?:ms|s|m|h)\b.*\bdone\b/i.test(line);
+}
 const codexStatusRow =
   /^\s{0,2}•\s+(?:Working|Waiting|Running|Thinking|Exploring|Planning)\b|esc to interrupt|^\s{0,2}(?:•\s+)?(?:Worked|Waited) for\b/;
 const codexPromptRow = /^ {0,2}[›»](?: |$)/;
@@ -360,6 +367,13 @@ export function claudeActivityStart(
 ) {
   const task = foregroundTask(lines, end - 1, floor);
   let start = task;
+  // An SSH repaint may contain the elapsed status before the composer rules.
+  // Accept the native footer only at the viewport tail, never from old output.
+  for (let row=end-1; row>=Math.max(floor,end-12); row--) {
+    const line=lines[row].trim();
+    if (claudeElapsedFooter(line)) { start=Math.min(start ?? row,row); break; }
+    if (line && !solidRule.test(line) && !/^(?:[❯›>]\s*$|[✓✔]?\s*Update installed\b)/i.test(line)) break;
+  }
   for (let row = end - 1; row >= floor; row--) {
     const line = lines[row].trim();
     // The binding is configurable. Preserve the actual shortcut and the

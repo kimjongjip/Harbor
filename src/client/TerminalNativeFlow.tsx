@@ -24,6 +24,7 @@ import {
   nativeFlowLinkAt,
   type NativeFlowFrame,
 } from "./terminal-native-flow";
+import { claudeWorkTimer } from "./terminal-native-chrome";
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
 import { projectNativeComposition } from "./terminal-native-ime";
@@ -456,6 +457,25 @@ export function TerminalNativeFlow({
     // need a capture, without waiting for output or subscribing to every paint.
     refresh.current();
   }, [theme]);
+  // If xterm parsed a later paint but its notification was coalesced, reconcile the
+  // displayed Claude clock with the real buffer. Never advance elapsed time locally.
+  const clockVisible = !!view && !codexComposer &&
+    view.frame.lines.slice(Math.max(view.frame.baseY,view.frame.end-32)).some(claudeWorkTimer);
+  useEffect(() => {
+    if (!active || frozen || !clockVisible) return;
+    const check = () => {
+      const frame=previous.current?.frame, buffer=term.buffer.active;
+      if(!frame || frame.bufferType!==buffer.type || frame.baseY!==buffer.baseY) { refresh.current(); return; }
+      for(let row=frame.end-1;row>=Math.max(frame.baseY,frame.end-32);row--) {
+        if(claudeWorkTimer(frame.lines[row]) && frame.lines[row]!==buffer.getLine(row)?.translateToString(true)) {
+          refresh.current(); return;
+        }
+      }
+    };
+    const timer=setInterval(check,1000);
+    window.addEventListener("focus",check);
+    return ()=>{clearInterval(timer);window.removeEventListener("focus",check);};
+  },[term,active,frozen,clockVisible]);
   const hasView = !!view;
   useLayoutEffect(() => {
     if (!active || frozen || nativeInteraction || !root.current) return;

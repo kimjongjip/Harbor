@@ -32,7 +32,7 @@ const timeline=[{id:'q',kind:'user',text:'SYNTHETIC QUESTION',turnId:'turn'},{id
 if(window.stage===5)timeline.push({id:'next-q',kind:'user',text:'NEW TURN ARRIVED AFTER BUSY EVENT',turnId:'next-turn'});
 return new Response(JSON.stringify({thread:{id:'fixture-history',hostId:'fixture',title:'Fixture',cwd:'/fixture'},timeline,items:timeline.filter(item=>item.kind!=='command'),nextCursor:null}),{status:200,headers:{'Content-Type':'application/json'}});};
 function Fixture(){const[term,setTerm]=useState(null),[active,setActive]=useState(true),[working,setWorking]=useState(false);window.setActive=setActive;window.setWorking=setWorking;
-useEffect(()=>{const native=new Terminal({cols:100,rows:24,fontSize:14,convertEol:true});native.open(document.getElementById('native'));const write=native.write.bind(native);
+useEffect(()=>{const native=new Terminal({cols:100,rows:24,fontSize:14,convertEol:true});native.open(document.getElementById('native'));const parsed=native.onWriteParsed.bind(native);Object.defineProperty(native,"onWriteParsed",{value:listener=>parsed(()=>{if(!window.suppressParsed)listener()})});const write=native.write.bind(native);
 window.echo=text=>new Promise(resolve=>write(text,resolve));window.frame=text=>window.echo('\\x1b[2J\\x1b[H'+text);window.frame('› SYNTHETIC QUESTION\\r\\nLIVE NATIVE WORK\\r\\nPARTIAL NATIVE ANSWER\\r\\n• Working (2s • esc to interrupt)');
 native.write=data=>window.nativeWrites.push(data);setTerm(native);return()=>native.dispose();},[]);
 return <><div style={{position:'relative',width:900,height:700}}><div id="native" style={{height:'100%'}}/></div>{term&&<TerminalConversation term={term} info={{...info,agentState:working?'working':'idle'}} active={active}/>}</>;}
@@ -88,6 +88,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       await page.waitForTimeout(200);
       await page.evaluate(() => (window as any).setActive(true));
       await page.waitForTimeout(400);
+      if(provider==="claude") {
+        const prefix="❯ SYNTHETIC QUESTION\r\nLIVE NATIVE WORK\r\n";
+        await page.evaluate(text=>(window as any).frame(text),prefix+"· Grooving… (2m 1s · ↓ 3.0k tokens)");
+        const flow=page.locator(".terminal-native-flow");
+        await flow.getByText(/Grooving.*2m 1s/).waitFor();
+        await page.evaluate(async text=>{const w=window as any;w.suppressParsed=true;await w.frame(text);},prefix+"✻ Grooving… (2m 2s · ↓ 3.0k tokens)");
+        await flow.getByText(/Grooving.*2m 2s/).waitFor({timeout:3000});
+        await page.evaluate(()=>{(window as any).suppressParsed=false;});
+      }
       const initial = await page.evaluate(
         () => (window as any).requests.length,
       );
@@ -106,7 +115,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
         await (window as any).frame(
           "› SYNTHETIC QUESTION\r\nLIVE NATIVE WORK\r\nVERIFIED COMPLETE FINAL ANSWER\r\n" + footer + "\r\n› DRAFT",
         );
-      }, provider === "claude" ? "✻ Cooked for 2s · done Monday 7:58 PM" : "• Worked for 2s");
+      }, provider === "claude" ? "✻ Baked for 3m 9s · done 2:55 PM" : "• Worked for 2s");
       await page.waitForFunction(
         (count) => (window as any).requests.length > count,
         initial,
@@ -154,7 +163,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       const afterComplete = await page.evaluate(
         () => (window as any).requests.length,
       );
-      assert.equal(afterComplete, initial + 4, "completion retries are bounded");
+      assert.ok(afterComplete >= initial + 4 && afterComplete <= initial + (provider==="claude" ? 5 : 4), "four completion retries plus at most one outstanding busy poll");
       for (const character of "abcdefghijklmnopqrst")
         await page.evaluate((text) => (window as any).echo(text), character);
       await page.waitForTimeout(400);
