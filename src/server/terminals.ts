@@ -86,6 +86,7 @@ interface Entry {
     stopped: boolean;
     timer?: ReturnType<typeof setTimeout>;
     monitor?: ReturnType<typeof setInterval>;
+    redrawTimer?: ReturnType<typeof setTimeout>;
     reconnecting?: Promise<TerminalInfo>;
     generation: number;
     channel?: ClientChannel;
@@ -1162,6 +1163,7 @@ export class Terminals extends EventEmitter {
     const lost = (error?: Error) => {
       if (current()) this.disconnected(entry, error);
     };
+    this.scheduleAgyRedraw(entry);
     channel.once("error", lost);
     channel.once("close", () => lost());
     connection.once("error", lost);
@@ -1282,6 +1284,21 @@ export class Terminals extends EventEmitter {
         /* An unconfirmed exit does not authorize reopening a CLI. */
       });
   }
+  private scheduleAgyRedraw(entry: Entry) {
+    const durable=entry.durable, conn=entry.connection, id=entry.info.nativeAgySessionId;
+    if(!durable?.channel || !conn || !id || durable.stopped) return;
+    clearTimeout(durable.redrawTimer);
+    durable.redrawTimer=setTimeout(()=>{
+      if(durable.stopped || entry.connection!==conn || entry.info.nativeAgySessionId!==id || !durable.channel) return;
+      const service=tmux(durable.record);
+      // The attached client can retain partial cursor edits across a PTY resize.
+      // Redraw only clients of this session. No keys are sent to the pane.
+      void execRemote(conn,service+" list-clients -t "+tmuxTarget(durable.record)+
+        " -F '#{client_name}' | while IFS= read -r client; do "+service+' refresh-client -t "$client"; done').catch(()=>{});
+    },180);
+    durable.redrawTimer.unref();
+  }
+
   private observeNativeAgy(entry: Entry, id: string | null | undefined) {
     if (
       id === undefined ||
@@ -1301,6 +1318,7 @@ export class Terminals extends EventEmitter {
       delete t.agentState;
       delete t.agentCompletion;
       this.confirmReboot(entry, "antigravity", id);
+      this.scheduleAgyRedraw(entry);
     } else {
       if (
         t.agentKind === "antigravity" &&
@@ -1893,6 +1911,7 @@ export class Terminals extends EventEmitter {
     rows = Math.min(200, Math.max(3, Math.floor(rows)));
     if (!entry.buffer.resize(cols, rows)) return;
     entry.process.resize(cols, rows);
+    this.scheduleAgyRedraw(entry);
     this.emit("resize", id, cols, rows);
   }
   close(id: string): Promise<void> {

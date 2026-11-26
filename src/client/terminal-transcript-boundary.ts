@@ -5,6 +5,7 @@ import { transcriptEntries } from "./transcript-steps";
 import {
   promptHistoryStart,
   claudeActivityStart,
+  agyComposerStart,
   lastNativeBlock,
   nativeChrome,
   nativeChoiceDialog,
@@ -383,6 +384,10 @@ export function liveTranscriptLayout(
     };
   }
   let chrome = nativeChrome(frame.lines, frame.end, frame);
+  if (state.provider === "antigravity") {
+    const start = agyComposerStart(frame.lines,frame.end,frame);
+    if (start !== undefined) chrome={start,framed:true};
+  }
   if (state.provider === "claude") {
     const activity = claudeActivityStart(frame.lines, frame.end, frame.baseY);
     if (activity !== undefined) {

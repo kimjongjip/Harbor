@@ -1216,6 +1216,10 @@ test("a tmux shell tracks the agy lock in its own pane and forgets it on exit", 
     const t = await app.create(host, "/fixture", "fixture");
     assert.equal(t.agentKind, "antigravity");
     assert.equal(t.nativeAgySessionId, id);
+    app.resize(t.id,132,45);
+    app.resize(t.id,179,37);
+    await until(()=>fixture.commands.some(c=>c.includes("list-clients -t") && c.includes("refresh-client -t")),"tmux client redraw");
+    assert.equal(fixture.commands.filter(c=>c.includes("refresh-client -t")).length,1);
     fixture.nativeAgy = "f0000000-0000-4000-8000-000000000002";
     await until(() => t.agentSessionId !== id);
     assert.equal(t.agentSessionId, "f0000000-0000-4000-8000-000000000002");
