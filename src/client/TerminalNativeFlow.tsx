@@ -286,6 +286,7 @@ export function TerminalNativeFlow({
         return;
       }
       const frame = reader.frame();
+      latest.current.observeFrame?.(frame);
       const editor = latest.current.agyComposer ? agyComposerStart(frame.lines,frame.end,frame) : undefined;
       const agyPromptRow = editor === undefined ? undefined : nativeSeparator(frame.lines[editor]) ? editor+1 : editor;
       const old = previous.current;
@@ -296,7 +297,6 @@ export function TerminalNativeFlow({
         const left = 250 - (now-partialEditorSince);
         if (left>0) {timer=setTimeout(capture,left);return;}
       } else partialEditorSince=undefined;
-      latest.current.observeFrame?.(frame);
       const requested =
         typeof latest.current.startRow === "function"
           ? latest.current.startRow(frame)

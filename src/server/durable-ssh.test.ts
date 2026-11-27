@@ -1223,7 +1223,14 @@ test("a tmux shell tracks the agy lock in its own pane and forgets it on exit", 
     fixture.nativeAgy = "f0000000-0000-4000-8000-000000000002";
     await until(() => t.agentSessionId !== id);
     assert.equal(t.agentSessionId, "f0000000-0000-4000-8000-000000000002");
+    command = "python";
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal(t.nativeAgySessionId,"f0000000-0000-4000-8000-000000000002");
+    fixture.nativeAgy = "unknown";
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal(t.nativeAgySessionId,"f0000000-0000-4000-8000-000000000002");
     command = "bash";
+    fixture.nativeAgy = "absent";
     await until(() => !t.nativeAgySessionId);
     assert.equal(t.agentKind, undefined);
     assert.deepEqual(fixture.inputs, []);

@@ -172,6 +172,16 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       });
       assert.equal(flashes,0,"no intermediate repaint or idle/wait notification may re-enable the reader");
       assert.ok(await previousTable?.evaluate(node=>node.isConnected));
+      const generation = page.getByRole("status").filter({hasText:"Generating…"});
+      for (let i=0;i<3;i++) {
+        await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> third turn\r\n⠿ Generating...\r\n────────────────────────"));
+        await generation.waitFor();
+        assert.equal(await page.locator(".terminal-native-flow").getByText("> third turn",{exact:true}).count(),0);
+        await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\n? for shortcuts    auto · Gemini 4 Carbon · high"));
+        await page.waitForTimeout(350);
+        assert.equal(await generation.isVisible(),true);
+        assert.equal(await table.isVisible(),true);
+      }
       await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:29~\r\n> third turn\r\n● Explored 5 files (sample.py)\r\n● Ran 2 commands (2 failed)\r\nWorking on the third turn\r\n────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
       await page.getByText("● Ran 2 commands (2 failed)",{exact:true}).waitFor();
       await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H"));
@@ -187,6 +197,7 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       await page.waitForTimeout(350);
       await page.evaluate(()=>{(window as any).done3=true;}); // disk update only, no PTY or browser event
       await page.getByText("Stable final",{exact:true}).waitFor();
+      await generation.waitFor({state:"detached"});
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

@@ -25,6 +25,7 @@ import {
   liveTranscriptLayout,
   type LiveTranscriptLayout,
 } from "./terminal-transcript-boundary";
+import { agyGeneratingRow, agyStatusFooter } from "./agy-status-footer";
 import { agyWorkSummary } from "./agy-work-summary";
 import { TerminalCompletionCue } from "./terminal-completion-cue";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
@@ -657,6 +658,9 @@ export function TerminalConversation({
   );
   const [nativeMenu, setNativeMenu] = useState(false);
   const menuVisible = useRef(false);
+  const [agyGenerating, setAgyGenerating] = useState(false);
+  useEffect(() => { setAgyGenerating(false); }, [term,sessionId,provider]);
+  useEffect(() => { if (endKey) setAgyGenerating(false); }, [endKey]);
   const requestedMenu = useRef(false);
   useEffect(() => {
     if (!active || mode === "terminal" || info.exited) return;
@@ -703,7 +707,7 @@ export function TerminalConversation({
         return { start: frame.end, defer: "repaint" as const };
       const next = layoutForFrame(frame);
       const menu =
-        !next.promptHistory && (!nativeTurn || requestedMenu.current || menuVisible.current) &&
+        !next.promptHistory && ((!nativeTurn && provider !== "antigravity") || requestedMenu.current || menuVisible.current) &&
         nativeMenuVisible(frame.lines, frame.end, frame, menuVisible.current);
       if (menu !== menuVisible.current) {
         menuVisible.current = menu;
@@ -712,10 +716,14 @@ export function TerminalConversation({
       if (menu) return { start: frame.end, defer: "repaint" as const };
       // AgY repeatedly erases and rewrites its entire work area. Keep the
       // saved document as its sole body and project only the editable footer.
-      if (nativeWhileWorking && provider === "antigravity" && turns.length && !next.promptHistory) {
+      if (nativeWhileWorking && provider === "antigravity" && (turns.length || pendingHistory) && !next.promptHistory) {
         const editor = agyComposerStart(frame.lines, frame.end, frame);
+        const generating = agyGeneratingRow(frame.lines, frame.end, frame.baseY);
+        // A submitted question followed by the spinner is history, never a draft.
+        if (generating >= 0 && (editor === undefined || generating >= editor))
+          return {start:frame.end, split:frame.end};
         if (editor !== undefined) return {start: editor, split: editor};
-        if (nativeTurn && !nativeInteractiveReplacement(frame.lines, frame.end, info.agentState === "waiting"))
+        if (!nativeInteractiveReplacement(frame.lines, frame.end, info.agentState === "waiting"))
           return {start: frame.end, defer: "repaint" as const};
       }
       return {
@@ -756,6 +764,7 @@ export function TerminalConversation({
       revealInsetDialog,
       nativeTurn,
       nativeWhileWorking,
+      pendingHistory,
       provider,
     ],
   );
@@ -777,6 +786,16 @@ export function TerminalConversation({
   const needsNativeSummary = provider === "antigravity" && !lastTurn?.items.some(item => item.kind === "tool" || item.kind === "command");
   const observeNativeCompletion = useCallback(
     (frame: NativeFlowFrame) => {
+      if (provider === "antigravity") {
+        const footer = agyStatusFooter(frame.lines, frame.end);
+        const generating = agyGeneratingRow(frame.lines,frame.end,frame.baseY);
+        const editor = agyComposerStart(frame.lines,frame.end,frame);
+        if (footer?.hint === "? for shortcuts" && editor !== undefined && generating < editor) {
+          if (!nativeWhileWorking || !sessionId) setAgyGenerating(false);
+        }
+        else if (generating >= 0 || footer?.hint?.toLowerCase() === "esc to cancel")
+          setAgyGenerating(true);
+      }
       if (needsNativeSummary && currentQuestion) {
         const editor = agyComposerStart(frame.lines,frame.end,frame);
         const rows = editor === undefined ? undefined : agyWorkSummary(frame.lines,editor,currentQuestion.text);
@@ -803,7 +822,7 @@ export function TerminalConversation({
           setTimeout(() => void load.current(false, true), delay),
         );
       }
-    }, [completionCue, provider, term, modSurface, needsNativeSummary, currentQuestion],
+    }, [completionCue, provider, term, modSurface, needsNativeSummary, currentQuestion, nativeWhileWorking, sessionId],
   );
   const updateNativeFrame = useCallback(
     (frame: NativeFlowFrame) => {
@@ -1095,6 +1114,7 @@ export function TerminalConversation({
             );
           })}
           {/* Unsaved live prose must stay visible when saved tools are folded. */}
+          {provider === "antigravity" && agyGenerating && <div role="status" className="agy-work-summary-row">Generating…</div>}
           <div className="conversation-live-work" ref={setWorkTarget} />
           <TerminalNativeFlow
             renderedAnswers={renderedAnswers}

@@ -451,14 +451,15 @@ ${record.session}
     );
   let agySession: string | null | undefined;
   if (foreground) {
-    const pid=/^HARBOR_FOREGROUND=([1-9]\d{0,9})\|agy$/.exec(foreground)?.[1];
-    if (!pid) agySession=null;
-    else {
+    const pane = /^HARBOR_FOREGROUND=([1-9]\d{0,9})\|(.+)$/.exec(foreground);
+    const pid = pane?.[1];
+    // A foreground child command doesn't prove the bound AgY process exited.
+    if (pid && (pane[2] === "agy" || record.info.nativeAgySessionId)) {
       // Discovery is optional. Failure must never disconnect a healthy tmux.
       try {
         const found=(await execRemote(connection,"python3 -c "+shellQuote("import base64;exec(base64.b64decode('"+Buffer.from(agyPresenceProbe).toString("base64")+"'))")+" "+pid)).trim();
-        agySession=agyId.test(found)?found:null;
-      } catch { agySession=null; }
+        agySession = agyId.test(found) ? found : found === "absent" ? null : undefined;
+      } catch { /* An unavailable probe cannot revoke a verified session. */ }
     }
   }
   return {

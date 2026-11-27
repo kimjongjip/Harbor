@@ -4,7 +4,7 @@ export const agyId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 // Scope to a single tmux pane and same-account descendants. Only a live agy
 // executable holding exactly one native presence lock can identify a session.
 export const agyPresenceProbe = String.raw`import os,sys,re,glob
-pending=[int(sys.argv[1])]; seen=set(); sessions=set()
+pending=[int(sys.argv[1])]; seen=set(); sessions=set(); uncertain=False; found_agy=False
 presence=os.path.join(os.path.expanduser('~'),'.gemini','antigravity-cli','presence')
 while pending and len(seen)<128:
  p=pending.pop()
@@ -14,6 +14,7 @@ while pending and len(seen)<128:
   if os.stat(root).st_uid!=os.getuid(): continue
   exe=os.path.basename(os.readlink(root+'/exe')).split(' (deleted)',1)[0]
   if exe=='agy':
+   found_agy=True
    for fd in os.listdir(root+'/fd'):
     try: path=os.readlink(root+'/fd/'+fd)
     except OSError: continue
@@ -23,8 +24,10 @@ while pending and len(seen)<128:
    continue
   for f in glob.glob(root+'/task/*/children'):
    with open(f) as data: pending.extend(int(x) for x in data.read().split())
- except (OSError,ValueError): continue
-print(next(iter(sessions)) if len(sessions)==1 else '')
+ except FileNotFoundError:
+  if p==int(sys.argv[1]): uncertain=True
+ except (OSError,ValueError): uncertain=True
+print(next(iter(sessions)) if len(sessions)==1 and not pending and not uncertain else 'absent' if not found_agy and not pending and not uncertain else 'unknown')
 `;
 
 export function agyStep(line: string): MessageItem | undefined {
