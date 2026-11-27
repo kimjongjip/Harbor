@@ -1,3 +1,5 @@
+import { agyStatusFooter } from "./agy-status-footer";
+
 /** A terminal footer is only a reason to reread history, never proof of completion. */
 const workedFooter =
   /^\s*(?:(?:[•·*]|[─━]+)\s*)?Worked for\s+\d+(?:\.\d+)?(?:ms|s|m|h|d)(?:\s*\d+(?:\.\d+)?(?:ms|s|m|h|d))*(?:\s*[·•]\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*(?:[─━]+)?\s*$/i;
@@ -6,6 +8,7 @@ const claudeFooter =
 
 /** Deduplicate the native Codex footer without including the editable prompt below it. */
 export class TerminalCompletionCue {
+  private agyBusy = false;
   private initialized = false;
   private previous: string | undefined;
 
@@ -13,6 +16,14 @@ export class TerminalCompletionCue {
     // Initial empty frames precede replay. The first populated snapshot is a
     // baseline, already covered by the normal initial history read.
     if (!this.initialized && !lines.some((line) => line.trim())) return false;
+    if (provider === "antigravity") {
+      const footer = agyStatusFooter(lines);
+      if (!footer?.hint) return false;
+      const busy = /^esc to cancel$/i.test(footer.hint);
+      const finished = this.agyBusy && !busy;
+      this.agyBusy = busy;
+      return finished;
+    }
     let cue: string | undefined;
     for (
       let row = lines.length - 1;

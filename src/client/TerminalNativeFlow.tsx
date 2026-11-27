@@ -25,6 +25,7 @@ import {
   type NativeFlowFrame,
 } from "./terminal-native-flow";
 import { agyComposerStart, claudeWorkTimer } from "./terminal-native-chrome";
+import { agyStatusFooter } from "./agy-status-footer";
 import { nativeCrewFooter } from "./native-crew-footer";
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
@@ -707,7 +708,9 @@ export function TerminalNativeFlow({
     transcript.split, true,
   );
   const inputStart = view.historyBase ? view.split : view.outputBase ? composerStart(view) : boundary;
-  const input = renderParts(view, partsFor(view, inputStart, view.frame.end), true, view.agyPromptRow);
+  const footer = agyComposer && view.agyPromptRow !== undefined && !view.promptHistory
+    ? agyStatusFooter(view.frame.lines, view.frame.end) : undefined;
+  const input = renderParts(view, partsFor(view, inputStart, footer?.start ?? view.frame.end), true, view.agyPromptRow);
   return (
     <>
       {work && workTarget
@@ -756,6 +759,10 @@ export function TerminalNativeFlow({
           }
         >
           {input}
+          {footer && <div className="terminal-agy-footer">
+            <span>{footer.hint}</span>
+            <span className="terminal-agy-settings"><b>{footer.mode}</b> · {footer.model} · {footer.effort}{mirroredCrew === "agy-tasks" ? "" : footer.extra ? " " + footer.extra : ""}</span>
+          </div>}
         </div>
       </div>
     </>

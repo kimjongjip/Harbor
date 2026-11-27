@@ -41,6 +41,7 @@ import "./terminal-conversation.css";
 import { useClaudeModSurface } from "./useClaudeModSurface";
 import { frameWithoutModPanels } from "./terminal-mod-surface";
 import {
+  agyComposerStart,
   insetChoiceDialog,
   claudeWorkTimer,
   nativeInteractiveReplacement,
@@ -246,8 +247,14 @@ export function TerminalConversation({
           ? "bottom"
           : null;
     latest.current = next;
-    // Saved Markdown can be expensive; native echo remains the urgent update.
-    startTransition(() => setDetail(next));
+    // A busy stream can keep superseding a low-priority render. Publish a
+    // newly persisted final reply without waiting for an input/paint event.
+    const tail = next.timeline?.at(-1);
+    if (tail?.kind === "assistant" && tail.turnStatus === "completed" && tail.phase === "final_answer") {
+      setDetail(next);
+    } else {
+      startTransition(() => setDetail(next));
+    }
   };
   const load = useRef<(more?: boolean, automatic?: boolean) => Promise<void>>(
     async () => {},
@@ -610,12 +617,12 @@ export function TerminalConversation({
   // the PTY tail until it has a verified final answer.
   const displayTurns = useMemo(() => {
     const last = turns.at(-1);
-    if (!nativeTurn || !last || last.complete) return turns;
+    if (provider === "antigravity" || !nativeTurn || !last || last.complete) return turns;
     const saved = last.items.filter(item => item.kind !== "assistant");
     return saved.length
       ? [...turns.slice(0, -1), {...last, items: saved}]
       : turns.slice(0, -1);
-  }, [turns, nativeTurn]);
+  }, [turns, nativeTurn, provider]);
   const pendingHistory = !detail && !error;
   // Echoed keystrokes belong to the native tail. They must not rerender every
   // saved Markdown/tool block or schedule a second full native capture.
@@ -701,6 +708,14 @@ export function TerminalConversation({
         setNativeMenu(menu);
       }
       if (menu) return { start: frame.end, defer: "repaint" as const };
+      // AgY repeatedly erases and rewrites its entire work area. Keep the
+      // saved document as its sole body and project only the editable footer.
+      if (nativeWhileWorking && provider === "antigravity" && turns.length && !next.promptHistory) {
+        const editor = agyComposerStart(frame.lines, frame.end, frame);
+        if (editor !== undefined) return {start: editor, split: editor};
+        if (nativeTurn && !nativeInteractiveReplacement(frame.lines, frame.end, info.agentState === "waiting"))
+          return {start: frame.end, defer: "repaint" as const};
+      }
       return {
         start: next.nativeStart,
         streamingOutput: provider === "antigravity" && next.live &&
@@ -738,6 +753,7 @@ export function TerminalConversation({
       turns,
       revealInsetDialog,
       nativeTurn,
+      nativeWhileWorking,
       provider,
     ],
   );
@@ -841,7 +857,7 @@ export function TerminalConversation({
     { turns: typeof turns; count: number; live: boolean } | undefined
   >(undefined);
   if (!layout.promptHistory || !lastBody.current)
-    lastBody.current = nativeTurn
+    lastBody.current = nativeTurn || (nativeWhileWorking && provider === "antigravity")
       ? {turns: displayTurns, count: displayTurns.length, live: true}
       : { turns, count: layout.historyCount, live: layout.live };
   const shown = lastBody.current;
@@ -861,12 +877,12 @@ export function TerminalConversation({
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
   // A newly started turn may not exist in history yet. Keep reading even if
   // the last saved turn is complete; otherwise it can wait for the 30s poll.
-  const refreshing = automaticView && (nativeTurn || agentBusy || !!info.nativeAgySessionId);
+  const refreshing = automaticView && (nativeTurn || agentBusy || provider === "antigravity");
   useEffect(() => {
     if (!refreshing) return;
-    const timer = setInterval(() => void load.current(false, true), info.nativeAgySessionId ? 3500 : 2000);
+    const timer = setInterval(() => void load.current(false, true), provider === "antigravity" ? 2500 : 2000);
     return () => clearInterval(timer);
-  }, [refreshing, info.nativeAgySessionId]);
+  }, [refreshing, provider]);
   const [workOpen, setWorkOpen] = useState<Record<string, boolean>>({});
   const [workTarget, setWorkTarget] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -909,7 +925,6 @@ export function TerminalConversation({
     if (!node) return;
     const observer = new ResizeObserver(() => {
       // Images, fonts and math can finish layout later than the history response.
-      trackReadingPosition(node);
       if (visible && followingRef.current && !hasSelection()) {
         node.scrollTop = node.scrollHeight;
         lastScrollTop.current = node.scrollTop;

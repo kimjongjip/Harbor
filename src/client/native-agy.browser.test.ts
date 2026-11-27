@@ -173,11 +173,16 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       assert.equal(flashes,0,"no intermediate repaint or idle/wait notification may re-enable the reader");
       assert.ok(await previousTable?.evaluate(node=>node.isConnected));
       await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:29~\r\n> third turn\r\nWorking on the third turn\r\n────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
-      await page.locator(".terminal-native-flow").getByText("Working on the third turn",{exact:true}).waitFor();
+      assert.equal(await page.locator(".terminal-native-flow").getByText("Working on the third turn",{exact:true}).count(),0);
       assert.equal(await table.isVisible(), true);
       assert.ok(await originalPty?.evaluate(el=>el.isConnected));
-      await page.evaluate(()=>{(window as any).done3=true; document.dispatchEvent(new Event("visibilitychange"));});
-      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nesc to cancel                            auto · Gemini 4 Carbon ·\r\nhigh"));
+      const settings = page.locator(".terminal-agy-settings");
+      await settings.getByText(/Gemini 4 Carbon · high/).waitFor();
+      assert.equal(await settings.evaluate(el=>getComputedStyle(el).whiteSpace),"nowrap");
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\n? for shortcuts    auto · Gemini 4 Carbon · high"));
+      await page.waitForTimeout(350);
+      await page.evaluate(()=>{(window as any).done3=true;}); // disk update only, no PTY or browser event
       await page.getByText("Stable final",{exact:true}).waitFor();
       assert.deepEqual(errors, []);
     } finally {

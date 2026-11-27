@@ -8,6 +8,15 @@
   color: var(--text);
   background: var(--bg);
 }
+.terminal-agy-footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0 1ch;
+  color: var(--muted);
+}
+.terminal-agy-settings { white-space: nowrap; margin-inline-start: auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.terminal-agy-settings b { color: var(--accent); font-weight: inherit; }
 .terminal-conversation[hidden] {
   display: none;
 }
