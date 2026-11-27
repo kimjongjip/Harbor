@@ -259,10 +259,21 @@
   overflow-wrap: anywhere;
 }
 .crew-native-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 7px;
+  align-content: center;
+  align-items: center;
   min-width: 0;
   padding: 4px 0;
   border-bottom: 1px solid var(--border);
 }
+.crew-native-row > .crew-art {
+  grid-column: 1;
+  grid-row: 1 / 3;
+}
+.crew-native-row > strong, .crew-native-row > .crew-native-metrics { grid-column: 2; }
+.crew-task-station { display: flex; align-items: center; gap: 6px; }
 .crew-native-row > strong {
   display: block;
   font-size: 11px;
@@ -277,7 +288,13 @@
 }
 .crew-native-metrics { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; }
 .crew-agent-list .crew-agent { padding-block: 4px; gap: 4px; }
-.crew-agent-list .crew-agent .crew-art { width: 28px; height: 30px; }
+.crew-agent-list .crew-agent .crew-art,
+.crew-native-row .crew-art, .crew-task-station .crew-art {
+  width: calc(58px * var(--crew-scale));
+  height: calc(47px * var(--crew-scale));
+  flex: none;
+  align-self: center;
+}
 .crew-agent-list .crew-agent-facts { gap: 1px; }
 .crew-agent-activity {
   color: var(--muted);
@@ -1002,6 +1019,35 @@
     transform: translateY(-2px);
   }
 }
+@keyframes crew-look-closer {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-7px, 3px); }
+}
+@keyframes crew-pencil-stroke {
+  0%, 100% { transform: translate(0, 0); }
+  45% { transform: translate(5px, -1px); }
+  65% { transform: translate(-1px, 2px); }
+}
+@keyframes crew-scope-scan {
+  from { stroke-dashoffset: 40; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes crew-mail-flight {
+  0%, 15% { transform: translate(0, 0) rotate(0deg); }
+  55% { transform: translate(66px, -26px) rotate(-6deg); }
+  78%, 100% { transform: translate(101px, -21px) rotate(8deg); }
+}
+.crew-lens { animation: crew-look-closer 3.6s ease-in-out infinite; }
+.crew-pencil { animation: crew-pencil-stroke 1.25s ease-in-out infinite; }
+.crew-trace { stroke-dasharray: 28 12; animation: crew-scope-scan 2.6s linear infinite; }
+.crew-plane { transform-box: fill-box; transform-origin: center; animation: crew-mail-flight 9s ease-in-out infinite alternate; }
+@keyframes crew-desk-visit {
+  0%, 22% { visibility: visible; }
+  23%, 100% { visibility: hidden; }
+}
+.crew-main-desk-cycle > g { visibility: hidden; animation: crew-desk-visit 24s steps(1, end) infinite; }
+.crew-main-desk-cycle .crew-desk-writing { animation-delay: -16s; }
+.crew-main-desk-cycle .crew-desk-testing { animation-delay: -8s; }
 @media (prefers-reduced-motion: reduce) {
   .terminal-crew *,
   .crew-demo * {

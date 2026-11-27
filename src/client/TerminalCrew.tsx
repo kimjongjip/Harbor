@@ -164,7 +164,8 @@ export const TerminalCrew = memo(function TerminalCrew({
     (live && !!celebrations[agent.id]);
   const running = agents.filter(onStage),
     finished = agents.filter((agent) => !onStage(agent));
-  const row = (agent: (typeof agents)[number]) => {
+  const colleague = (index: number) => preferences.character === "auto" ? crewCharacters[index % crewCharacters.length] : character;
+  const row = (agent: (typeof agents)[number], index: number) => {
     const title =
       agent.task ||
       (/^(?:general[\s_-]*purpose|agent|에이전트)$/i.test(agent.name.trim())
@@ -189,7 +190,7 @@ export const TerminalCrew = memo(function TerminalCrew({
             : "off"
         }
       >
-        <CrewCharacter character={character} state={agent.state} miniature />
+        <CrewCharacter character={colleague(index)} state={agent.state} activity={agent.activity || agent.task} miniature />
         <div className="crew-agent-name">
           <strong className="crew-agent-title" title={title}>
             {title}
@@ -236,7 +237,7 @@ export const TerminalCrew = memo(function TerminalCrew({
       {settings && (
         <div id={settingsId} className="crew-settings">
           <p className="crew-setting-hint">
-            메인과 모든 동료에게 같은 캐릭터를 적용해요
+            자동은 다양한 동료를 보여줘요. 직접 고르면 모두 같은 캐릭터를 써요.
           </p>
           <div
             role="group"
@@ -298,9 +299,13 @@ export const TerminalCrew = memo(function TerminalCrew({
           <span>{caption[state]}</span>
         </div>
       </div>
-      {nativeCrew?.taskCount !== undefined && <div className="crew-native-count">작업 {nativeCrew.taskCount}개 · /tasks</div>}
+      {nativeCrew?.taskCount !== undefined && <div className="crew-native-count crew-task-station">
+        {nativeCrew.taskCount > 0 && <CrewCharacter character={character} state="working" activity="run" miniature />}
+        <span>작업 {nativeCrew.taskCount}개 · /tasks</span>
+      </div>}
       {!!nativeCrew?.agents.length && <div className="crew-agent-list">
         {nativeCrew.agents.map((agent, index) => <div className="crew-native-row" key={agent.name + index}>
+          <CrewCharacter character={colleague(index)} state="working" activity={agent.task} miniature />
           <strong title={agent.name + " · " + agent.task}>{agent.task}</strong>
           <div className="crew-native-metrics"><span title="CLI에 표시된 작업 경과 시간">{agent.elapsed}</span>
             <span title="Claude가 해당 작업 행에 표시한 토큰 수">↓ {agent.tokens} 토큰</span></div>

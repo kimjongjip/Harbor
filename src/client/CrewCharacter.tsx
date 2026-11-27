@@ -21,15 +21,48 @@ export const crewCharacterNames: Record<CrewCharacterKind, string> = {
   frog: "개구리",
 };
 
+type DeskScene = "read" | "write" | "test" | "code";
+export function crewDeskScene(activity: string | undefined): DeskScene {
+  if (/read|search|fetch|grep|glob|explor|review|inspect|download|자료|검색|읽기|검토/i.test(activity || "")) return "read";
+  if (/edit|write|draft|patch|문서|작성|수정/i.test(activity || "")) return "write";
+  if (/bash|test|run|build|comput|measur|verify|명령|실행|검증|측정/i.test(activity || "")) return "test";
+  return "code";
+}
+
+function DeskTools({scene}: {scene: DeskScene}) {
+  if (scene === "read") return <g className="crew-book">
+    <path fill="#916848" d="M86 80q9-4 18 0 9-4 19-1l-3 15q-8-2-17 1-8-3-18-1z"/>
+    <path fill="#fff0c9" d="M87 78q9-3 17 1l-1 13q-7-4-17-1zM105 79q8-5 17-2l-3 14q-8-2-15 1z"/>
+    <path stroke="#ab896a" fill="none" d="m90 82 9 1m-9 3 7 1m10-5 9-2m-9 6 8-2"/>
+    <g className="crew-lens"><path d="m110 78 8 8" stroke="#a67752" strokeWidth="3.4"/><circle cx="106" cy="74" r="6.2" stroke="#537d88" strokeWidth="2.3" fill="#bfeaf2" fillOpacity=".75"/></g>
+  </g>;
+  if (scene === "write") return <g>
+    <path fill="#b5a6c1" d="m84 85 28-5 10 11-32 5z"/>
+    <path fill="#fff0cf" d="m85 82 27-4 8 11-30 5z"/>
+    <path stroke="#a58c78" d="m91 85 15-3m-12 6 11-2"/>
+    <g className="crew-pencil"><path fill="#e8ae52" d="m104 82 11-19 4 3-12 18-5 3z"/><path fill="#55526c" d="m104 82 3 2-5 3z"/><path fill="#ec8b89" d="m114 65 2-4 4 3-2 4z"/></g>
+  </g>;
+  if (scene === "test") return <g>
+    <rect x="98" y="64" width="41" height="28" rx="4" fill="#596980"/>
+    <rect x="101" y="67" width="34" height="19" rx="2" fill="#233e50"/>
+    <path stroke="#45646d" d="M102 76h32m-22-8v16m12-16v16"/>
+    <path className="crew-trace" stroke="#9ce0b4" fill="none" strokeWidth="1.7" d="m102 79 6-1 3-7 4 11 5-8 3 3 4-5 6 2"/>
+    <circle cx="131" cy="89" r="1.5" fill="#e9c979"/>
+  </g>;
+  return null;
+}
+
 /** Original SVG artwork; motion stays in CSS, independently of React and xterm. */
 export const CrewCharacter = memo(function CrewCharacter({
   character,
   state,
+  activity,
   miniature = false,
   leader = false,
 }: {
   character: CrewCharacterKind;
   state: TerminalAgentState;
+  activity?: string;
   miniature?: boolean;
   leader?: boolean;
 }) {
@@ -415,6 +448,18 @@ export const CrewCharacter = memo(function CrewCharacter({
           </g>
         </g>
       )}
+      {state === "working" && <g data-scene={crewDeskScene(activity)} transform={miniature ? "translate(0 3)" : undefined}>
+        <DeskTools scene={crewDeskScene(activity)}/>
+      </g>}
+      {leader && state === "working" && <g className="crew-main-desk-cycle">
+        <g className="crew-desk-reading"><DeskTools scene="read" /></g>
+        <g className="crew-desk-writing"><DeskTools scene="write" /></g>
+        <g className="crew-desk-testing"><DeskTools scene="test" /></g>
+      </g>}
+      {leader && state === "working" && <g className="crew-dispatch" aria-hidden="true">
+        <path d="M16 48q12-12 24-6m52-17q11-9 27-6" fill="none" stroke="#acb8af" strokeDasharray="2 3"/>
+        <g className="crew-plane"><path fill="#e6ae71" d="m15 46 14-5-5 12-3-6z"/><path fill="#f9dfaf" d="m15 46 14-5-8 6z"/></g>
+      </g>}
       <g className="crew-coffee">
         <path className="crew-coffee-arm" d="m82 79 10 6-4 6-13-6z" />
         <path

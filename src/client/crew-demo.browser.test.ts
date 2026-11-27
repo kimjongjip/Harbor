@@ -45,7 +45,7 @@ test(
     };
     await build({
       stdin: {
-        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function Team({state,active}){const[crew,setCrew]=useState(${JSON.stringify(initial)});window.updateAgent=(id,state)=>setCrew(c=>({...c,updatedAt:Date.now(),agents:c.agents.map(a=>a.id===id?{...a,state}:a)}));window.setCrewSource=source=>setCrew(c=>({...c,source}));return <TerminalCrew provider="codex" state={state} active={active} crew={crew}/>;}function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><Team state={state} active={active}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
+        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function Team({state,active}){const[nativeCrew,setNativeCrew]=useState();window.setNativeCrew=setNativeCrew;const[crew,setCrew]=useState(${JSON.stringify(initial)});window.updateAgent=(id,state)=>setCrew(c=>({...c,updatedAt:Date.now(),agents:c.agents.map(a=>a.id===id?{...a,state}:a)}));window.setCrewSource=source=>setCrew(c=>({...c,source}));return <TerminalCrew provider="codex" state={state} active={active} crew={crew} nativeCrew={nativeCrew}/>;}function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><Team state={state} active={active}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
         resolveDir: process.cwd(),
         sourcefile: "crew-fixture.tsx",
         loader: "tsx",
@@ -89,7 +89,8 @@ test(
         errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.waitForSelector(".crew-main .crew-robot");
-      assert.equal(await page.locator(".crew-agent .crew-robot").count(), 2);
+      assert.equal(await page.locator(".crew-agent .crew-robot").count(), 1);
+      assert.equal(await page.locator(".crew-agent .crew-cat").count(), 1);
       assert.deepEqual(
         await page.locator(".crew-agent-title").allTextContents(),
         ["키보드 입력과 화면 갱신을 검토해요", "검토 결과를 기다려요"],
@@ -407,6 +408,22 @@ test(
         await page.getByRole("textbox").inputValue(),
         "한글 English 작성 중",
       );
+      const roster = {key:"fixture",start:0,end:4,agents:[
+        {name:"reader",task:"Read the test plan",elapsed:"2m 10s",tokens:"99.9k"},
+        {name:"writer",task:"Write release notes",elapsed:"1m 05s",tokens:"12k"},
+        {name:"tester",task:"Run checks",elapsed:"49s",tokens:"8k"},
+      ]};
+      await page.evaluate(data => (window as any).setNativeCrew(data), roster);
+      const desks = page.locator(".crew-native-row .crew-art");
+      await desks.first().waitFor();
+      assert.deepEqual(await desks.locator("[data-scene]").evaluateAll(nodes => nodes.map(n=>n.getAttribute("data-scene"))), ["read","write","test"]);
+      await desks.first().evaluate(node => (window as any).originalDesk = node);
+      roster.agents[0].tokens = "100k";
+      await page.evaluate(data => (window as any).setNativeCrew(data), roster);
+      await page.locator(".crew-native-metrics").getByText("↓ 100k 토큰").waitFor();
+      assert.equal(await desks.first().evaluate(node => node === (window as any).originalDesk), true);
+      await page.locator(".terminal-crew").screenshot({path:join(directory,"native-workstations.png")});
+      await page.evaluate(() => (window as any).setNativeCrew(undefined));
       // Restore preferences only in this isolated fixture; never reload Harbor.
       await page.reload();
       await page.waitForSelector(".crew-main .crew-cat");
