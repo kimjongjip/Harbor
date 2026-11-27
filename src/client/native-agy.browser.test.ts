@@ -149,13 +149,15 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       assert.match(await footer.innerText(), /Gemini 4 Carbon/);
       await page.getByRole("button",{name:"상태 패널 접기"}).click();
       await footer.getByText(/4 task\(s\)/).waitFor();
+      const previousTable = await table.elementHandle();
       await page.evaluate(()=>{(window as any).nativeWork(true);(window as any).agentState("working");});
       await page.locator("[data-native-work]").waitFor({state:"attached"});
       const originalPty = await page.locator("#pty .xterm").elementHandle();
       const flashes = await page.evaluate(async()=>{
         let flashes=0;
         const observe = new MutationObserver(() => {
-          if (!document.querySelector("[data-native-work]") || document.querySelector(".terminal-conversation-document")) flashes++;
+          const reader = document.querySelector<HTMLElement>("[data-native-work]");
+          if (!reader || reader.hidden || !reader.querySelector("table") || reader.innerText.includes("~HBR:")) flashes++;
         });
         observe.observe(document.querySelector("#root")!,{subtree:true,childList:true,attributes:true});
         const w=window as any;
@@ -163,12 +165,16 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
         document.dispatchEvent(new Event("visibilitychange"));
         for(const state of ["waiting","working","idle","working","waiting","idle"]) {
           w.agentState(state);
-          await w.repaint("\x1b[2J\x1b[H"+(state==="working"?"\x1b[32mworking\x1b[0m":"> /menu"));
+          await w.repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:21~\r\n~HBR:9e6782ee44794b9596ef:22~\r\n"+(state==="working"?"\x1b[32mworking\x1b[0m":"> /menu"));
           await new Promise(done=>setTimeout(done,250));
         }
         observe.disconnect();return flashes;
       });
       assert.equal(flashes,0,"no intermediate repaint or idle/wait notification may re-enable the reader");
+      assert.ok(await previousTable?.evaluate(node=>node.isConnected));
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:29~\r\n> third turn\r\nWorking on the third turn\r\n────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
+      await page.locator(".terminal-native-flow").getByText("Working on the third turn",{exact:true}).waitFor();
+      assert.equal(await table.isVisible(), true);
       assert.ok(await originalPty?.evaluate(el=>el.isConnected));
       await page.evaluate(()=>{(window as any).done3=true; document.dispatchEvent(new Event("visibilitychange"));});
       await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));

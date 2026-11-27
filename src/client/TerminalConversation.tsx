@@ -604,7 +604,18 @@ export function TerminalConversation({
     }
     if (!frozen || nativeTurn) wasWorking.current = working;
   }, [nativeWhileWorking, nativeTurn, unfinished, endKey, info.agentState, info.exited, frozen]);
-  const visible = automaticView && !nativeTurn;
+  const visible = automaticView;
+  // Keep completed turns in the same DOM (including selections and tables).
+  // Keep saved questions and tool records; active assistant prose belongs to
+  // the PTY tail until it has a verified final answer.
+  const displayTurns = useMemo(() => {
+    const last = turns.at(-1);
+    if (!nativeTurn || !last || last.complete) return turns;
+    const saved = last.items.filter(item => item.kind !== "assistant");
+    return saved.length
+      ? [...turns.slice(0, -1), {...last, items: saved}]
+      : turns.slice(0, -1);
+  }, [turns, nativeTurn]);
   const pendingHistory = !detail && !error;
   // Echoed keystrokes belong to the native tail. They must not rerender every
   // saved Markdown/tool block or schedule a second full native capture.
@@ -616,7 +627,7 @@ export function TerminalConversation({
       if (frame !== cachedFrame) {
         cachedFrame = frame;
         cachedLayout = liveTranscriptLayout(
-          turns,
+          displayTurns,
           frameWithoutModPanels(term, frame, modSurface?.native),
           blocks,
           {
@@ -629,7 +640,7 @@ export function TerminalConversation({
       }
       return cachedLayout;
     };
-  }, [turns, blocks, waiting, pendingHistory, term, modSurface, provider]);
+  }, [displayTurns, blocks, waiting, pendingHistory, term, modSurface, provider]);
   const publishedLayout = useRef<LiveTranscriptLayout | undefined>(undefined);
   const [nativeBusy, setNativeBusy] = useState(false);
   const publishedBuffer = useRef<NativeFlowFrame["bufferType"] | undefined>(
@@ -637,9 +648,12 @@ export function TerminalConversation({
   );
   const [nativeMenu, setNativeMenu] = useState(false);
   const menuVisible = useRef(false);
+  const requestedMenu = useRef(false);
   useEffect(() => {
     if (!active || mode === "terminal" || info.exited) return;
     const subscription = term.onData((data) => {
+      if (data === "/") requestedMenu.current = true;
+      if (data === "\x1b" || data === "\r" || data === "\x03") requestedMenu.current = false;
       if (/^\x1b(?:\[|O)[AB]$/.test(data))
         navigatingHistory.current = !menuVisible.current;
       else if (
@@ -680,7 +694,7 @@ export function TerminalConversation({
         return { start: frame.end, defer: "repaint" as const };
       const next = layoutForFrame(frame);
       const menu =
-        !next.promptHistory &&
+        !next.promptHistory && (!nativeTurn || requestedMenu.current || menuVisible.current) &&
         nativeMenuVisible(frame.lines, frame.end, frame, menuVisible.current);
       if (menu !== menuVisible.current) {
         menuVisible.current = menu;
@@ -723,6 +737,7 @@ export function TerminalConversation({
       nativeBusy,
       turns,
       revealInsetDialog,
+      nativeTurn,
       provider,
     ],
   );
@@ -826,7 +841,9 @@ export function TerminalConversation({
     { turns: typeof turns; count: number; live: boolean } | undefined
   >(undefined);
   if (!layout.promptHistory || !lastBody.current)
-    lastBody.current = { turns, count: layout.historyCount, live: layout.live };
+    lastBody.current = nativeTurn
+      ? {turns: displayTurns, count: displayTurns.length, live: true}
+      : { turns, count: layout.historyCount, live: layout.live };
   const shown = lastBody.current;
   // Compare against what is actually on screen (including a frozen history
   // view), not every message in the most recently fetched page.
@@ -904,16 +921,13 @@ export function TerminalConversation({
   }, [following, visible, term]);
   const mount = term.element?.parentElement;
   if (!mount) return null;
-  // Unmount the projection rather than continuing to paint a hidden document.
-  // The same xterm and input connection stay mounted in TerminalPane.
-  if (nativeTurn && nativeWhileWorking && !info.exited)
-    return createPortal(<section className="terminal-conversation" hidden data-native-work="true" />, mount);
   return createPortal(
     <section
       className="terminal-conversation"
       role="region"
       aria-label="터미널 출력"
       data-terminal-rich="true"
+      data-native-work={nativeTurn || undefined}
       data-native-start={layout.nativeStart}
       data-native-live={layout.live ? layout.chromeStart : undefined}
       data-following={following}

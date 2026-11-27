@@ -35,9 +35,11 @@ const timeline=[{id:'question',kind:'user',text:'Update the sample',turnId:'turn
 {id:'command',kind:'command',text:window.pendingTool?'Bash':'python3 sample.py',detail:window.pendingTool?'command: python fixture.py':'SAVED COMMAND OUTPUT',toolUseId:'fixture-tool',turnId:'turn',status:window.pendingTool?'started':'completed'}];
 if(window.reportText)timeline.push({id:'progress',kind:'assistant',text:window.reportText,turnId:'turn',...('${provider}'==='codex'?{phase:'commentary'}:{})});
 if(window.finalRow)timeline.push(window.finalRow);
+if(window.nextWork)timeline.push({id:'next-q',kind:'user',text:'Run another check',turnId:'next'});
 if(preview)timeline.push({id:'provisional',kind:'assistant',text:'Last known handoff report',turnId:'turn',phase:'commentary'});
 return new Response(JSON.stringify({thread:{id:'session',hostId:'fixture',cwd:'/fixture'},items:timeline,timeline,nextCursor:null}),{headers:{'Content-Type':'application/json',...(preview?{'X-Harbor-History-Snapshot':'1'}:{})}})};
 function Fixture(){const[term,setTerm]=useState(null),[info,setInfo]=useState({id:'terminal',hostId:'fixture',cwd:'/fixture',title:'Synthetic repaint',agentKind:'${provider}',agentSessionId:'session',agentState:'working'});
+const [lock,setLock]=useState(false);window.setLock=setLock;
 const [blocks,setBlocks]=useState([]);window.setBlocks=setBlocks;
 window.setWaiting=(waiting=true)=>setInfo(v=>({...v,agentState:waiting?'waiting':'working'}));
 window.refreshHistory=()=>document.dispatchEvent(new Event('visibilitychange'));
@@ -46,7 +48,7 @@ window.write=data=>new Promise(done=>t.write(data,done));
 window.partial=()=>window.write('\\x1b[2J\\x1b[H${prompt} Update the sample\\r\\n\\x1b[41m184 - OLD RAW DIFF\\x1b[0m\\r\\n\\x1b[42m184 + NEW RAW DIFF\\x1b[0m');
 window.footer=()=>window.write('\\x1b[13;1H'+('${provider}'==='claude'?'─'.repeat(90)+'\\r\\n❯ UNSENT DRAFT\\r\\n'+'─'.repeat(90):'• Working\\r\\n› UNSENT DRAFT')+'\\r\\n  ? for shortcuts\\x1b[14;15H');
 (async()=>{await window.partial();await window.footer();setTerm(t)})();return()=>t.dispose()},[]);
-return <><div style={{position:'relative',height:650,width:1000}}><div id="native"/></div>{term&&<TerminalConversation term={term} info={info} blocks={blocks}/>}</>}
+return <><div style={{position:'relative',height:650,width:1000}}><div id="native"/></div>{term&&<TerminalConversation term={term} info={info} nativeWhileWorking={lock} blocks={blocks}/>}</>}
 createRoot(document.getElementById('root')).render(<Fixture/>);`,
           resolveDir: process.cwd(),
           sourcefile: "repaint-fixture.tsx",
@@ -862,6 +864,21 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
             2,
             "identical prose from separate messages remains distinct",
           );
+          const previousAnswer = await surface.locator('[data-history-message="fixture-answer"] table').elementHandle();
+          await page.evaluate(async () => {
+            const w = window as any;
+            w.setBlocks([]); // A reconnect may have only saved history for an older reservation.
+            w.nextWork = true;
+            w.setLock(true);
+            w.setWaiting(false);
+            w.refreshHistory();
+            await w.write("\x1b[2J\x1b[H~HBR:0123456789abcdef0123:21~\r\n~HBR:0123456789abcdef0123:22~\r\n❯ Run another check\r\n● Checking the new sample");
+            await w.footer();
+          });
+          await surface.getByText("Run another check", {exact:true}).first().waitFor();
+          await surface.getByText("● Checking the new sample",{exact:true}).waitFor();
+          assert.equal(await previousAnswer?.evaluate(node=>node.isConnected && node.getBoundingClientRect().height>0),true);
+          assert.doesNotMatch(await surface.innerText(), /~HBR:/);
         }
         assert.deepEqual(errors, []);
       } finally {
