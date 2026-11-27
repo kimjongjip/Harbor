@@ -710,7 +710,30 @@ export function TerminalNativeFlow({
   const inputStart = view.historyBase ? view.split : view.outputBase ? composerStart(view) : boundary;
   const footer = agyComposer && view.agyPromptRow !== undefined && !view.promptHistory
     ? agyStatusFooter(view.frame.lines, view.frame.end) : undefined;
-  const input = renderParts(view, partsFor(view, inputStart, footer?.start ?? view.frame.end), true, view.agyPromptRow);
+  // Claude may add or remove a shortcuts/status line below the input rule
+  // even with no keystrokes. Give that footer its own space: a bottom-
+  // following reader otherwise scrolls the entire document by one row.
+  let claudeFooterStart: number | undefined;
+  if (!agyComposer && !codexComposer && !view.promptHistory && inputStart < view.frame.end) {
+    const lines = view.frame.lines;
+    const prompt = nativeSeparator(lines[inputStart]) ? inputStart + 1 : inputStart;
+    if (/^\s*[❯›»>]\s*/u.test(lines[prompt] || "")) {
+      for (let row = prompt + 1; row < view.frame.end; row++) {
+        if (nativeSeparator(lines[row])) { claudeFooterStart = row + 1; break; }
+      }
+    }
+  }
+  const inputEnd = claudeFooterStart ?? footer?.start ?? view.frame.end;
+  const input = renderParts(view, partsFor(view, inputStart, inputEnd), true, view.agyPromptRow);
+  let footerFirst = claudeFooterStart ?? view.frame.end;
+  let footerEnd = view.frame.end;
+  while (footerFirst < footerEnd && !view.frame.lines[footerFirst].trim()) footerFirst++;
+  while (footerEnd > footerFirst && !view.frame.lines[footerEnd - 1].trim()) footerEnd--;
+  const claudeFooter = claudeFooterStart === undefined ? null : (
+    <div className="terminal-claude-footer" style={{minHeight: 2 * view.lineHeight}}>
+      {renderParts(view, partsFor(view, footerFirst, footerEnd), true, footerFirst)}
+    </div>
+  );
   return (
     <>
       {work && workTarget
@@ -759,6 +782,7 @@ export function TerminalNativeFlow({
           }
         >
           {input}
+          {claudeFooter}
           {footer && <div className="terminal-agy-footer">
             <span>{footer.hint}</span>
             <span className="terminal-agy-settings"><b>{footer.mode}</b> · {footer.model} · {footer.effort}{mirroredCrew === "agy-tasks" ? "" : footer.extra ? " " + footer.extra : ""}</span>

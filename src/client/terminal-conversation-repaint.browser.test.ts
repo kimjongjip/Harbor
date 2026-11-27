@@ -880,6 +880,30 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
           assert.equal(await previousAnswer?.evaluate(node=>node.isConnected && node.getBoundingClientRect().height>0),true);
           assert.doesNotMatch(await surface.innerText(), /~HBR:/);
         }
+        if (provider === "claude") {
+          const sample = async (hint: boolean) => {
+            await page.evaluate(async(hint)=>{
+              const w=window as any;
+              const rule="────────────────────────────────────────────";
+              await w.write("\x1b[2J\x1b[H"+rule+"\r\n❯ \r\n"+rule+"\r\n  ⏵⏵ auto mode on"+(hint?"\r\n  ? for shortcuts":"")+"\x1b[2;3H");
+            },hint);
+            await page.waitForTimeout(180);
+            return surface.evaluate(root=>{
+              const body=root.querySelector(".terminal-conversation-body")!;
+              const prompt=root.querySelector(".terminal-flow-composer")!;
+              return {height:body.scrollHeight, top:prompt.getBoundingClientRect().top};
+            });
+          };
+          await surface.evaluate(el=>{(el as HTMLElement).style.height="120px";});
+          await sample(false);
+          await page.waitForTimeout(900);
+          const before = await sample(false);
+          const during = await sample(true);
+          const after = await sample(false);
+          console.log("Claude idle footer geometry",before,during,after);
+          assert.deepEqual(during,before,"a temporary second footer line must not lift the idle prompt");
+          assert.deepEqual(after,before);
+        }
         assert.deepEqual(errors, []);
       } finally {
         await desktop?.close();
