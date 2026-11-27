@@ -41,6 +41,7 @@ export interface NativeFlowRange {
   start: number;
   promptHistory?: boolean;
   split?: number;
+  streamingOutput?: boolean;
   /** Native widgets and their composer remain visible in xterm outside the reader. */
   end?: number;
   panels?: readonly NativePanelRectangle[];
@@ -405,12 +406,25 @@ export function TerminalNativeFlow({
       const outputEnd=composerStart(next);
       for(let i=Math.max(start,outputEnd-100);i<outputEnd;i++)next.outputSize+=frame.lines[i].trim().length;
       const committed=old?.outputBase ?? old;
+      // An active Antigravity turn can leave an empty body for multiple
+      // animation ticks. A timeout cannot distinguish this from completion.
+      // Keep a single committed body across erasures; release it when history
+      // advances, the CLI exits the composer, or replacement text arrives.
+      const streamingErase = range.streamingOutput && next.outputSize === 0;
       if(committed && !next.promptHistory && !committed.promptHistory &&
           committed.historyIdentity===next.historyIdentity && committed.frame.bufferType===frame.bufferType &&
-          outputEnd<next.frame.end && committed.outputSize>8 && next.outputSize<committed.outputSize*0.7) {
-        partialOutputSince ??= now;
-        const left=350-(now-partialOutputSince);
-        if(left>0){next.outputBase=committed;timer=setTimeout(capture,left);}
+          outputEnd<next.frame.end && committed.outputSize>0 && next.outputSize<committed.outputSize*0.7) {
+        if (streamingErase) {
+          next.outputBase = committed;
+          partialOutputSince = undefined;
+        } else {
+          partialOutputSince ??= now;
+          const remaining = 350 - (now - partialOutputSince);
+          if (remaining > 0) {
+            next.outputBase = committed;
+            timer = setTimeout(capture, remaining);
+          }
+        }
       } else partialOutputSince=undefined;
       previous.current = next;
       setView(next);

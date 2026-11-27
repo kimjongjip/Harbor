@@ -25,7 +25,7 @@ Object.defineProperty(document,"visibilityState",{get:()=>"visible"});
 const info={id:"fixture",hostId:"test",cwd:"/fixture",title:"Orion",agentKind:"antigravity",agentSessionId:"agy-native",nativeAgySessionId:"agy-native",exited:false};
 const table="| Method | Score |\\n|---|---|\\n| Native model | 42 |";
 window.nativeWrites=[];window.fetch=async(url)=>{if(!String(url).includes("/history/agy-native?")||!String(url).includes("provider=antigravity"))throw Error("wrong history binding");
-return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"},...(window.work?[{id:"q2",kind:"user",text:"run the fixture"}]:[])],nextCursor:null}));};
+return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"},...(window.work?[{id:"q2",kind:"user",text:"run the fixture"},...(window.finished?[{id:"a2",kind:"assistant",text:"Finished fixture",phase:"final_answer",turnStatus:"completed"}]:[])]:[])],nextCursor:null}));};
 function Fixture(){const [term,setTerm]=useState(null);useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));window.repaint=(s)=>new Promise(done=>t.write(s,done));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>{window.nativeWrites.push(data);t.write(data);});return()=>t.dispose();},[]);
 return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<TerminalConversation term={term} info={info} active/>}</>;}
 createRoot(document.getElementById("root")).render(<Fixture/>);`,
@@ -127,10 +127,19 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       await paintWork("","two");
       await composer.getByText(/two/).waitFor();
       assert.equal(await live.count(),1,"an intact editor must not publish an erased work area");
+      for (let cycle = 0; cycle < 3; cycle++) {
+        await paintWork("", "two");
+        await page.waitForTimeout(650);
+        assert.equal(await live.isVisible(), true, "slow repeated clears must retain the running output");
+        await paintWork(workText, "two");
+        await live.waitFor();
+      }
       await paintWork(workText+" step 2","two");
       await page.locator(".terminal-native-flow").getByText(workText+" step 2",{exact:true}).waitFor();
       await paintWork("","two");
-      await page.locator(".terminal-native-flow").getByText(workText+" step 2",{exact:true}).waitFor({state:"detached",timeout:2000});
+      await page.evaluate(()=>{(window as any).finished=true;document.dispatchEvent(new Event("visibilitychange"));});
+      await page.getByText("Finished fixture", {exact:true}).waitFor();
+      await page.locator(".terminal-native-flow").getByText(workText+" step 2",{exact:true}).waitFor({state:"detached"});
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

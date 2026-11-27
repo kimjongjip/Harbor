@@ -646,6 +646,8 @@ export function TerminalConversation({
       if (menu) return { start: frame.end, defer: "repaint" as const };
       return {
         start: next.nativeStart,
+        streamingOutput: provider === "antigravity" && next.live &&
+          (!!turns.length && !turns.at(-1)?.complete || info.agentState === "working"),
         promptHistory: next.promptHistory,
         split: next.live ? next.chromeStart : next.nativeStart,
         end: modSurface?.native.end,
@@ -678,6 +680,7 @@ export function TerminalConversation({
       nativeBusy,
       turns,
       revealInsetDialog,
+      provider,
     ],
   );
   // A running CLI shows "esc to interrupt" in its live area even when no

@@ -64,6 +64,8 @@ test("an already open Claude effort slider and a hidden-cursor command composer 
     nativeMenuVisible(suggestion, suggestion.length, frame, false),
     true,
   );
+  const repaint = ["> /some/printed/path", rule, "> ", rule, "auto · Gemini 4 Carbon"];
+  assert.equal(nativeMenuVisible(repaint, repaint.length, frame, false), false);
   const returned = [
     "❯ /model",
     "  Kept model",

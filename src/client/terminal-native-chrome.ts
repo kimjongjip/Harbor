@@ -132,7 +132,6 @@ export function nativeMenuVisible(
   previous: boolean,
 ) {
   const cursor = lines[frame.cursorRow] || "";
-  if (/^\s*[❯›»>]\s*\//.test(cursor)) return true;
   const viewport = lines.slice(frame.baseY, end);
   const tail = viewport.filter((line) => line.trim()).slice(-4);
   // Claude positions the cursor independently of the composer on some
@@ -148,6 +147,9 @@ export function nativeMenuVisible(
       return /^\s*[❯›»>]\s*\//.test(input);
     break;
   }
+  // A redraw can leave the cursor over an echoed path in the transcript.
+  // A framed composer above has the authoritative slash-command state.
+  if (/^\s*[❯›»>]\s*\//.test(cursor)) return true;
   const belowCursor = lines
     .slice(frame.cursorRow + 1, end)
     .filter((line) => line.trim());
