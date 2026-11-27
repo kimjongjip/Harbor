@@ -1,4 +1,4 @@
-import { agyId, agyStep } from "./native-agy-transcript.js";
+import { agyId, agyTimelineStep } from "./native-agy-transcript.js";
 import type { HistoryDetail } from "../shared/history.js";
 import { createReadStream, createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -312,22 +312,24 @@ export class Files {
         ? start + offset
         : start;
     const items: HistoryDetail["items"] = [];
-    let count = 0;
+    let count = 0, speakers = 0;
     for (let right = bytes.length; right > offset;) {
       if (bytes[right - 1] === 10) right--;
       if (right <= offset) break;
       const left = Math.max(offset, bytes.lastIndexOf(10, right - 1) + 1);
-      const item = agyStep(bytes.toString("utf8", left, right));
-      if (item) {
+      const step = agyTimelineStep(bytes.toString("utf8", left, right));
+      if (step.length) {
+        const length = step.reduce((sum,item)=>sum+item.text.length+(item.detail?.length ?? 0),0);
         if (
           items.length &&
-          (items.length >= 60 || count + item.text.length > 256000)
+          (speakers >= 60 || items.length >= 600 || count + length > 256000)
         ) {
           older = start + right;
           break;
         }
-        items.push(item);
-        count += item.text.length;
+        speakers += step.filter(item => item.kind === "user" || item.kind === "assistant").length;
+        items.push(...step.reverse());
+        count += length;
       }
       right = left;
     }
@@ -344,7 +346,8 @@ export class Files {
         source: "cli",
         active: true,
       },
-      items,
+      items: items.filter(item => item.kind === "assistant" || item.kind === "user"),
+      timeline: items,
       nextCursor: older > 0 ? String(older) : null,
     };
     this.agyPages.set(key, { stamp, at: Date.now(), page });

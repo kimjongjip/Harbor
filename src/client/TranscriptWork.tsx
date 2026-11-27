@@ -222,7 +222,7 @@ export const WorkStep = memo(function WorkStep({
   let name: string, target: string, body: ReactNode = null, summary = "";
   const failed = source?.status === "failed" || call?.status === "failed";
   // A Claude call without its result yet, or a Codex item still in progress.
-  const running = (!result && !item) || item?.status === "inProgress";
+  const running = (!result && !item) || item?.status === "inProgress" || result?.status === "running";
   if (item && !call && !result) {
     plain = true;
     if (item.kind === "command") {
@@ -280,7 +280,9 @@ export const WorkStep = memo(function WorkStep({
       body = result ? <OutputBlock text={detail || ""} preview={0} /> : null;
     } else {
       const count = countLines(detail);
-      summary = !result
+      summary = result?.id.startsWith("agy-step-") && detail
+        ? detail.split("\n", 1)[0]
+        : !result
         ? "실행 중…"
         : count
           ? `출력 ${count}줄`

@@ -5,10 +5,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Files } from "./files.js";
 import type { HostConfig } from "../shared/types.js";
-import { agyStep } from "./native-agy-transcript.js";
+import { agyStep, agyTimelineStep } from "./native-agy-transcript.js";
 import { conversationTurns } from "../client/conversation-turns.js";
 import { liveTranscriptLayout } from "../client/terminal-transcript-boundary.js";
 
+test("tool-only steps retain file paths and command failures without copying reasoning", () => {
+  const step = (step_index:number,type:string,fields:object) => agyTimelineStep(JSON.stringify({step_index,type,source:"MODEL",status:"DONE",...fields}));
+  const calls = step(50,"PLANNER_RESPONSE",{thinking:"private reasoning",tool_calls:[
+    {name:"read_file",args:{Path:"example.py"}},{name:"run_command",args:{CommandLine:"python test.py"}}]});
+  assert.equal(calls.length,3);
+  assert.doesNotMatch(JSON.stringify(calls),/private reasoning/);
+  assert.match(calls[1].text,/example.py/);
+  const failed = step(52,"GENERIC",{content:"Command exited with code 1."})[0];
+  assert.equal(failed.toolUseId,calls[2].toolUseId);
+  assert.equal(failed.status,"failed");
+});
 test("bound agy transcript paginates by bytes and projects only actual speaker text above the native input", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "harbor-agy-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

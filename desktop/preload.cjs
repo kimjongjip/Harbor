@@ -110,7 +110,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     platform: process.platform,
     ...(activation ? { awaitWorkspaceActivation: () => activation } : {}),
-    version: "2.0.37",
+    version: "2.0.38",
     updateState: () => ipcRenderer.invoke("harbor:update-state"),
     checkUpdate: () =>
       navigator.userActivation.isActive

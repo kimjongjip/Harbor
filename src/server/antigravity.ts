@@ -194,10 +194,14 @@ export class AntigravityHistory {
     pass: string | undefined,
     id: string,
     cursor?: string,
-    _options?: unknown,
+    options?: {includeActivity?: boolean},
   ): Promise<HistoryDetail> {
-    const native=await this.boundNativeRead?.(host,id,cursor);
-    if(native)return native;
+    const native = await this.boundNativeRead?.(host, id, cursor);
+    if (native) {
+      if (options?.includeActivity) return native;
+      const {timeline, ...conversation} = native;
+      return conversation;
+    }
     const dir = this.folder(host, id),
       thread = await this.summary(host, pass, id);
     const names = (

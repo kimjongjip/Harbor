@@ -172,8 +172,11 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       });
       assert.equal(flashes,0,"no intermediate repaint or idle/wait notification may re-enable the reader");
       assert.ok(await previousTable?.evaluate(node=>node.isConnected));
-      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:29~\r\n> third turn\r\nWorking on the third turn\r\n────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
-      assert.equal(await page.locator(".terminal-native-flow").getByText("Working on the third turn",{exact:true}).count(),0);
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H~HBR:9e6782ee44794b9596ef:29~\r\n> third turn\r\n● Explored 5 files (sample.py)\r\n● Ran 2 commands (2 failed)\r\nWorking on the third turn\r\n────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
+      await page.getByText("● Ran 2 commands (2 failed)",{exact:true}).waitFor();
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H"));
+      await page.waitForTimeout(500);
+      assert.equal(await page.locator(".agy-work-summary-row").filter({hasText:"Explored 5 files"}).count(),1);
       assert.equal(await table.isVisible(), true);
       assert.ok(await originalPty?.evaluate(el=>el.isConnected));
       await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nesc to cancel                            auto · Gemini 4 Carbon ·\r\nhigh"));

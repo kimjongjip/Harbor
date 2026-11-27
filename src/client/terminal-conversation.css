@@ -8,6 +8,7 @@
   color: var(--text);
   background: var(--bg);
 }
+.agy-work-summary-row { padding: 3px 10px; overflow-wrap: anywhere; font-family: monospace; }
 .terminal-agy-footer {
   display: flex;
   justify-content: space-between;

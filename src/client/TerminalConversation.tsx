@@ -1,5 +1,6 @@
 import { providerName as agentLabel } from "../shared/agent-provider";
 import {
+  Fragment,
   memo,
   startTransition,
   useCallback,
@@ -24,6 +25,7 @@ import {
   liveTranscriptLayout,
   type LiveTranscriptLayout,
 } from "./terminal-transcript-boundary";
+import { agyWorkSummary } from "./agy-work-summary";
 import { TerminalCompletionCue } from "./terminal-completion-cue";
 import { isLegacyClaudeHistoryLimit } from "./history-errors";
 import {
@@ -770,8 +772,22 @@ export function TerminalConversation({
     () => () => completionCue.timers.forEach(clearTimeout),
     [completionCue, active, mode],
   );
+  const [nativeWorkSummary, setNativeWorkSummary] = useState<ReadonlyMap<string,string[]>>(() => new Map());
+  const currentQuestion = lastTurn?.items.find(item => item.kind === "user");
+  const needsNativeSummary = provider === "antigravity" && !lastTurn?.items.some(item => item.kind === "tool" || item.kind === "command");
   const observeNativeCompletion = useCallback(
     (frame: NativeFlowFrame) => {
+      if (needsNativeSummary && currentQuestion) {
+        const editor = agyComposerStart(frame.lines,frame.end,frame);
+        const rows = editor === undefined ? undefined : agyWorkSummary(frame.lines,editor,currentQuestion.text);
+        if (rows) setNativeWorkSummary(old => {
+          const previous = old.get(currentQuestion.id);
+          if (previous && (rows.length < previous.length || rows.length === previous.length && rows.every((row,i) => row === previous[i]))) return old;
+          const next = new Map(old).set(currentQuestion.id, rows);
+          if (next.size > 32) next.delete(next.keys().next().value!);
+          return next;
+        });
+      }
       // Some existing sessions have no peer event transport. A new native
       // footer merely asks for a read; saved turn status still decides folding.
       if (
@@ -787,7 +803,7 @@ export function TerminalConversation({
           setTimeout(() => void load.current(false, true), delay),
         );
       }
-    }, [completionCue, provider, term, modSurface],
+    }, [completionCue, provider, term, modSurface, needsNativeSummary, currentQuestion],
   );
   const updateNativeFrame = useCallback(
     (frame: NativeFlowFrame) => {
@@ -1033,6 +1049,9 @@ export function TerminalConversation({
               completed: turn.complete,
               selectionActive: selected,
             };
+            const question = turn.items.find(item => item.kind === "user");
+            const nativeRows = question && !turn.items.some(item => item.kind === "tool" || item.kind === "command")
+              ? nativeWorkSummary.get(question.id) : undefined;
             const live = running && turnIndex === shown.turns.length - 1;
             const state = turn.complete ? "done" : live ? "live" : "saved";
             return (
@@ -1053,7 +1072,7 @@ export function TerminalConversation({
                       items={section.items}
                       state={state}
                       busy={live && agentBusy}
-                      open={workOpen[workKey] ?? live}
+                      open={workOpen[workKey] ?? (live || (provider === "antigravity" && turnIndex === shown.turns.length-1))}
                       onToggle={(open) =>
                         setWorkOpen((value) => ({
                           ...value,
@@ -1063,11 +1082,13 @@ export function TerminalConversation({
                       props={props}
                     />
                   ) : (
-                    <TranscriptItems
-                      key={section.key}
-                      items={section.items}
-                      {...props}
-                    />
+                    <Fragment key={section.key}>
+                      <TranscriptItems items={section.items} {...props} />
+                      {nativeRows && question && section.items.includes(question) &&
+                        <details open className="conversation-work"><summary>작업 기록 · {nativeRows.length}개</summary>
+                          {nativeRows.map((row,i)=><div key={i} className="agy-work-summary-row">{row}</div>)}
+                        </details>}
+                    </Fragment>
                   );
                 })}
               </section>
