@@ -15,7 +15,10 @@ import {
   type TerminalUsageResponse,
 } from "../shared/terminal-usage";
 
+import { nativeCrewFooter, type NativeCrewFooter } from "./native-crew-footer";
+
 interface Props {
+  onRosterShown?(key: string | undefined): void;
   terminal?:Terminal|null;
   terminalId: string;
   hostId?: string;
@@ -30,6 +33,7 @@ interface Props {
 /** Own state only: a usage tick never invalidates TerminalPane or its transcript. */
 export const TerminalUsageBar = memo(function TerminalUsageBar({
   terminalId,
+  onRosterShown,
   terminal,
   hostId,
   provider,
@@ -59,16 +63,32 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
     unavailable?: boolean;
   }>();
   const current = snapshot?.scope === scope ? snapshot : undefined;
+  const [roster, setRoster] = useState<{scope: string; value: NativeCrewFooter}>();
+  const nativeCrew = active && !collapsed && roster?.scope === scope ? roster.value : undefined;
+  useEffect(() => {
+    onRosterShown?.(nativeCrew?.key);
+    return () => onRosterShown?.(undefined);
+  }, [onRosterShown, nativeCrew?.key]);
   const [footer,setFooter]=useState<{scope:string;model:string;effort?:string}>();
   useEffect(()=>{
-    if(!terminal || !active || collapsed || (provider!=="antigravity" && provider!=="codex"))return;
+    if(!terminal || !active || collapsed)return;
     let timer:ReturnType<typeof setTimeout>|undefined;
+    let lastRosterAt = 0;
     const read=()=>{
       timer=undefined;
       const b=terminal.buffer.active,lines:string[]=[];
-      for(let row=Math.max(b.baseY,b.baseY+terminal.rows-12);row<Math.min(b.length,b.baseY+terminal.rows);row++)
+      for(let row=Math.max(b.baseY,b.baseY+terminal.rows-64);row<Math.min(b.length,b.baseY+terminal.rows);row++)
         lines.push(b.getLine(row)?.translateToString(true) || "");
-      const value=terminalModelFooter(provider,lines);
+      const crew = nativeCrewFooter(provider, lines);
+      if (crew) {
+        lastRosterAt = performance.now();
+        setRoster(old => old?.scope === scope && JSON.stringify(old.value) === JSON.stringify(crew) ? old : {scope, value:crew});
+      } else if (lastRosterAt && performance.now() - lastRosterAt < 800) {
+        timer = setTimeout(read, 800 - (performance.now() - lastRosterAt));
+      } else {
+        setRoster(undefined);
+      }
+      const value=terminalModelFooter(provider,lines.slice(-12));
       if(value)setFooter(old=>old?.scope===scope && old.model===value.model && old.effort===value.effort ? old : {scope,...value});
     };
     const schedule=()=>{if(!timer)timer=setTimeout(read,300);};
@@ -396,6 +416,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             state={waiting ? "waiting" : working ? "working" : "idle"}
             active={active}
             crew={usage?.crew}
+            nativeCrew={nativeCrew}
             unavailable={current?.unavailable}
           />
           <TerminalWorkList

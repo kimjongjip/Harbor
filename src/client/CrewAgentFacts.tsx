@@ -28,11 +28,15 @@ const tools: Record<string, string> = {
 export const CrewAgentFacts = memo(function CrewAgentFacts({
   agent,
   showTask = true,
+  sampledAt,
 }: {
   agent: TerminalAgent;
   showTask?: boolean;
+  sampledAt?: number;
 }) {
   const tokens = agent.tokens;
+  const seconds = agent.workedMs === undefined ? undefined : Math.floor((agent.workedMs +
+    (sampledAt && agent.workingSince !== undefined ? Math.max(0, sampledAt - agent.workingSince) : 0)) / 1000);
   const detail = tokens
     ? [
         tokens.scope === "observed"
@@ -60,6 +64,7 @@ export const CrewAgentFacts = memo(function CrewAgentFacts({
           {agent.task || "작업 설명 수신 대기"}
         </p>
       )}
+      {seconds !== undefined && <span className="crew-agent-time" title="관측된 작업 구간의 합계">작업 {Math.floor(seconds/60)}분 {seconds%60}초</span>}
       {agent.activity && agent.state === "working" && (
         <span className="crew-agent-activity" title={agent.activity}>
           {tools[agent.activity] || agent.activity}

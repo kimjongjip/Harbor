@@ -13,6 +13,8 @@ export interface TerminalAgent {
   model?: string;
   task?: string;
   activity?: string;
+  workedMs?: number;
+  workingSince?: number;
   tokens?: {
     total: number;
     input?: number;
@@ -101,6 +103,8 @@ export function terminalAgents(value: unknown): TerminalAgent[] | undefined {
       ...(task ? { task } : {}),
       ...(activity ? { activity } : {}),
       ...(tokens ? { tokens } : {}),
+      ...(count(row.workedMs) ? {workedMs: row.workedMs} : {}),
+      ...(count(row.workingSince) ? {workingSince: row.workingSince} : {}),
     });
   }
   return [...agents.values()]

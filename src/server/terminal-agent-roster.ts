@@ -9,6 +9,7 @@ export class TerminalAgentRoster {
   private agents = new Map<string, TerminalAgent>();
   private updatedAt = 0;
   private changed = false;
+  private eventAt = 0;
   private activityItems = new Map<string, string>();
 
   private put(
@@ -30,7 +31,15 @@ export class TerminalAgentRoster {
         model: model || previous?.model,
       },
     ])?.[0];
-    if (!next || JSON.stringify(next) === JSON.stringify(previous)) return;
+    if (!next) return;
+    if (next.state === "working" && previous?.state !== "working") {
+      next.workingSince = this.eventAt;
+      next.workedMs ??= 0;
+    } else if (next.state !== "working" && previous?.workingSince !== undefined) {
+      next.workedMs = (previous.workedMs ?? 0) + Math.max(0, this.eventAt - previous.workingSince);
+      delete next.workingSince;
+    }
+    if (JSON.stringify(next) === JSON.stringify(previous)) return;
     this.agents.delete(id);
     // Keep active agents first and bound retained display metadata.
     this.agents = new Map(
@@ -51,6 +60,7 @@ export class TerminalAgentRoster {
   /** Only explicitly observed children of this parent may contribute telemetry. */
   observeChild(id: string, method: string, params: any): boolean {
     this.changed = false;
+    this.eventAt = Date.now();
     if (!this.has(id)) return false;
     if (method === "thread/tokenUsage/updated") {
       const u = params.tokenUsage?.total;
@@ -100,6 +110,7 @@ export class TerminalAgentRoster {
 
   observe(item: any, stamp = Date.now()): boolean {
     this.changed = false;
+    this.eventAt = stamp;
     if (!item || typeof item !== "object") return false;
     if (
       item.type === "subAgentActivity" ||

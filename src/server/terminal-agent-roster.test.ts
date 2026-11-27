@@ -31,6 +31,8 @@ test("Codex native events track real children without treating a completed spawn
       id: "child",
       name: "에이전트",
       state: "working",
+      workingSince: 1,
+      workedMs: 0,
       task: "Review keyboard input",
     },
   ]);
@@ -59,6 +61,7 @@ test("Codex native events track real children without treating a completed spawn
       id: "child",
       name: "reviewer",
       state: "completed",
+      workedMs: 2,
       model: "synthetic-model",
       task: "Review keyboard input",
     },
@@ -259,6 +262,7 @@ test("existing incremental Codex history scan extracts bounded task labels witho
       id: "child",
       name: "Reviewer",
       state: "completed",
+      workedMs: 0,
       task: "Review keyboard input",
     },
   ]);

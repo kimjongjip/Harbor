@@ -19,15 +19,15 @@ test(
       stdin: {
         contents: `
 import React,{useState,useEffect} from "react";import{createRoot}from"react-dom/client";
-import{Terminal}from"@xterm/xterm";import{TerminalConversation}from"./src/client/TerminalConversation";
+import{TerminalUsageBar}from"./src/client/TerminalUsageBar";import{Terminal}from"@xterm/xterm";import{TerminalConversation}from"./src/client/TerminalConversation";
 import"./src/client/styles.css";import"./src/client/terminal-conversation.css";
 Object.defineProperty(document,"visibilityState",{get:()=>"visible"});
 const info={id:"fixture",hostId:"test",cwd:"/fixture",title:"Orion",agentKind:"antigravity",agentSessionId:"agy-native",nativeAgySessionId:"agy-native",exited:false};
 const table="| Method | Score |\\n|---|---|\\n| Native model | 42 |";
 window.nativeWrites=[];window.fetch=async(url)=>{if(!String(url).includes("/history/agy-native?")||!String(url).includes("provider=antigravity"))throw Error("wrong history binding");
 return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"},...(window.work?[{id:"q2",kind:"user",text:"run the fixture"},...(window.finished?[{id:"a2",kind:"assistant",text:"Finished fixture",phase:"final_answer",turnStatus:"completed"}]:[])]:[])],nextCursor:null}));};
-function Fixture(){const [term,setTerm]=useState(null);useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));window.repaint=(s)=>new Promise(done=>t.write(s,done));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>{window.nativeWrites.push(data);t.write(data);});return()=>t.dispose();},[]);
-return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<TerminalConversation term={term} info={info} active/>}</>;}
+function Fixture(){const [term,setTerm]=useState(null),[roster,setRoster]=useState();useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));window.repaint=(s)=>new Promise(done=>t.write(s,done));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>{window.nativeWrites.push(data);t.write(data);});return()=>t.dispose();},[]);
+return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<><TerminalUsageBar terminal={term} terminalId="fixture" provider="antigravity" active working onRosterShown={setRoster}/><TerminalConversation term={term} info={info} active mirroredCrew={roster}/></>}</>;}
 createRoot(document.getElementById("root")).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "terminal-conversation-fixture.tsx",
@@ -140,6 +140,15 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       await page.evaluate(()=>{(window as any).finished=true;document.dispatchEvent(new Event("visibilitychange"));});
       await page.getByText("Finished fixture", {exact:true}).waitFor();
       await page.locator(".terminal-native-flow").getByText(workText+" step 2",{exact:true}).waitFor({state:"detached"});
+      await page.evaluate(async()=>{
+        await (window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4 Carbon · high · 4 task(s) · /tasks");
+      });
+      await page.getByText("작업 4개 · /tasks",{exact:true}).waitFor();
+      const footer = page.locator(".terminal-conversation .terminal-flow-composer");
+      await page.waitForFunction(()=>!document.querySelector(".terminal-conversation .terminal-flow-composer")?.textContent?.includes("/tasks"));
+      assert.match(await footer.innerText(), /Gemini 4 Carbon/);
+      await page.getByRole("button",{name:"상태 패널 접기"}).click();
+      await footer.getByText(/4 task\(s\)/).waitFor();
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

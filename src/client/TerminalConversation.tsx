@@ -134,6 +134,7 @@ export function TerminalConversation({
   term,
   info,
   historySessionId,
+  mirroredCrew,
   mode = "auto",
   blocks = emptyBlocks,
   active = true,
@@ -143,6 +144,7 @@ export function TerminalConversation({
   info: TerminalInfo;
   /** A read-only recovery must not be mistaken for the terminal's input binding. */
   historySessionId?: string;
+  mirroredCrew?: string;
   onClose?(): void;
   mode?: ConversationMode;
   blocks?: RichTerminalBlock[];
@@ -1004,6 +1006,7 @@ export function TerminalConversation({
             codexComposer={provider === "codex"}
             agyComposer={provider === "antigravity"}
             historyIdentity={turns}
+            mirroredCrew={mirroredCrew}
             term={term}
             blocks={blocks}
             active={visible}

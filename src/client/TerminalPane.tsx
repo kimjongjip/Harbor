@@ -167,6 +167,7 @@ export default function TerminalPane({
   const resizeRef = useRef<(() => void) | null>(null);
   const visibilityRef = useRef({ active, focused });
   visibilityRef.current = { active, focused };
+  const [mirroredCrew, setMirroredCrew] = useState<string>();
   const [connected, setConnected] = useState(false);
   const [viewEpoch, setViewEpoch] = useState(0);
   const [connectionStatus, setConnectionStatus] = useState("터미널 연결 중…");
@@ -1911,6 +1912,7 @@ export default function TerminalPane({
           <TerminalUsageBar
             terminal={nativeTerminal}
             visible={showHarborPanel}
+            onRosterShown={setMirroredCrew}
             hostId={info.hostId}
             terminalId={info.id}
             provider={info.agentKind}
@@ -1938,6 +1940,7 @@ export default function TerminalPane({
           term={nativeTerminal}
           info={info}
           historySessionId={historySessionId}
+          mirroredCrew={showHarborPanel ? mirroredCrew : undefined}
           mode={rawOutput ? "terminal" : "auto"}
           blocks={richBlocks}
           active={active}

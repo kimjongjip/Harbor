@@ -16,6 +16,7 @@ import {
   type CrewCharacterKind,
 } from "./CrewCharacter";
 import { CrewAgentFacts, crewStatus as status } from "./CrewAgentFacts";
+import type { NativeCrewFooter } from "./native-crew-footer";
 import { CrewDemo } from "./CrewDemo";
 import type {
   TerminalAgentState,
@@ -61,12 +62,14 @@ export const TerminalCrew = memo(function TerminalCrew({
   state,
   active,
   crew,
+  nativeCrew,
   unavailable = false,
 }: {
   provider: import("../shared/agent-provider").AgentProvider;
   state: TerminalAgentState;
   active: boolean;
   crew?: TerminalCrewSnapshot;
+  nativeCrew?: NativeCrewFooter;
   unavailable?: boolean;
 }) {
   const [preferences, setPreferences] = useState(saved);
@@ -192,7 +195,7 @@ export const TerminalCrew = memo(function TerminalCrew({
             {title}
           </strong>
           {metadata && <span title={metadata}>{metadata}</span>}
-          <CrewAgentFacts agent={agent} showTask={false} />
+          <CrewAgentFacts agent={agent} showTask={false} sampledAt={crew?.source === "native" && live ? Date.now() : crew?.updatedAt} />
         </div>
         <span className="crew-state">{status[agent.state]}</span>
       </div>
@@ -208,7 +211,7 @@ export const TerminalCrew = memo(function TerminalCrew({
       <div className="crew-heading">
         <span>
           에이전트{" "}
-          <small>{agents.length ? `메인 + ${agents.length}` : "메인"}</small>
+          <small>{(nativeCrew?.agents.length || agents.length) ? `메인 + ${nativeCrew?.agents.length || agents.length}` : "메인"}</small>
         </span>
         <div className="crew-heading-actions">
           <button
@@ -295,7 +298,15 @@ export const TerminalCrew = memo(function TerminalCrew({
           <span>{caption[state]}</span>
         </div>
       </div>
-      {running.length > 0 && (
+      {nativeCrew?.taskCount !== undefined && <div className="crew-native-count">작업 {nativeCrew.taskCount}개 · /tasks</div>}
+      {!!nativeCrew?.agents.length && <div className="crew-agent-list">
+        {nativeCrew.agents.map((agent, index) => <div className="crew-native-row" key={agent.name + index}>
+          <strong title={agent.name + " · " + agent.task}>{agent.task}</strong>
+          <div className="crew-native-metrics"><span title="CLI에 표시된 작업 경과 시간">{agent.elapsed}</span>
+            <span title="Claude가 해당 작업 행에 표시한 토큰 수">↓ {agent.tokens} 토큰</span></div>
+        </div>)}
+      </div>}
+      {!nativeCrew?.agents.length && running.length > 0 && (
         <div className="crew-agent-list">{running.map(row)}</div>
       )}
       {finished.length > 0 && (

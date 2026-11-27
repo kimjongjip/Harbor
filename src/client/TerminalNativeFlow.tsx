@@ -25,6 +25,7 @@ import {
   type NativeFlowFrame,
 } from "./terminal-native-flow";
 import { agyComposerStart, claudeWorkTimer } from "./terminal-native-chrome";
+import { nativeCrewFooter } from "./native-crew-footer";
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
 import { projectNativeComposition } from "./terminal-native-ime";
@@ -151,6 +152,7 @@ export function TerminalNativeFlow({
   codexComposer = false,
   agyComposer = false,
   historyIdentity,
+  mirroredCrew,
   startRow = 0,
   workTarget,
   onFrame,
@@ -172,6 +174,7 @@ export function TerminalNativeFlow({
   codexComposer?: boolean;
   agyComposer?: boolean;
   historyIdentity?: object;
+  mirroredCrew?: string;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
   workTarget?: HTMLElement | null;
@@ -572,6 +575,8 @@ export function TerminalNativeFlow({
   };
   const emitted = new Set<string>();
   const renderParts = (view: View, parts: FlowPart[], showCursor = true, origin?:number, output=false) => {
+    const first = Math.max(view.frame.baseY, view.frame.end - 64);
+    const footer = mirroredCrew && nativeCrewFooter(agyComposer ? "antigravity" : "claude", view.frame.lines.slice(first, view.frame.end));
     const nodes: ReactNode[] = [];
     let rows: RowView[] = [];
     const flush = () => {
@@ -605,13 +610,23 @@ export function TerminalNativeFlow({
         continue;
       }
       const row = view.start + part.row;
+      let rowRuns = view.rows[part.row] || [];
+      if (footer && footer.key === mirroredCrew && row >= first + footer.start && row < first + footer.end) {
+        if (!footer.suffixOffset) continue;
+        let remaining = footer.suffixOffset;
+        rowRuns = rowRuns.flatMap(run => {
+          const text = run.text.slice(0, remaining);
+          remaining -= text.length;
+          return text ? [{...run, text}] : [];
+        });
+      }
       if ((origin===undefined || output) && rows.length && Math.floor((row-(origin??0))/64) !== Math.floor((rows[0].row-(origin??0))/64))
         flush();
       rows.push({
         row,
         runs: part.start
-          ? clipNativeRuns(view.rows[part.row] || [], part.start)
-          : view.rows[part.row] || [],
+          ? clipNativeRuns(rowRuns, part.start)
+          : rowRuns,
         cursorOffset:
           view.agyCaret
             ? (showCursor && !output && origin !== undefined && row === view.agyCaret.row ? view.agyCaret.offset : undefined)

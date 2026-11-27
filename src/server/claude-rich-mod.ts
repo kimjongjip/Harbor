@@ -25,6 +25,21 @@ let usageTimer;
 const agentMetrics = new Map();
 const agentSteps = new Set();
 const agentTools = new Map();
+const agentTimers = new Map();
+function observedTime(agent, now) {
+  const old = agentTimers.get(agent.id);
+  const running = ['running','working','inProgress','pendingInit'].includes(agent.status);
+  if (!old && !running) return {};
+  const timer = old || {workedMs:0};
+  if (running && timer.workingSince === undefined) timer.workingSince = now;
+  if (!running && timer.workingSince !== undefined) {
+    timer.workedMs += Math.max(0, now - timer.workingSince);
+    delete timer.workingSince;
+  }
+  agentTimers.delete(agent.id); agentTimers.set(agent.id,timer);
+  while (agentTimers.size > 64) agentTimers.delete(agentTimers.keys().next().value);
+  return timer;
+}
 
 function agentStep(id, result) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_./:-]{1,128}$/.test(id) || !result?.usage || typeof result.turnId !== 'string' || !Number.isSafeInteger(result.index)) return;
@@ -105,7 +120,7 @@ function queueUsage($, value) {
       const clean = (value, length) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, length) : undefined;
       const agents = Array.isArray(facts) ? facts.filter(agent => typeof agent?.id === 'string' && /^[A-Za-z0-9_./:-]{1,128}$/.test(agent.id))
         .sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running')).slice(0,32)
-        .map(agent => ({id:agent.id,name:clean(agent.name || agent.type,40),status:clean(agent.status,24),task:clean(agent.description,96),
+        .map(agent => ({...observedTime(agent, Date.now()),id:agent.id,name:clean(agent.name || agent.type,40),status:clean(agent.status,24),task:clean(agent.description,96),
           model:clean(agentMetrics.get(agent.id)?.model,64),tokens:agentMetrics.get(agent.id)?.tokens,activity:clean(agentTools.get(agent.id)?.tool,48)})) : undefined;
       const payload = {session_id: auth.sessionId, model: {id: model},
         context_window: {context_window_size: context?.window,
@@ -187,7 +202,7 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
-    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
+    agentTimers.clear(); agentSteps.clear(); agentMetrics.clear(); agentTools.clear();
     watchUsage($);
     return next(e);
   });
@@ -205,7 +220,7 @@ export function register(on) {
     running = 0;
     usagePending = false;
     latestUsage = undefined;
-    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
+    agentTimers.clear(); agentSteps.clear(); agentMetrics.clear(); agentTools.clear();
     watchUsage($);
     return next(e);
   });
@@ -218,7 +233,7 @@ export function register(on) {
     credentials = undefined;
     latestUsage = undefined;
     usagePending = false;
-    agentMetrics.clear(); agentSteps.clear(); agentTools.clear();
+    agentTimers.clear(); agentSteps.clear(); agentMetrics.clear(); agentTools.clear();
     return next(e);
   });
 

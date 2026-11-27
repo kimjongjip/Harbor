@@ -258,6 +258,27 @@
   -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
 }
+.crew-native-row {
+  min-width: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.crew-native-row > strong {
+  display: block;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crew-native-metrics, .crew-native-count {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.crew-native-metrics { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; }
+.crew-agent-list .crew-agent { padding-block: 4px; gap: 4px; }
+.crew-agent-list .crew-agent .crew-art { width: 28px; height: 30px; }
+.crew-agent-list .crew-agent-facts { gap: 1px; }
 .crew-agent-activity {
   color: var(--muted);
   font-size: 9px;
@@ -265,6 +286,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.crew-agent-tokens, .crew-agent-time {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.crew-agent-time { font-size: 10px; color: var(--muted); }
 .crew-agent-tokens {
   color: var(--muted);
   font-size: 10px;
@@ -276,7 +304,7 @@
   font-weight: 600;
 }
 .crew-agent-tokens.pending {
-  font-size: 9px;
+  font-size: 10px;
 }
 .crew-demo-backdrop {
   position: fixed;
