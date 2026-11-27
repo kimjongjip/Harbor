@@ -25,9 +25,9 @@ Object.defineProperty(document,"visibilityState",{get:()=>"visible"});
 const info={id:"fixture",hostId:"test",cwd:"/fixture",title:"Orion",agentKind:"antigravity",agentSessionId:"agy-native",nativeAgySessionId:"agy-native",exited:false};
 const table="| Method | Score |\\n|---|---|\\n| Native model | 42 |";
 window.nativeWrites=[];window.fetch=async(url)=>{if(!String(url).includes("/history/agy-native?")||!String(url).includes("provider=antigravity"))throw Error("wrong history binding");
-return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"},...(window.work?[{id:"q2",kind:"user",text:"run the fixture"},...(window.finished?[{id:"a2",kind:"assistant",text:"Finished fixture",phase:"final_answer",turnStatus:"completed"}]:[])]:[])],nextCursor:null}));};
-function Fixture(){const [term,setTerm]=useState(null),[roster,setRoster]=useState();useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));window.repaint=(s)=>new Promise(done=>t.write(s,done));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>{window.nativeWrites.push(data);t.write(data);});return()=>t.dispose();},[]);
-return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<><TerminalUsageBar terminal={term} terminalId="fixture" provider="antigravity" active working onRosterShown={setRoster}/><TerminalConversation term={term} info={info} active mirroredCrew={roster}/></>}</>;}
+return new Response(JSON.stringify({thread:{id:"agy-native",hostId:"test",title:"Fixture",cwd:"/fixture"},items:[{id:"q",kind:"user",text:"Compare values"},{id:"a",kind:"assistant",text:table,phase:"final_answer",turnStatus:"completed"},...(window.work?[{id:"q2",kind:"user",text:"run the fixture"},...(window.finished?[{id:"a2",kind:"assistant",text:"Finished fixture",phase:"final_answer",turnStatus:"completed"}]:[])]:[]),...(window.third?[{id:"q3",kind:"user",text:"third turn"},...(window.done3?[{id:"a3",kind:"assistant",text:"Stable final",phase:"final_answer",turnStatus:"completed"}]:[])]:[])],nextCursor:null}));};
+function Fixture(){const [nativeWork,setNativeWork]=useState(false),[agentState,setAgentState]=useState("idle");window.nativeWork=setNativeWork;window.agentState=setAgentState;const [term,setTerm]=useState(null),[roster,setRoster]=useState();useEffect(()=>{const t=new Terminal({cols:80,rows:18});t.open(document.getElementById("pty"));window.repaint=(s)=>new Promise(done=>t.write(s,done));t.write("Method   Score\\r\\nNative model  42\\r\\n────────────────────────\\r\\n> \\r\\n────────────────────────\\r\\n? for shortcuts   auto · Gemini 4",()=>setTerm(t));t.onData(data=>{window.nativeWrites.push(data);t.write(data);});return()=>t.dispose();},[]);
+return <><div style={{height:560,width:850,position:"relative"}}><div id="pty"/></div>{term&&<><TerminalUsageBar terminal={term} terminalId="fixture" provider="antigravity" active working onRosterShown={setRoster}/><TerminalConversation term={term} info={{...info,agentState}} nativeWhileWorking={nativeWork} active mirroredCrew={roster}/></>}</>;}
 createRoot(document.getElementById("root")).render(<Fixture/>);`,
         resolveDir: process.cwd(),
         sourcefile: "terminal-conversation-fixture.tsx",
@@ -149,6 +149,30 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       assert.match(await footer.innerText(), /Gemini 4 Carbon/);
       await page.getByRole("button",{name:"상태 패널 접기"}).click();
       await footer.getByText(/4 task\(s\)/).waitFor();
+      await page.evaluate(()=>{(window as any).nativeWork(true);(window as any).agentState("working");});
+      await page.locator("[data-native-work]").waitFor({state:"attached"});
+      const originalPty = await page.locator("#pty .xterm").elementHandle();
+      const flashes = await page.evaluate(async()=>{
+        let flashes=0;
+        const observe = new MutationObserver(() => {
+          if (!document.querySelector("[data-native-work]") || document.querySelector(".terminal-conversation-document")) flashes++;
+        });
+        observe.observe(document.querySelector("#root")!,{subtree:true,childList:true,attributes:true});
+        const w=window as any;
+        w.third=true;
+        document.dispatchEvent(new Event("visibilitychange"));
+        for(const state of ["waiting","working","idle","working","waiting","idle"]) {
+          w.agentState(state);
+          await w.repaint("\x1b[2J\x1b[H"+(state==="working"?"\x1b[32mworking\x1b[0m":"> /menu"));
+          await new Promise(done=>setTimeout(done,250));
+        }
+        observe.disconnect();return flashes;
+      });
+      assert.equal(flashes,0,"no intermediate repaint or idle/wait notification may re-enable the reader");
+      assert.ok(await originalPty?.evaluate(el=>el.isConnected));
+      await page.evaluate(()=>{(window as any).done3=true; document.dispatchEvent(new Event("visibilitychange"));});
+      await page.evaluate(()=>(window as any).repaint("\x1b[2J\x1b[H────────────────────────\r\n> \r\n────────────────────────\r\nauto · Gemini 4"));
+      await page.getByText("Stable final",{exact:true}).waitFor();
       assert.deepEqual(errors, []);
     } finally {
       await desktop?.close();

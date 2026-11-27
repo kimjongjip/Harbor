@@ -134,6 +134,7 @@ export function TerminalConversation({
   term,
   info,
   historySessionId,
+  nativeWhileWorking = false,
   mirroredCrew,
   mode = "auto",
   blocks = emptyBlocks,
@@ -144,6 +145,7 @@ export function TerminalConversation({
   info: TerminalInfo;
   /** A read-only recovery must not be mistaken for the terminal's input binding. */
   historySessionId?: string;
+  nativeWhileWorking?: boolean;
   mirroredCrew?: string;
   onClose?(): void;
   mode?: ConversationMode;
@@ -560,10 +562,49 @@ export function TerminalConversation({
     retainedTurns.current = nextTurns;
   }
   const turns = retainedTurns.current;
-  const visible = active && mode !== "terminal";
+  const automaticView = active && mode !== "terminal";
   // Completion is verified from the saved turn, never inferred from an idle
   // composer or an approval dialog waiting for input.
   const waiting = info.agentState === "waiting";
+  // Keep one surface for the whole turn. Spinner frames, tool waits and a
+  // transient idle event cannot prove that a submitted turn has finished.
+  const lastTurn = computedTurns.at(-1);
+  const tail = lastTurn?.items.at(-1);
+  const ended = lastTurn?.complete || tail?.turnStatus === "failed" || tail?.turnStatus === "interrupted";
+  const endKey = ended ? JSON.stringify([lastTurn?.id, tail?.id, tail?.turnStatus]) : undefined;
+  const unfinished = !!lastTurn && !ended && (tail?.kind === "user" || tail?.turnStatus === "inProgress" || info.agentState === "working");
+  const [nativeTurn, setNativeTurn] = useState(false);
+  const baseline = useRef<string | undefined>(undefined);
+  const wasWorking = useRef(false);
+  const observedTurn = useRef(false);
+  useLayoutEffect(() => {
+    const working = info.agentState === "working";
+    if (!nativeWhileWorking || info.exited) {
+      wasWorking.current = false;
+      observedTurn.current = false;
+      setNativeTurn(false);
+      return;
+    }
+    if (!nativeTurn && !frozen && (unfinished || (working && !wasWorking.current))) {
+      baseline.current = endKey;
+      observedTurn.current = unfinished;
+      setNativeTurn(true);
+    } else if (nativeTurn) {
+      if (unfinished) observedTurn.current = true;
+      if (endKey && (observedTurn.current || endKey !== baseline.current)) {
+        // A history read while attaching can still describe the previous reply.
+        if (!observedTurn.current && baseline.current === undefined && working) {
+          baseline.current = endKey;
+        } else {
+          const timer = setTimeout(() => setNativeTurn(false), 750);
+          wasWorking.current = working;
+          return () => clearTimeout(timer);
+        }
+      }
+    }
+    if (!frozen || nativeTurn) wasWorking.current = working;
+  }, [nativeWhileWorking, nativeTurn, unfinished, endKey, info.agentState, info.exited, frozen]);
+  const visible = automaticView && !nativeTurn;
   const pendingHistory = !detail && !error;
   // Echoed keystrokes belong to the native tail. They must not rerender every
   // saved Markdown/tool block or schedule a second full native capture.
@@ -803,7 +844,7 @@ export function TerminalConversation({
   const agentBusy = info.agentState === "working" || waiting || nativeBusy;
   // A newly started turn may not exist in history yet. Keep reading even if
   // the last saved turn is complete; otherwise it can wait for the 30s poll.
-  const refreshing = visible && (agentBusy || !!info.nativeAgySessionId);
+  const refreshing = automaticView && (nativeTurn || agentBusy || !!info.nativeAgySessionId);
   useEffect(() => {
     if (!refreshing) return;
     const timer = setInterval(() => void load.current(false, true), info.nativeAgySessionId ? 3500 : 2000);
@@ -863,6 +904,10 @@ export function TerminalConversation({
   }, [following, visible, term]);
   const mount = term.element?.parentElement;
   if (!mount) return null;
+  // Unmount the projection rather than continuing to paint a hidden document.
+  // The same xterm and input connection stay mounted in TerminalPane.
+  if (nativeTurn && nativeWhileWorking && !info.exited)
+    return createPortal(<section className="terminal-conversation" hidden data-native-work="true" />, mount);
   return createPortal(
     <section
       className="terminal-conversation"

@@ -1940,6 +1940,7 @@ export default function TerminalPane({
           term={nativeTerminal}
           info={info}
           historySessionId={historySessionId}
+          nativeWhileWorking
           mirroredCrew={showHarborPanel ? mirroredCrew : undefined}
           mode={rawOutput ? "terminal" : "auto"}
           blocks={richBlocks}

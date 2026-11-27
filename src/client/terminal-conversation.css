@@ -11,6 +11,7 @@
 .terminal-conversation[hidden] {
   display: none;
 }
+.terminal-mount:has(> .terminal-conversation[data-native-work]) > .terminal-rich-layer,
 .terminal-mount:has(> .terminal-conversation[data-native-menu]) > .terminal-rich-layer {
   display: none;
 }
