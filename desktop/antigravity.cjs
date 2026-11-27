@@ -236,6 +236,7 @@ async function run(
       provider: "antigravity",
       sessionId,
       model,
+      effort:config("effort")?.currentValue,
       usedTokens: used,
       contextWindow: size,
       usedPercent:
@@ -252,6 +253,7 @@ async function run(
     model =
       configs.find((o) => o.category === "model" || o.id === "model")
         ?.currentValue || model;
+    if(lastUsage){lastUsage={...lastUsage,model,effort:config("effort")?.currentValue};void saveUsage().catch(()=>{});}
   }
   function config(key) {
     return configs.find(
@@ -620,7 +622,7 @@ async function run(
     if (!lastUsage) {
       recordUsage({});
     }
-    lastUsage = { ...lastUsage, sessionId, model: model || lastUsage.model };
+    lastUsage = { ...lastUsage, sessionId, model: model || lastUsage.model, effort:config("effort")?.currentValue };
     await saveUsage();
     status("idle");
     await reported;

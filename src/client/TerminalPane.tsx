@@ -1909,6 +1909,7 @@ export default function TerminalPane({
         />
         {info.agentKind && !info.exited && (
           <TerminalUsageBar
+            terminal={nativeTerminal}
             visible={showHarborPanel}
             hostId={info.hostId}
             terminalId={info.id}

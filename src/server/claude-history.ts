@@ -133,6 +133,7 @@ export class ClaudeHistory {
   // A running session is re-read every few seconds. Keep its file and the SSH
   // connection instead of rescanning every project or reconnecting each time.
   private sessions = new Map<string, Entry>();
+  private previousModelReading = new Map<string,{file:string;size:number;modified:number;checkedAt:number;value:ReturnType<typeof claudeUsageTail>}>();
   private usageFiles = new Map<string, string>();
   private leases = new Map<string, Lease>();
   constructor(private readonly create = connect, private readonly idleMs = 60_000) {}
@@ -274,7 +275,19 @@ export class ClaudeHistory {
       this.noteTranscript(host.id, id, file);
       const start = Math.max(0, stat.size - 256 * 1024);
       const text = (await r.read(file, start, stat.size - start)).toString();
-      return claudeUsageTail(id, start ? text.slice(text.indexOf('\n') + 1) : text, stat.modified);
+      const current = claudeUsageTail(id,start ? text.slice(text.indexOf('\n')+1) : text,stat.modified);
+      if(current || !start)return current;
+      // A large tool result can occupy the entire tail. Recover only the last
+      // measured model/effort; older token totals do not describe this turn.
+      const cached=this.previousModelReading.get(key);
+      if(cached?.file===file && ((cached.size===stat.size && cached.modified===stat.modified) || (stat.size>=cached.size && Date.now()-cached.checkedAt<30000)))return cached.value;
+      const begin=Math.max(0,stat.size-2*1024*1024);
+      const prefix=(await r.read(file,begin,start-begin)).toString();
+      const saved=claudeUsageTail(id,(begin?prefix.slice(prefix.indexOf('\n')+1):prefix)+text,stat.modified);
+      const value=saved?.model ? {...saved,usedTokens:null,contextWindow:null,usedPercent:null,costUsd:null} : null;
+      this.previousModelReading.set(key,{file,size:stat.size,modified:stat.modified,checkedAt:Date.now(),value});
+      if(this.previousModelReading.size>64)this.previousModelReading.delete(this.previousModelReading.keys().next().value!);
+      return value;
     });
   }
   async read(host: HostConfig, password: string | undefined, id: string, cursor?: string, options: HistoryReadOptions = {}): Promise<HistoryDetail> {
@@ -362,6 +375,7 @@ export class ClaudeHistory {
     const lease = this.leases.get(hostId);
     if (lease) this.release(hostId, lease);
     for (const key of this.sessions.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.sessions.delete(key);
+    for (const key of this.previousModelReading.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.previousModelReading.delete(key);
     for (const key of this.usageFiles.keys()) if (key.startsWith(sessionKey(hostId, ''))) this.usageFiles.delete(key);
     for (const [reader, id] of this.active) if (id === hostId) { this.active.delete(reader); reader.close(); }
   }

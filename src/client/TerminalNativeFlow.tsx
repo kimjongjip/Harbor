@@ -51,6 +51,9 @@ export interface NativeFlowRange {
 interface View {
   /** Last ordinary frame; never chain snapshots as the user moves up/down. */
   historyBase?: View;
+  outputBase?: View;
+  historyIdentity?: object;
+  outputSize:number;
   promptHistory?: boolean;
   historyHeight?: number;
   frame: NativeFlowFrame;
@@ -146,6 +149,7 @@ export function TerminalNativeFlow({
   observeFrame,
   codexComposer = false,
   agyComposer = false,
+  historyIdentity,
   startRow = 0,
   workTarget,
   onFrame,
@@ -166,6 +170,7 @@ export function TerminalNativeFlow({
   observeFrame?(frame: NativeFlowFrame): void;
   codexComposer?: boolean;
   agyComposer?: boolean;
+  historyIdentity?: object;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
   workTarget?: HTMLElement | null;
@@ -179,6 +184,7 @@ export function TerminalNativeFlow({
   const composer = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
+    historyIdentity,
     agyComposer,
     observeFrame,
     onFrozenFrame,
@@ -192,6 +198,7 @@ export function TerminalNativeFlow({
     workTarget,
   });
   latest.current = {
+    historyIdentity,
     agyComposer,
     observeFrame,
     onFrozenFrame,
@@ -213,6 +220,7 @@ export function TerminalNativeFlow({
       timer: ReturnType<typeof setTimeout> | undefined,
       lastInput = 0,
       lastCapture = 0;
+    let partialOutputSince: number | undefined;
     let partialEditorSince: number | undefined;
     let syncSince: number | undefined;
     let incompleteSince: number | undefined;
@@ -359,6 +367,8 @@ export function TerminalNativeFlow({
         }
       }
       const next: View = {
+        outputSize:0,
+        historyIdentity:latest.current.historyIdentity,
         agyPromptRow,
         agyCaret,
         promptHistory: range.promptHistory,
@@ -389,6 +399,19 @@ export function TerminalNativeFlow({
           ? nativeComposerFill(term, frame)
           : undefined,
       };
+      // A renderer may erase activity above an intact, editable prompt and
+      // deliver the replacement over subsequent PTY writes. Keep just that
+      // activity mounted while the real composer continues to echo input.
+      const outputEnd=composerStart(next);
+      for(let i=Math.max(start,outputEnd-100);i<outputEnd;i++)next.outputSize+=frame.lines[i].trim().length;
+      const committed=old?.outputBase ?? old;
+      if(committed && !next.promptHistory && !committed.promptHistory &&
+          committed.historyIdentity===next.historyIdentity && committed.frame.bufferType===frame.bufferType &&
+          outputEnd<next.frame.end && committed.outputSize>8 && next.outputSize<committed.outputSize*0.7) {
+        partialOutputSince ??= now;
+        const left=350-(now-partialOutputSince);
+        if(left>0){next.outputBase=committed;timer=setTimeout(capture,left);}
+      } else partialOutputSince=undefined;
       previous.current = next;
       setView(next);
       // History can change the range even when no native bytes changed. Commit
@@ -534,7 +557,7 @@ export function TerminalNativeFlow({
     );
   };
   const emitted = new Set<string>();
-  const renderParts = (view: View, parts: FlowPart[], showCursor = true, origin?:number) => {
+  const renderParts = (view: View, parts: FlowPart[], showCursor = true, origin?:number, output=false) => {
     const nodes: ReactNode[] = [];
     let rows: RowView[] = [];
     const flush = () => {
@@ -568,7 +591,7 @@ export function TerminalNativeFlow({
         continue;
       }
       const row = view.start + part.row;
-      if (origin===undefined && rows.length && Math.floor(row / 64) !== Math.floor(rows[0].row / 64))
+      if ((origin===undefined || output) && rows.length && Math.floor((row-(origin??0))/64) !== Math.floor((rows[0].row-(origin??0))/64))
         flush();
       rows.push({
         row,
@@ -577,7 +600,7 @@ export function TerminalNativeFlow({
           : view.rows[part.row] || [],
         cursorOffset:
           view.agyCaret
-            ? (showCursor && origin !== undefined && row === view.agyCaret.row ? view.agyCaret.offset : undefined)
+            ? (showCursor && !output && origin !== undefined && row === view.agyCaret.row ? view.agyCaret.offset : undefined)
             : (showCursor && row === view.frame.cursorRow ? view.cursorOffset : undefined),
         lineHeight: view.lineHeight,
         separator: nativeSeparator(view.frame.lines[row] || ""),
@@ -635,13 +658,14 @@ export function TerminalNativeFlow({
     }
     term.focus();
   };
-  const transcript = view.historyBase ?? view;
+  const transcript = view.historyBase ?? view.outputBase ?? view;
   const work =
     transcript.split > transcript.start
       ? renderParts(
           transcript,
           partsFor(transcript, transcript.start, transcript.split),
           !view.historyBase,
+          transcript.start, true,
         )
       : null;
   const boundary = transcript.promptHistory
@@ -651,8 +675,9 @@ export function TerminalNativeFlow({
     transcript,
     partsFor(transcript, transcript.split, boundary),
     !view.historyBase,
+    transcript.split, true,
   );
-  const inputStart = view.historyBase ? view.split : boundary;
+  const inputStart = view.historyBase ? view.split : view.outputBase ? composerStart(view) : boundary;
   const input = renderParts(view, partsFor(view, inputStart, view.frame.end), true, view.agyPromptRow);
   return (
     <>

@@ -1293,7 +1293,7 @@ const hostInput = z.object({
     .default("#93baf0"),
 });
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "codex-harbor", version: "2.0.30" }),
+  res.json({ ok: true, name: "codex-harbor", version: "2.0.31" }),
 );
 // The desktop window broker only needs IDs to validate tab ownership.
 app.get("/api/terminals/ids", (_req, res) =>
@@ -2280,6 +2280,13 @@ app.get("/api/terminals/:id/usage", async (req, res) => {
   }
   const host = hub.host(terminal.hostId);
   if (terminal.agentKind === "antigravity") {
+    if (terminal.nativeAgySessionId === sessionId) {
+      const settings=await terminals.agyModelSettings(terminal.id);
+      const current=terminals.list().find(t=>t.id===terminal.id);
+      res.json({usage:settings && current?.nativeAgySessionId===sessionId && !current.exited ?
+        {provider:"antigravity",sessionId,...settings,usedTokens:null,usedPercent:null,contextWindow:null,costUsd:null,source:"native",updatedAt:Date.now()} : null});
+      return;
+    }
     res.json({ usage: await antigravityHistory.usage(host, sessionId) });
     return;
   }

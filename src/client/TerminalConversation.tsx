@@ -1000,6 +1000,7 @@ export function TerminalConversation({
             renderedAnswers={renderedAnswers}
             codexComposer={provider === "codex"}
             agyComposer={provider === "antigravity"}
+            historyIdentity={turns}
             term={term}
             blocks={blocks}
             active={visible}

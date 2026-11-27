@@ -1,3 +1,4 @@
+import {observedEffort} from "../shared/terminal-usage.js";
 import { codexUsage, codexUsageTail } from "./terminal-usage.js";
 import type { TerminalUsage } from "../shared/terminal-usage.js";
 import { TerminalAgentRoster } from "./terminal-agent-roster.js";
@@ -60,6 +61,7 @@ export function codexApiCost(
 /** Incremental ledger: one session file, bounded chunks, no transcript retained. */
 export class CodexUsageLedger {
   model?: string;
+  effort?: string;
   usage: TerminalUsage | null = null;
   cost = 0;
   priced = 0;
@@ -97,8 +99,10 @@ export class CodexUsageLedger {
         Number.isFinite(stamp) ? stamp : Date.now(),
       );
     }
-    if (row.type === "turn_context" && typeof row.payload?.model === "string")
+    if (row.type === "turn_context" && typeof row.payload?.model === "string") {
       this.model = row.payload.model.slice(0, 150);
+      this.effort=observedEffort(row.payload.effort ?? row.payload.collaboration_mode?.settings?.reasoning_effort);
+    }
     if (row.type === "compacted") {
       if (this.usage)
         this.usage = { ...this.usage, usedTokens: null, usedPercent: null };
@@ -149,6 +153,7 @@ export class CodexUsageLedger {
       ...this.usage,
       crew: this.crew.snapshot("history"),
       model: this.model,
+      effort: this.effort,
       costUsd: this.priced ? this.cost : null,
       costSource: "api-estimate",
       costStatus: loading
@@ -244,7 +249,8 @@ export class CodexUsageHistory {
           costUsd: value?.costUsd ?? null,
           costSource: "api-estimate" as const,
           costStatus: "loading" as const,
-          model: value?.model,
+          model: latest.model ?? value?.model,
+          effort: latest.effort ?? (!latest.model || latest.model===value?.model ? value?.effort : undefined),
         }
       : value
         ? {

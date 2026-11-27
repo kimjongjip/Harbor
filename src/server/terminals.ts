@@ -1883,6 +1883,7 @@ export class Terminals extends EventEmitter {
   buffer(id: string) {
     return this.entries.get(id)?.buffer.history.read() || "";
   }
+  async agyModelSettings(id:string) {return this.entries.get(id)?.buffer.agyModelSettings();}
   async sideContext(id: string) {
     return this.entries.get(id)?.buffer.sideContext() || "";
   }

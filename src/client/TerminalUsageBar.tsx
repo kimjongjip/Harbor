@@ -1,3 +1,5 @@
+import type { Terminal } from "@xterm/xterm";
+import { terminalModelFooter } from "../shared/terminal-model-footer";
 import { providerName as agentLabel } from "../shared/agent-provider";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -14,6 +16,7 @@ import {
 } from "../shared/terminal-usage";
 
 interface Props {
+  terminal?:Terminal|null;
   terminalId: string;
   hostId?: string;
   provider: import("../shared/agent-provider").AgentProvider;
@@ -27,6 +30,7 @@ interface Props {
 /** Own state only: a usage tick never invalidates TerminalPane or its transcript. */
 export const TerminalUsageBar = memo(function TerminalUsageBar({
   terminalId,
+  terminal,
   hostId,
   provider,
   sessionId,
@@ -55,6 +59,24 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
     unavailable?: boolean;
   }>();
   const current = snapshot?.scope === scope ? snapshot : undefined;
+  const [footer,setFooter]=useState<{scope:string;model:string;effort?:string}>();
+  useEffect(()=>{
+    if(!terminal || !active || collapsed || (provider!=="antigravity" && provider!=="codex"))return;
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const read=()=>{
+      timer=undefined;
+      const b=terminal.buffer.active,lines:string[]=[];
+      for(let row=Math.max(b.baseY,b.baseY+terminal.rows-12);row<Math.min(b.length,b.baseY+terminal.rows);row++)
+        lines.push(b.getLine(row)?.translateToString(true) || "");
+      const value=terminalModelFooter(provider,lines);
+      if(value)setFooter(old=>old?.scope===scope && old.model===value.model && old.effort===value.effort ? old : {scope,...value});
+    };
+    const schedule=()=>{if(!timer)timer=setTimeout(read,300);};
+    read();
+    const sub=terminal.onWriteParsed(schedule),resize=terminal.onResize(schedule);
+    return ()=>{sub.dispose();resize.dispose();clearTimeout(timer);};
+  },[terminal,scope,active,collapsed,provider]);
+  const nativeFooter=footer?.scope===scope ? footer : undefined;
   useEffect(() => {
     if (!active || !sessionId) return;
     let disposed = false,
@@ -238,9 +260,10 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
               {waiting ? "입력 대기" : working ? "작업 중" : "대기"}
             </span>
           </div>
-          {usage?.model && (
-            <div className="terminal-usage-model">{usage.model}</div>
-          )}
+          {provider && <div className="terminal-usage-model">
+            <span>{nativeFooter?.model || usage?.model || "모델 미확인"}</span>
+            <span className="terminal-usage-effort"> · effort {nativeFooter?.effort || usage?.effort || "미확인"}</span>
+          </div>}
           <section className="terminal-usage-context" title={title}>
             <div className="terminal-usage-heading">
               <span

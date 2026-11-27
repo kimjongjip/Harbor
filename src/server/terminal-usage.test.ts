@@ -19,6 +19,20 @@ import type { HostConfig } from "../shared/types.js";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { resolve, join, sep } from "node:path";
 
+import { terminalModelFooter } from "../shared/terminal-model-footer.js";
+import { CodexUsageLedger } from "./codex-usage-history.js";
+test("Mods uses the bound provider's actual model and effort",()=>{
+  assert.deepEqual(terminalModelFooter("antigravity",["──────────────","> prompt","──────────────","? for shortcuts                      auto · Gemini 4 Carbon ·","high · 4 task(s) · /tasks"]),{model:"Gemini 4 Carbon",effort:"high"});
+  assert.equal(terminalModelFooter("antigravity",["tool output: auto · Gemini 4 Carbon · high"]),undefined);
+  assert.deepEqual(terminalModelFooter("codex",["GPT-6.2-Astra max · ~/work"]),{model:"GPT-6.2-Astra",effort:"max"});
+  const ledger=new CodexUsageLedger("fixture");
+  ledger.append(JSON.stringify({type:"turn_context",payload:{model:"gpt-6.2-astra",effort:"high"}})+"\n");
+  assert.equal(ledger.effort,"high");
+  const native=claudeUsage({session_id:"fixture",model:{id:"claude-opus-5-5"},effort:{level:"xhigh"}});
+  assert.equal(native?.effort,"xhigh");
+  const reply=JSON.stringify({sessionId:"fixture",type:"assistant",perTurnEffort:"max",message:{model:"claude-opus-5-5",usage:{input_tokens:12}}})+"\n";
+  assert.equal(claudeUsageTail("fixture",reply,1)?.effort,"max");
+});
 const line = (value: unknown) => JSON.stringify(value) + "\n";
 const codex = (used = 42000) => ({
   last: { totalTokens: used },

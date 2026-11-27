@@ -15,6 +15,7 @@ export interface TerminalUsage {
   updatedAt: number;
   source: "native" | "history";
   model?: string;
+  effort?: string;
   contextEstimated?: boolean;
   compactLimit?: number;
   costSource?: "native" | "api-estimate";
@@ -38,12 +39,13 @@ export function mergeClaudeUsage(
     native.provider !== "claude"
   )
     return saved;
-  if (native.updatedAt >= saved.updatedAt) return native;
+  if (native.updatedAt >= saved.updatedAt) return native.effort || !saved.effort || native.model!==saved.model ? native : {...native,effort:saved.effort};
   if (!saved.model || saved.model !== native.model) return saved;
-  if (saved.contextWindow !== null && saved.costUsd !== null) return saved;
+  if (saved.contextWindow !== null && saved.costUsd !== null) return saved.effort || !native.effort ? saved : {...saved,effort:native.effort};
   const contextWindow = saved.contextWindow ?? native.contextWindow;
   return {
     ...saved,
+    effort:saved.effort ?? native.effort,
     contextWindow,
     costUsd: saved.costUsd ?? native.costUsd,
     usedPercent:
@@ -52,6 +54,10 @@ export function mergeClaudeUsage(
         : saved.usedPercent,
     metadataUpdatedAt: native.metadataUpdatedAt ?? native.updatedAt,
   };
+}
+
+export function observedEffort(value:unknown): string | undefined {
+  return typeof value==="string" && /^(?:none|minimal|low|medium|high|xhigh|max|ultra|auto)$/i.test(value) ? value.toLowerCase() : undefined;
 }
 
 export interface TerminalUsageResponse {
@@ -126,12 +132,13 @@ export function claudeUsage(
     cost === null &&
     percent === null &&
     !agents &&
-    !accountWindows.length
+    !accountWindows.length && !observedEffort(value.effort?.level)
   )
     return null;
   const model = value.model?.id;
   return {
     provider: "claude",
+    effort: observedEffort(value.effort?.level),
     sessionId: value.session_id,
     usedTokens: used,
     contextWindow: window,

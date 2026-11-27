@@ -44,6 +44,7 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       const usage = {
         provider: "claude",
         model: "claude-opus-5-5",
+        effort: "xhigh",
         sessionId: req.query.sessionId,
         usedTokens: used,
         contextWindow: partial ? null : 1000000,
@@ -357,7 +358,7 @@ function App(){window.renders++;const[session,setSession]=useState('${first}'),[
       );
       assert.match(
         await page.locator(".terminal-usage-model").innerText(),
-        /claude-opus/,
+        /claude-opus.*effort xhigh/,
       );
       staleMetadata = true;
       used = 153000;

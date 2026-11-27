@@ -1,3 +1,4 @@
+import { terminalModelFooter } from "../shared/terminal-model-footer.js";
 import headless from "@xterm/headless";
 import serialize from "@xterm/addon-serialize";
 import { TerminalReplay } from "./terminal-replay.js";
@@ -98,6 +99,14 @@ export class TerminalScreen {
   }
   // Read only output preceding a recognizable CLI input prompt. A partially typed
   // or recalled main prompt must never become part of an independent request.
+  agyModelSettings() {
+    return this.schedule(()=>{
+      const b=this.terminal.buffer.active,lines:string[]=[];
+      for(let row=Math.max(b.baseY,b.baseY+this.terminal.rows-12);row<Math.min(b.length,b.baseY+this.terminal.rows);row++)
+        lines.push(b.getLine(row)?.translateToString(true) || "");
+      return terminalModelFooter("antigravity",lines);
+    });
+  }
   sideContext(): Promise<string> {
     return this.schedule(() => {
       const buffer=this.terminal.buffer.active;
