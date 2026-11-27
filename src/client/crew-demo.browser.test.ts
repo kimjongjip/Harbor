@@ -45,7 +45,7 @@ test(
     };
     await build({
       stdin: {
-        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function Team({state,active}){const[nativeCrew,setNativeCrew]=useState();window.setNativeCrew=setNativeCrew;const[crew,setCrew]=useState(${JSON.stringify(initial)});window.updateAgent=(id,state)=>setCrew(c=>({...c,updatedAt:Date.now(),agents:c.agents.map(a=>a.id===id?{...a,state}:a)}));window.setCrewSource=source=>setCrew(c=>({...c,source}));return <TerminalCrew provider="codex" state={state} active={active} crew={crew} nativeCrew={nativeCrew}/>;}function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><Team state={state} active={active}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
+        contents: `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{TerminalCrew}from'./src/client/TerminalCrew';import'./src/client/themes.css';window.renders=0;window.visibility='visible';Object.defineProperty(document,'visibilityState',{get:()=>window.visibility});function Team({state,active}){const[nativeCrew,setNativeCrew]=useState();window.setNativeCrew=setNativeCrew;const[crew,setCrew]=useState(${JSON.stringify(initial)});window.updateAgent=(id,state)=>setCrew(c=>({...c,updatedAt:Date.now(),agents:c.agents.map(a=>a.id===id?{...a,state}:a)}));window.setCrewSource=source=>setCrew(c=>({...c,source}));return <TerminalCrew provider="codex" mainModel="leader-model" state={state} active={active} crew={crew} nativeCrew={nativeCrew}/>;}function App(){window.renders++;const[state,setState]=useState('idle'),[active,setActive]=useState(true);window.setState=setState;window.setActive=setActive;return <main style={{display:'flex',gap:32,padding:24}}><section style={{flex:1,minWidth:0}}><h2>Harbor Crew · 테스트 화면</h2><textarea aria-label="작성 중 입력" defaultValue="한글 English 작성 중" style={{width:'95%',height:100}}/></section><aside style={{width:320,maxWidth:'50vw'}}><Team state={state} active={active}/></aside></main>}createRoot(document.getElementById('root')).render(<App/>);`,
         resolveDir: process.cwd(),
         sourcefile: "crew-fixture.tsx",
         loader: "tsx",
@@ -409,11 +409,13 @@ test(
         "한글 English 작성 중",
       );
       const roster = {key:"fixture",start:0,end:4,agents:[
-        {name:"reader",task:"Read the test plan",elapsed:"2m 10s",tokens:"99.9k"},
+        {name:"reviewer",task:"Read the test plan",elapsed:"2m 10s",tokens:"99.9k"},
         {name:"writer",task:"Write release notes",elapsed:"1m 05s",tokens:"12k"},
         {name:"tester",task:"Run checks",elapsed:"49s",tokens:"8k"},
       ]};
-      await page.evaluate(data => (window as any).setNativeCrew(data), roster);
+      await page.evaluate(data => {const w=window as any;w.setCrewSource("native");w.updateAgent("reviewer","working");w.setNativeCrew(data);}, roster);
+      await page.locator(".crew-native-model").getByText("synthetic-model",{exact:true}).waitFor();
+      assert.match(await page.locator(".crew-leader-label").innerText(),/leader-model/);
       const desks = page.locator(".crew-native-row .crew-art");
       await desks.first().waitFor();
       assert.deepEqual(await desks.locator("[data-scene]").evaluateAll(nodes => nodes.map(n=>n.getAttribute("data-scene"))), ["read","write","test"]);

@@ -86,7 +86,7 @@ export class TerminalAgentRoster {
     ) {
       this.activityItems.delete(id);
       this.put(id, undefined, undefined, undefined, { activity: undefined });
-    } else if (method === "turn/started") this.put(id, "working");
+    } else if (method === "turn/started") this.put(id, "working", undefined, params.turn?.model);
     else if (
       method === "turn/completed" &&
       ["completed", "failed", "interrupted"].includes(params.turn?.status)
@@ -148,7 +148,7 @@ export class TerminalAgentRoster {
             id,
             (value as any)?.status,
             undefined,
-            item.model,
+            (value as any)?.model || item.model,
             task ? { task } : {},
           );
       // Completing a spawn tool is NOT completion of the child agent.
@@ -186,7 +186,7 @@ export class TerminalAgentRoster {
         item.new_thread_id,
         item.status,
         item.new_agent_nickname || item.new_agent_role,
-        item.model,
+        item.new_agent_model || item.model,
         typeof item.prompt === "string" ? { task: item.prompt } : {},
       );
     } else if (

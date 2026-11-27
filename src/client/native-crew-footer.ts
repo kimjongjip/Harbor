@@ -1,3 +1,4 @@
+import type { TerminalAgent } from "../shared/terminal-agents";
 import type { AgentProvider } from "../shared/agent-provider";
 
 export interface NativeCrewRow {
@@ -6,6 +7,26 @@ export interface NativeCrewRow {
   elapsed: string;
   tokens: string;
 }
+/** The terminal lists a role and changing activity rather than a child ID. */
+export function nativeAgentModels(rows: NativeCrewRow[], roster: TerminalAgent[]) {
+  const models = rows.map((): string | undefined => undefined);
+  const active = roster.filter(a => a.state === "working" || a.state === "waiting" || a.state === "idle");
+  for (const name of new Set(rows.map(row => row.name))) {
+    const group = rows.map((row, index) => ({...row, index})).filter(row => row.name === name);
+    let candidates = active.filter(agent => agent.name === name || agent.id === name);
+    const remaining = group.filter(row => {
+      const matches = candidates.filter(agent => agent.task === row.task);
+      if (matches.length !== 1 || group.filter(other => other.task === row.task).length !== 1) return true;
+      models[row.index] = matches[0].model;
+      candidates = candidates.filter(agent => agent !== matches[0]);
+      return false;
+    });
+    if (remaining.length === candidates.length && candidates.length && candidates.every(agent => agent.model === candidates[0].model))
+      for (const row of remaining) models[row.index] = candidates[0].model;
+  }
+  return models;
+}
+
 export interface NativeCrewFooter {
   key: string;
   agents: NativeCrewRow[];

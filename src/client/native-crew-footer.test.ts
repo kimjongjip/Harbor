@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeCrewFooter } from "./native-crew-footer";
+import { nativeAgentModels, nativeCrewFooter } from "./native-crew-footer";
 
+test("same-role children keep their own model after a reorder; ambiguous assignments remain unknown", () => {
+  const rows = ["write", "read"].map(task=>({task,name:"general-purpose",tokens:"2k",elapsed:"1m"}));
+  const roster = ["read","write"].map((task,i)=>({id:String(i),task,name:"general-purpose",state:"working" as const,model:["model-A","model-B"][i]}));
+  assert.deepEqual(nativeAgentModels(rows,roster),["model-B","model-A"]);
+  const relabeled = rows.map(r=>({...r,task:"progress"}));
+  assert.deepEqual(nativeAgentModels(relabeled,roster),[undefined,undefined]);
+  assert.deepEqual(nativeAgentModels(relabeled,roster.map(a=>({...a,model:"shared-model"}))),["shared-model","shared-model"]);
+});
 test("moves the Claude roster as shown, preserving each native clock and token label", () => {
   const lines = ["earlier output", "● main",
     "  ◯ general-purpose  Check the input  17m 15s · ↓ 244.7k tokens",

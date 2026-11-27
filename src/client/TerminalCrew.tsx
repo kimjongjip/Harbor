@@ -16,7 +16,7 @@ import {
   type CrewCharacterKind,
 } from "./CrewCharacter";
 import { CrewAgentFacts, crewStatus as status } from "./CrewAgentFacts";
-import type { NativeCrewFooter } from "./native-crew-footer";
+import { nativeAgentModels, type NativeCrewFooter } from "./native-crew-footer";
 import { CrewDemo } from "./CrewDemo";
 import type {
   TerminalAgentState,
@@ -59,6 +59,7 @@ const caption: Record<TerminalAgentState, string> = {
 
 export const TerminalCrew = memo(function TerminalCrew({
   provider,
+  mainModel,
   state,
   active,
   crew,
@@ -66,6 +67,7 @@ export const TerminalCrew = memo(function TerminalCrew({
   unavailable = false,
 }: {
   provider: import("../shared/agent-provider").AgentProvider;
+  mainModel?: string;
   state: TerminalAgentState;
   active: boolean;
   crew?: TerminalCrewSnapshot;
@@ -106,6 +108,7 @@ export const TerminalCrew = memo(function TerminalCrew({
         : "robot"
       : preferences.character;
   const agents = crew?.agents || [];
+  const nativeModels = nativeAgentModels(nativeCrew?.agents || [], crew?.source === "native" && !unavailable ? agents : []);
   // Codex delivers state transitions; Claude sends a periodic native snapshot.
   const live =
     !unavailable &&
@@ -173,7 +176,7 @@ export const TerminalCrew = memo(function TerminalCrew({
         : agent.name);
     const metadata = [
       agent.name !== title ? agent.name : undefined,
-      agent.model,
+      agent.model || "모델 미확인",
     ]
       .filter(Boolean)
       .join(" · ");
@@ -287,7 +290,7 @@ export const TerminalCrew = memo(function TerminalCrew({
         </div>
       )}
       <div className="crew-main" data-state={state}>
-        <div className="crew-leader-label">메인 · {agentLabel(provider)}</div>
+        <div className="crew-leader-label">메인 · {agentLabel(provider)}{mainModel ? " · " + mainModel : ""}</div>
         <div className="crew-stage">
           <CrewCharacter character={character} state={state} leader />
         </div>
@@ -307,10 +310,15 @@ export const TerminalCrew = memo(function TerminalCrew({
         {nativeCrew.agents.map((agent, index) => <div className="crew-native-row" key={agent.name + index}>
           <CrewCharacter character={colleague(index)} state="working" activity={agent.task} miniature />
           <strong title={agent.name + " · " + agent.task}>{agent.task}</strong>
+          <span className="crew-native-model" title={nativeModels[index]}>{nativeModels[index] || "모델 미확인"}</span>
           <div className="crew-native-metrics"><span title="CLI에 표시된 작업 경과 시간">{agent.elapsed}</span>
             <span title="Claude가 해당 작업 행에 표시한 토큰 수">↓ {agent.tokens} 토큰</span></div>
         </div>)}
       </div>}
+      {!!nativeCrew?.agents.length && nativeModels.some(m => !m) && agents.some(a=>a.state==="working" && a.model) &&
+        <details className="crew-finished"><summary>에이전트별 모델</summary>
+          {agents.filter(a=>a.state==="working" && a.model).map(a=><div key={a.id}>{a.task || a.name} · {a.model}</div>)}
+        </details>}
       {!nativeCrew?.agents.length && running.length > 0 && (
         <div className="crew-agent-list">{running.map(row)}</div>
       )}

@@ -270,8 +270,9 @@
 }
 .crew-native-row > .crew-art {
   grid-column: 1;
-  grid-row: 1 / 3;
+  grid-row: 1 / span 3;
 }
+.crew-native-model { grid-column: 2; font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crew-native-row > strong, .crew-native-row > .crew-native-metrics { grid-column: 2; }
 .crew-task-station { display: flex; align-items: center; gap: 6px; }
 .crew-native-row > strong {

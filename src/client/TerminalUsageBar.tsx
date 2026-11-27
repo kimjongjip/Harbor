@@ -411,6 +411,7 @@ export const TerminalUsageBar = memo(function TerminalUsageBar({
             </strong>
           </div>
           <TerminalCrew
+            mainModel={nativeFooter?.model || usage?.model}
             key={scope}
             provider={provider}
             state={waiting ? "waiting" : working ? "working" : "idle"}
