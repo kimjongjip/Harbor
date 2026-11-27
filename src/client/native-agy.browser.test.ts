@@ -86,6 +86,30 @@ createRoot(document.getElementById("root")).render(<Fixture/>);`,
       await composer.getByText("continued on next row",{exact:true}).waitFor();
       assert.equal(await table.isVisible(),true);
       assert.deepEqual(await page.evaluate(()=>(window as any).nativeWrites),[]);
+      const observed = await page.evaluate(async()=>{
+        const surface=document.querySelector<HTMLElement>(".terminal-conversation")!;
+        const editor=surface.querySelector<HTMLElement>(".terminal-flow-composer")!;
+        const row=Array.from(editor.querySelectorAll(".terminal-native-row")).find(n=>n.textContent?.includes("keep this draft"))!;
+        const issues=new Set<string>();
+        const observer=new MutationObserver(()=>{
+          if(surface.hidden || !editor.textContent?.includes("keep this draft")) issues.add("draft disappeared");
+          if(!row.isConnected) issues.add("prompt row remounted");
+          if(!row.querySelector("[data-native-cursor]")) issues.add("caret disappeared during output");
+        });
+        observer.observe(surface,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:["hidden"]});
+        const w=window as any;
+        const rule="────────────────────────";
+        for(let i=0;i<4;i++){
+          const output="rendering "+i+"\r\n".repeat(i+1);
+          await w.repaint("\x1b[2J\x1b[H"+output);
+          await new Promise(done=>setTimeout(done,90));
+          await w.repaint("\x1b[2J\x1b[H"+output+rule+"\r\n> keep this draft\r\n"+rule+"\r\nauto · Gemini 4\x1b[1;1H");
+          await new Promise(done=>setTimeout(done,90));
+        }
+        observer.disconnect();return [...issues];
+      });
+      assert.deepEqual(observed,[],"streaming redraws must preserve the prompt row and draft continuously");
+      await redraw("> keep this draft","");
       await composer.getByText(/keep this draft/).click();
       await page.keyboard.type("Z");
       await composer.getByText(/Z/).waitFor();

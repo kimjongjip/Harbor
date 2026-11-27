@@ -24,7 +24,7 @@ import {
   nativeFlowLinkAt,
   type NativeFlowFrame,
 } from "./terminal-native-flow";
-import { claudeWorkTimer } from "./terminal-native-chrome";
+import { agyComposerStart, claudeWorkTimer } from "./terminal-native-chrome";
 import { NativeRow } from "./TerminalNativeRow";
 import { nativeComposerFill } from "./terminal-native-composer";
 import { projectNativeComposition } from "./terminal-native-ime";
@@ -62,6 +62,8 @@ interface View {
   fontFamily: string;
   lineHeight: number;
   blocks: RichTerminalBlock[];
+  agyPromptRow?: number;
+  agyCaret?: { row: number; offset: number };
   composerFill?: ReturnType<typeof nativeComposerFill>;
 }
 // Echo right after a key must not wait; repaint storms (spinners, streamed
@@ -86,11 +88,11 @@ type RowView = ComponentProps<typeof NativeRow>;
 // Keep every row in the DOM for continuous selection, but don't ask React to
 // reconcile thousands of unchanged row components for a single echoed key.
 const NativeRows = memo(
-  function NativeRows({ rows }: { rows: RowView[] }) {
-    return rows.map((row) => <NativeRow key={row.row} {...row} />);
+  function NativeRows({ rows, origin=0 }: { rows: RowView[]; origin?: number }) {
+    return rows.map((row) => <NativeRow key={row.row-origin} {...row} />);
   },
   (previous, next) =>
-    previous.rows.length === next.rows.length &&
+    previous.origin === next.origin && previous.rows.length === next.rows.length &&
     previous.rows.every((row, index) => {
       const other = next.rows[index];
       return (
@@ -143,6 +145,7 @@ export function TerminalNativeFlow({
   onFrozenFrame,
   observeFrame,
   codexComposer = false,
+  agyComposer = false,
   startRow = 0,
   workTarget,
   onFrame,
@@ -162,6 +165,7 @@ export function TerminalNativeFlow({
   onFrozenFrame?(): void;
   observeFrame?(frame: NativeFlowFrame): void;
   codexComposer?: boolean;
+  agyComposer?: boolean;
   startRow?: number | ((frame: NativeFlowFrame) => number | NativeFlowRange);
   /** Optional element (inside a running turn's work group) for rows before split. */
   workTarget?: HTMLElement | null;
@@ -175,6 +179,7 @@ export function TerminalNativeFlow({
   const composer = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View | null>(null);
   const latest = useRef({
+    agyComposer,
     observeFrame,
     onFrozenFrame,
     blocks,
@@ -187,6 +192,7 @@ export function TerminalNativeFlow({
     workTarget,
   });
   latest.current = {
+    agyComposer,
     observeFrame,
     onFrozenFrame,
     blocks,
@@ -207,6 +213,7 @@ export function TerminalNativeFlow({
       timer: ReturnType<typeof setTimeout> | undefined,
       lastInput = 0,
       lastCapture = 0;
+    let partialEditorSince: number | undefined;
     let syncSince: number | undefined;
     let incompleteSince: number | undefined;
     let pasteStarted = -Infinity,
@@ -266,6 +273,16 @@ export function TerminalNativeFlow({
         return;
       }
       const frame = reader.frame();
+      const editor = latest.current.agyComposer ? agyComposerStart(frame.lines,frame.end,frame) : undefined;
+      const agyPromptRow = editor === undefined ? undefined : nativeSeparator(frame.lines[editor]) ? editor+1 : editor;
+      const old = previous.current;
+      if (latest.current.agyComposer && old?.agyPromptRow !== undefined && old.frame.bufferType===frame.bufferType &&
+          (agyPromptRow === undefined ||
+            (frame.lines[agyPromptRow]?.trim()===">" && old.frame.lines[old.agyPromptRow]?.trim()!==">" && now-lastInput>typingWindowMs))) {
+        partialEditorSince ??= now;
+        const left = 250 - (now-partialEditorSince);
+        if (left>0) {timer=setTimeout(capture,left);return;}
+      } else partialEditorSince=undefined;
       latest.current.observeFrame?.(frame);
       const requested =
         typeof latest.current.startRow === "function"
@@ -328,7 +345,22 @@ export function TerminalNativeFlow({
             ).runs
           : runs;
       });
+      const cursorOffset = nativeFlowCursorOffset(term.buffer.active.getLine(frame.cursorRow), frame.cursorColumn);
+      let agyCaret: View["agyCaret"];
+      if (agyPromptRow !== undefined) {
+        let bottom = agyPromptRow + 1;
+        while (bottom < end && !nativeSeparator(frame.lines[bottom])) bottom++;
+        if (frame.cursorRow >= agyPromptRow && frame.cursorRow < bottom) {
+          agyCaret = {row:frame.cursorRow, offset:cursorOffset};
+        } else if (old?.agyCaret && old.agyPromptRow !== undefined && old.frame.bufferType === frame.bufferType) {
+          const row = agyPromptRow + old.agyCaret.row - old.agyPromptRow;
+          if (row >= agyPromptRow && row < bottom && frame.lines[row] === old.frame.lines[old.agyCaret.row])
+            agyCaret = {row,offset:old.agyCaret.offset};
+        }
+      }
       const next: View = {
+        agyPromptRow,
+        agyCaret,
         promptHistory: range.promptHistory,
         historyBase: range.promptHistory
           ? previous.current?.promptHistory
@@ -344,10 +376,7 @@ export function TerminalNativeFlow({
         start,
         split,
         rows,
-        cursorOffset: nativeFlowCursorOffset(
-          term.buffer.active.getLine(frame.cursorRow),
-          frame.cursorColumn,
-        ),
+        cursorOffset,
         fontSize: term.options.fontSize || 14,
         fontFamily: term.options.fontFamily || "monospace",
         lineHeight: Math.max(
@@ -410,7 +439,7 @@ export function TerminalNativeFlow({
         // A single PTY packet can close a completed paint and start the next
         // one. By onWriteParsed the buffer can already contain half the next
         // prompt. Read at DECRST 2026 while the completed rows still exist.
-        if (latest.current.active && latest.current.codexComposer &&
+        if (latest.current.active && (latest.current.codexComposer || latest.current.agyComposer) &&
             params.includes(2026) && term.modes.synchronizedOutputMode &&
             performance.now() - lastCapture >= 16) capture(true);
         return false;
@@ -505,12 +534,12 @@ export function TerminalNativeFlow({
     );
   };
   const emitted = new Set<string>();
-  const renderParts = (view: View, parts: FlowPart[], showCursor = true) => {
+  const renderParts = (view: View, parts: FlowPart[], showCursor = true, origin?:number) => {
     const nodes: ReactNode[] = [];
     let rows: RowView[] = [];
     const flush = () => {
       if (!rows.length) return;
-      nodes.push(<NativeRows key={`rows:${rows[0].row}`} rows={rows} />);
+      nodes.push(<NativeRows key={origin===undefined ? `rows:${rows[0].row}` : `editor:${nodes.length}`} rows={rows} origin={origin} />);
       rows = [];
     };
     for (const part of parts) {
@@ -539,7 +568,7 @@ export function TerminalNativeFlow({
         continue;
       }
       const row = view.start + part.row;
-      if (rows.length && Math.floor(row / 64) !== Math.floor(rows[0].row / 64))
+      if (origin===undefined && rows.length && Math.floor(row / 64) !== Math.floor(rows[0].row / 64))
         flush();
       rows.push({
         row,
@@ -547,9 +576,9 @@ export function TerminalNativeFlow({
           ? clipNativeRuns(view.rows[part.row] || [], part.start)
           : view.rows[part.row] || [],
         cursorOffset:
-          showCursor && row === view.frame.cursorRow
-            ? view.cursorOffset
-            : undefined,
+          view.agyCaret
+            ? (showCursor && origin !== undefined && row === view.agyCaret.row ? view.agyCaret.offset : undefined)
+            : (showCursor && row === view.frame.cursorRow ? view.cursorOffset : undefined),
         lineHeight: view.lineHeight,
         separator: nativeSeparator(view.frame.lines[row] || ""),
         backgroundColor:
@@ -624,7 +653,7 @@ export function TerminalNativeFlow({
     !view.historyBase,
   );
   const inputStart = view.historyBase ? view.split : boundary;
-  const input = renderParts(view, partsFor(view, inputStart, view.frame.end));
+  const input = renderParts(view, partsFor(view, inputStart, view.frame.end), true, view.agyPromptRow);
   return (
     <>
       {work && workTarget

@@ -999,6 +999,7 @@ export function TerminalConversation({
           <TerminalNativeFlow
             renderedAnswers={renderedAnswers}
             codexComposer={provider === "codex"}
+            agyComposer={provider === "antigravity"}
             term={term}
             blocks={blocks}
             active={visible}

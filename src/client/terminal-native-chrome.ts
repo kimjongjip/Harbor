@@ -502,6 +502,18 @@ function codexStart(lines: readonly string[], row: number, floor: number) {
 /** The lower rule and model hint can survive a tmux resize before the upper rule
  * has repainted. Anchor agy's editor to the prompt owning the live cursor. */
 export function agyComposerStart(lines: readonly string[], end:number, frame:NativeChromeFrame) {
+  // Streaming updates move the native cursor into output before returning it
+  // to the editor. The framed prompt still belongs to the composer.
+  let bottomRule=end-1;
+  while (bottomRule>=Math.max(frame.baseY,end-6) && !solidRule.test(lines[bottomRule])) bottomRule--;
+  if (bottomRule>=Math.max(frame.baseY,end-6) && lines.slice(bottomRule+1,end).some(line=>
+    /\? for shortcuts|(?:^|\s)(?:auto|plan|accept-edits)\s*·/i.test(line))) {
+    for (let top=bottomRule-2;top>=frame.baseY;top--) {
+      if (!solidRule.test(lines[top])) continue;
+      if (/^\s{0,2}>(?:\s|$)/u.test(lines[top+1])) return top;
+      break;
+    }
+  }
   const cursor=frame.cursorRow;
   if(cursor<frame.baseY || cursor>=end) return;
   let bottom=cursor+1;
