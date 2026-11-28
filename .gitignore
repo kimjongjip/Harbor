@@ -9,8 +9,6 @@
 /docs/*
 !/docs/user-guide.md
 !/docs/maintainer-guide.md
-!/docs/readability-and-session-plan.md
-!/docs/shared-sessions-plan.md
 !/docs/mobile-and-orca-plan.md
 !/docs/mobile-guide.md
 !/docs/desktop-ide-guide.md

@@ -3,6 +3,9 @@ import type { MessageItem } from "../shared/types.js";
 export const agyId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 // Scope to a single tmux pane and same-account descendants. Only a live agy
 // executable holding exactly one native presence lock can identify a session.
+// agy updates itself while running by renaming its own file to agy.<ns>.old,
+// so /proc/<pid>/exe of an older session names that file. The kernel keeps
+// the exec-time name in comm, which a rename or unlink does not change.
 export const agyPresenceProbe = String.raw`import os,sys,re,glob
 pending=[int(sys.argv[1])]; seen=set(); sessions=set(); uncertain=False; found_agy=False
 presence=os.path.join(os.path.expanduser('~'),'.gemini','antigravity-cli','presence')
@@ -13,7 +16,8 @@ while pending and len(seen)<128:
  try:
   if os.stat(root).st_uid!=os.getuid(): continue
   exe=os.path.basename(os.readlink(root+'/exe')).split(' (deleted)',1)[0]
-  if exe=='agy':
+  with open(root+'/comm') as data: comm=data.read().strip()
+  if re.fullmatch(r'agy(?:\.[0-9]+\.old)?',exe) or comm=='agy':
    found_agy=True
    for fd in os.listdir(root+'/fd'):
     try: path=os.readlink(root+'/fd/'+fd)

@@ -124,6 +124,16 @@
   font: var(--document-font-size, 16px)/var(--document-line-height, 1.7)
     var(--font-mono, monospace);
 }
+/* Raw terminal view: the reply's text replaces its reservation markers on the
+   same cell grid, so each fragment shows the rows it reserves. */
+.terminal-rich-canvas > .terminal-rich-terminal-source {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: auto;
+  padding: 0;
+  overflow: visible;
+}
 .terminal-rich-source-toggle {
   position: absolute;
   right: 5px;

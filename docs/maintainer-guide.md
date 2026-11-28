@@ -1,5 +1,34 @@
 # Harbor 개발·Git 게시·배포 절차
 
+## 현재 기준 (2.0.42)
+
+2.0.19는 앱 전체를 1.18.55 코드로 되돌린 배포다(`5152b4d`). 2.0.0~2.0.18의 서버 상주 작업 공간·관리형 대화 탭·여러 AI 질문·worktree 검토 코드는 현재 없다. 아래 1.x 메모는 해당 버전의 구현 기록이며, 이후 바뀐 내용은 항목 안에 현재 동작을 덧붙였다. 2.0.20 이후의 변경은 [CHANGELOG](../CHANGELOG.md)와 이 절을 기준으로 한다.
+
+### 릴리스 순서
+
+1. `node scripts/set-version.mjs X.Y.Z`로 버전을 바꾸고 CHANGELOG.md를 쓴다.
+2. 변경과 관련된 테스트와 `npx tsc --noEmit`을 실행한다. 브라우저 테스트(`*.browser.test.ts`)는 파일 하나씩 실행한다. 한 번에 모두 실행하면 Electron 메모리 사용이 크게 늘어난다.
+3. `npm run build` 뒤 `node scripts/package-desktop.mjs --staged`로 `release-next/Harbor-win32-x64`를 만든다.
+4. 패키지를 다른 포트·데이터·프로필과 `HARBOR_DESKTOP_HIDDEN=1`로 띄워 `/api/health` 버전과 페이지 오류를 확인한다. 사용자가 실행 중인 Harbor·터미널은 건드리지 않는다.
+5. 폴더를 `release/Harbor-X.Y.Z-win32-x64`로 옮기고 `scripts/desktop-release.mjs`의 `writeDesktopReleasePointer`로 `release/current.json`을 갱신한다. `Start-Harbor-Desktop.ps1 -CheckOnly`로 설치·실행 버전을 확인한다. 새 버전은 사용자가 Harbor를 다시 실행할 때 적용된다.
+6. 스테이징한 내용을 검토하고 `npm run audit:publication`을 통과한 뒤 main에 게시한다.
+7. 이전 설치본을 정리할 때는 실행 중인 폴더와 `current.json`이 가리키는 폴더를 남긴다. `.runtime/desktop-update.json`이 없으면 `.runtime/updates`의 앱 내 업데이트 복사본도 사용 중이 아니다.
+
+### agy(Antigravity) SSH tmux 연결
+
+`checkDurableSession`은 tmux pane의 전경 명령(`pane_current_command`, argv[0] 기준)이 `agy`이거나 이미 연결된 터미널일 때 `agyPresenceProbe`를 실행한다. 이 Python 검사는 pane PID의 같은 UID 자손만 확인하며, agy 프로세스가 `~/.gemini/antigravity-cli/presence/<UUID>.lock` 하나를 열고 있을 때만 그 UUID를 반환한다. 트리를 끝까지 확인하지 못하면 `unknown`(기존 연결 유지), agy가 없으면 `absent`(연결 해제)다. agy는 실행 중 스스로 업데이트하면서 실행 파일을 `agy.<ns>.old`로 바꾸므로, 프로세스는 `/proc/<pid>/exe` 이름(`agy`, `agy.<ns>.old`, ` (deleted)` 제거)과 exec 시점 이름인 `/proc/<pid>/comm`으로 함께 식별한다(2.0.42). 감시 주기는 15초다. `native-agy-probe.test.ts`는 Linux에서 합성 /proc 트리로 이 판정을 검사한다.
+
+### 터미널 원문 보기와 rows-v2 예약
+
+`harbor-rich` 모드는 Claude 답변 행을 `~HBR:<id>:<row>~` 표식으로 예약하며 PTY에 답변 원문을 그리지 않는다. 원문 보기(`TerminalRich`의 `raw`)는 조판 층을 숨기지 않고 각 구간에 답변 원문을 터미널 글꼴·셀 높이로 그린다(`.terminal-rich-terminal-source`). 레이아웃 재요청이나 CLI 재그리기는 일으키지 않는다. 복사는 `richSelectedText`가 원문을 읽고, 드래그 없는 클릭은 터미널에 포커스를 돌려준다. Codex 카드와 그림 대체 표시는 원문 보기에서 숨긴다. `terminal-rich-raw.browser.test.ts`가 표식 행 덮기·행 높이·복사·포커스·보기 전환 시 재할당 없음을 검사한다.
+
+### 2.0.20 이후 주요 모듈
+
+- 옆 대화: `src/server/side-question.ts`, `src/client/TerminalSideChat.tsx`.
+- Linux 재부팅 뒤 대화 재개: `durable-ssh.ts`의 `readLinuxBootId`, `terminals.ts`의 `rebootPending`·`shutdownConversation`.
+- Antigravity 잔여 한도: `src/server/antigravity-quota.ts`, `HostInsights.tsx`의 `AccountUsagePanel`.
+- SSH agy 기록: `native-agy-transcript.ts`, `files.ts`의 `nativeAgyPage`.
+
 ## 1.18.36 중간 보고
 
 `transcriptSections`는 호출·결과를 먼저 연결한 뒤 연속된 도구 기록과 메시지를 나눈다. Claude의 phase 없는 assistant 메시지와 Codex commentary 모두 작업 그룹 밖에서 Markdown으로 표시한다. 그룹 키는 첫 도구의 ID를 사용하므로 뒤에 보고·결과가 추가되어도 사용자가 접은 상태를 유지한다. native 출력 포털은 그룹 바깥의 고정 노드에 두어 저장 전 중간 보고도 접기에 숨지 않는다. 진행 중 Claude 도구의 중복 native 블록 차단은 그대로 유지한다.
@@ -110,7 +139,7 @@ Codex는 부모 이벤트로 확인한 자식 ID에 한해 `thread/tokenUsage/up
 
 `CrewCharacter`는 Harbor에서 새로 그린 SVG다. [Agent Crew](https://github.com/kimjongjip/agent-crew)의 책상 앞 작업·눈 깜빡임·상태 표현을 참고했으며 원본 소스·그림은 포함하지 않는다. 고양이·로봇·여우와 크기·동작 설정을 `TerminalCrew` 안에서 관리한다. CSS transform/opacity로 움직이며 React 프레임 타이머나 터미널 재렌더를 만들지 않는다. 비활성 탭·문서 숨김·사용자의 동작 끄기·reduced-motion을 반영한다.
 
-Claude 모듈은 기존 사용량 큐에서 `$.agent.list()`의 ID·짧은 이름·상태만 최대 32개 전송한다. 2.5초 간격의 네이티브 상태 확인을 사용하며 세션 변경 시 타이머를 교체하고 종료 시 취소한다. 대화·프롬프트·도구 결과는 포함하지 않고 16KiB 스냅샷 범위를 유지한다. 상태 확인은 `ui.invalidate`를 호출하지 않는다. 실행 중인 구서버도 기존 인증된 파일 읽기로 이 작은 스냅샷을 이용할 수 있다.
+Claude 모듈은 기존 사용량 큐에서 `$.agent.list()`의 ID·짧은 이름·상태만 최대 32개 전송한다(현재는 작업 설명·모델·관측 토큰·도구 활동·작업 시간도 함께 보낸다). 2.5초 간격의 네이티브 상태 확인을 사용하며 세션 변경 시 타이머를 교체하고 종료 시 취소한다. 대화·프롬프트·도구 결과는 포함하지 않고 16KiB 스냅샷 범위를 유지한다. 상태 확인은 `ui.invalidate`를 호출하지 않는다. 실행 중인 구서버도 기존 인증된 파일 읽기로 이 작은 스냅샷을 이용할 수 있다.
 
 Codex `TerminalAgentRoster`는 이미 연결된 부모 대화의 `collabAgentToolCall`·`subAgentActivity`를 처리한다. 작업 도구 완료와 자식 에이전트 완료를 구분하며 다른 대화의 이벤트를 거부한다. 추가 child read/resume/start나 입력 제출은 없다. 연결 종료 시 최근 기록으로 전환하고 세션 변경 시 목록을 초기화한다. 공유 대화는 기존 증분 rollout 읽기에서 같은 메타데이터를 추출한다. UTF-8 이름의 청크 경계를 보존하고 최대 32개의 표시 정보만 유지한다. 사용량 캐시와 분리해 상태 변경이 비용 집계를 기다리지 않는다. 프로토콜 근거: [Codex app-server](https://learn.chatgpt.com/docs/app-server), [공개 item 정의](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/item.rs).
 
@@ -328,7 +357,7 @@ Mods의 dock은 PTY 전체 폭과 다른 `viewport.columns`를 보낼 수 있다
 
 관리형 메시지는 직렬화와 요청 ID 영수증으로 중복을 막으며 raw terminal 제어권과 분리한다. live 연결의 입력은 반대로 원래 터미널 제어권을 검증한다. 읽기·연결은 제어권을 가져오지 않으며 모바일 kind는 IDE API에 접근할 수 없다. 실행 승인은 Codex on-request와 Claude default를 유지한다. 기록 목록에는 appServer 생성 기록도 포함한다. Harbor 재시작 뒤에는 원래 네이티브 기록에서 재개한다. 메모리 초안과 실행 중 관리형 엔진을 독립 데몬으로 설명하지 않는다.
 
-MarkdownReading은 .md 기본 읽기/원문/나란히 보기, 목차·확대·문서 기준 상대경로를 제공한다. Monaco 모델과 충돌 검사를 재사용하고 저장 전 내용도 미리 본다. 로컬 Markdown은 기존 안전한 이미지/링크 경로를 사용한다. paired desktop은 로컬 API 토큰에 의존하지 않는 RemoteMarkdown을 주입한다. 문서 본문의 HTML은 실행하지 않는다. 원격 이미지는 아직 설명으로만 표시한다.
+MarkdownReading은 .md 기본 읽기/원문/나란히 보기, 목차·확대·문서 기준 상대경로를 제공한다. Monaco 모델과 충돌 검사를 재사용하고 저장 전 내용도 미리 본다. 로컬 Markdown은 기존 안전한 이미지/링크 경로를 사용한다. paired desktop은 로컬 API 토큰에 의존하지 않는 RemoteMarkdown을 주입했다(1.18.22에서 제거, 다른 PC도 호스트와 같은 화면을 사용한다). 문서 본문의 HTML은 실행하지 않는다. 원격 이미지는 아직 설명으로만 표시한다.
 
 추가 회귀 검사: `ide-chat*.test.ts`, `ide-chat.browser.test.ts`, `ide.browser.test.ts`, `remote-desktop.browser.test.ts`와 기존 editor/mobile/control 검사. SDK·SSH·AI는 합성 런타임을 기본으로 사용하며 실제 사용자 세션에 테스트 질문을 보내지 않는다. 프로토콜 초기화만 검증할 때도 모델 prompt를 보내지 않는다. Windows CLI는 npm cmd/ps1 셸 문자열 실행 대신 실제 executable/cli.js 경로를 찾는다. 파일 테스트의 `~`는 반드시 격리된 임시 홈에 매핑한다.
 
@@ -338,7 +367,7 @@ protocol 4는 기기별 state projection과 terminal control lease를 추가한�
 
 TailscaleSetup은 로컬 인증된 `/api/mobile/setup`에만 연결한다. install/login은 사용자 버튼에서만 시작하며 고정 실행 파일·인수만 허용한다. 테스트에는 fake executor를 쓰고 개발 검증 중 실제 설치·재로그인·Serve/Funnel 설정 변경을 하지 않는다. 새 사용자는 상단 연결 설정의 설치/로그인 단계로 준비한다.
 
-변경 검증: `editor-files`, `terminal-control`, `tailscale-setup`, `mobile-gateway` 서버 테스트와 `ide`, `ide.browser`, `remote-rich.browser`, `remote-desktop.browser`, `tailscale-setup.browser`, `mobile.browser` 클라이언트 테스트를 실행한다. 브라우저 테스트는 격리된 숨김 Electron·가상 터미널·임시 프로젝트를 사용한다. 원격 PC 검증 전 최신 dist를 빌드하고 테스트 실행 중 dist를 덮어쓰지 않는다. 기존 preview/완료 알림 회귀 검사도 유지한다.
+변경 검증: `editor-files`, `terminal-control`, `tailscale-setup`, `mobile-gateway` 서버 테스트와 `ide`, `ide.browser`, `remote-desktop.browser`, `tailscale-setup.browser`, `mobile.browser` 클라이언트 테스트를 실행한다. 브라우저 테스트는 격리된 숨김 Electron·가상 터미널·임시 프로젝트를 사용한다. 원격 PC 검증 전 최신 dist를 빌드하고 테스트 실행 중 dist를 덮어쓰지 않는다. 기존 preview/완료 알림 회귀 검사도 유지한다.
 
 1.12.8의 모바일 protocol 3은 인증된 `GET /mobile-api/terminals/:id/preview`를 제공한다. runtime·terminal·native session을 읽기 전후 검증하고 기기 해제도 다시 확인한다. 기기당 1개·전체 2개의 동시 snapshot, 8초 응답 제한, 2백만 글자 제한이며 실제 읽기가 끝나기 전 동시성 슬롯을 반환하지 않는다. UI는 목록의 한 후보·터치/포커스 대상을 준비하고 새 대상이면 이전 fetch를 취소한다. 준비된 화면은 15초 후 폐기하고 화면 출력만 사용한다. 별도 읽기가 기존 WS 구독을 교체하지 않으며, 미리보기 응답이 늦어도 최신 snapshot을 덮지 않는다. 입력 허용은 항상 실시간 snapshot 완료 기준이다. `mobile-preloader.test.ts`, `mobile-preview.test.ts`, `mobile.browser.test.ts`에서 경합·취소·인증·읽기 전용 미리보기와 기존 전환/스크롤을 검증한다.
 
@@ -436,7 +465,7 @@ SSH 기능 회귀 검증도 사용자 서버에 접속하지 않고 합성 SFTP�
 
 ## 장기 SSH 세션과 연결 진단
 
-**1.9.0 변경:** 새 터미널은 `ephemeralRemote`로 직접 SSH를 사용하는 것이 기본이다. 새 터미널 창에서 SSH 서버를 고르면 `sshSessionMode`를 `direct`(기본) 또는 `tmux`로 선택할 수 있으며 `/terminals`가 enum으로 검증해 `Terminals.create`에 전달한다. 선택은 해당 생성에만 적용하고 다이얼로그를 다시 열거나 서버를 바꾸면 direct로 초기화한다. 로컬의 tmux 요청은 서버에서도 거부한다. 기록 재개·연구실은 기존대로 direct이며 tmux 요청은 새로운 선택 UI에서만 명시한다. 기존 `durable-terminals.json`의 복구·종료를 보존하고 실행 중 프로세스를 전환하지 않는다. durable 회귀 테스트도 tmux를 명시적으로 요청한다.
+**1.9.0 변경:** (1.18.32부터 새 SSH 터미널과 기록 재개는 tmux가 기본이다. 연구실 UI가 만드는 참여자 터미널은 direct, 관리자 AI 도구는 tmux가 기본이다.) 새 터미널은 `ephemeralRemote`로 직접 SSH를 사용하는 것이 기본이다. 새 터미널 창에서 SSH 서버를 고르면 `sshSessionMode`를 `direct`(기본) 또는 `tmux`로 선택할 수 있으며 `/terminals`가 enum으로 검증해 `Terminals.create`에 전달한다. 선택은 해당 생성에만 적용하고 다이얼로그를 다시 열거나 서버를 바꾸면 direct로 초기화한다. 로컬의 tmux 요청은 서버에서도 거부한다. 기록 재개·연구실은 기존대로 direct이며 tmux 요청은 새로운 선택 UI에서만 명시한다. 기존 `durable-terminals.json`의 복구·종료를 보존하고 실행 중 프로세스를 전환하지 않는다. durable 회귀 테스트도 tmux를 명시적으로 요청한다.
 
 직접 SSH는 원격 `exit` 상태와 전송 오류를 분리한다. exit를 받지 않은 close/error는 성공 코드 0으로 만들지 않고 -1·종료 상태 미확인으로 표시한다. 채널 오류와 connection 오류·close는 idempotent하게 정리하고 X는 원격 상태 조회를 기다리지 않고 해당 직접 연결을 닫는다. 진단에는 허용된 `code`·`level`과 `source`만 기록하며 원문 메시지는 저장하지 않는다. `direct-ssh.test.ts`에서 실제 loopback SSH 전송, 일반 연결의 tmux 미사용, 정상 종료와 단절의 구분, 한 번의 종료 이벤트, 닫기, Harbor 훅 유지, forwarding 없는 연구 거부, 비밀값 미기록을 검사한다. 15초·3회 keepalive 설정은 기존대로 두며 PC 절전이나 과거 밤샘 끊김의 원인을 검증 없이 확정하지 않는다. 아래 tmux 설명은 기존 유지 세션의 호환 경로에 해당한다.
 
@@ -476,7 +505,7 @@ Harbor MCP·훅의 역방향 포트는 재연결 때 처음 포트를 다시 바
 node scripts/set-version.mjs 1.0.1
 ```
 
-이 명령은 package.json, package-lock.json의 제품 버전, 서버 health 응답, 데스크톱 preload 버전을 함께 갱신한다. CHANGELOG.md는 변경 내용을 직접 작성한다. 의존성의 같은 숫자까지 치환하면 안 된다. 패키징은 package.json 버전을 사용한다.
+이 명령은 package.json, package-lock.json의 제품 버전, 서버 health 응답, 데스크톱 preload 버전, `public/mobile/sw.js`의 APP_VERSION을 함께 갱신한다. CHANGELOG.md는 변경 내용을 직접 작성한다. 의존성의 같은 숫자까지 치환하면 안 된다. 패키징은 package.json 버전을 사용한다.
 
 ## CLI 번호 인용 구현과 검증
 

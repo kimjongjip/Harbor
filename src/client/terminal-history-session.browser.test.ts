@@ -228,9 +228,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`,
       assert.equal(requests.filter((r) => r.path.endsWith(session)).length, 0);
       await page.getByText("대화 기록 미연결 · 원문 표시", { exact: true }).waitFor();
       await page.getByRole("button", { name: "터미널 원문", exact: true }).click();
-      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("inert"), "");
+      // Raw view replaces reservation markers with each reply's own text.
+      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("data-terminal-source"), "true");
       await page.getByRole("button", { name: "기본 표시로", exact: true }).click();
-      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("inert"), null);
+      assert.equal(await page.locator(".terminal-rich-layer").getAttribute("data-terminal-source"), null);
       ambiguous = false;
       title = "Recovered shared conversation";
       repaint();

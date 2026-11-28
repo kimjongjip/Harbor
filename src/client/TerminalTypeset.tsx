@@ -9,6 +9,7 @@ import { TerminalDiagramFallback } from "./TerminalDiagramFallback";
 import { mermaidFences, nativeDiagramUnsupported } from "./terminal-diagrams";
 import { richFragments, type RichFragment } from "./terminal-rich-layout";
 import { richSelectionScroll } from "./rich-selection-scroll";
+import { terminalFontFamily } from "./typography-settings";
 import type { RichTerminalBlock } from "../shared/rich-terminal";
 import type { TerminalInfo } from "../shared/types";
 import "./terminal-rich.css";
@@ -19,6 +20,7 @@ function TypesetBlock({
   info,
   fragments = [],
   retainedSlots = 0,
+  terminalSource = false,
   onRendered,
 }: {
   block: RichTerminalBlock;
@@ -26,12 +28,16 @@ function TypesetBlock({
   info: TerminalInfo;
   fragments?: RichFragment[];
   retainedSlots?: number;
+  /** The terminal's raw view. The CLI drew only reservation markers in these
+   * rows, so show the reply's own text there, one source line per cell row. */
+  terminalSource?: boolean;
   onRendered(): void;
 }) {
   const node = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const { settings, fontsReady } = useTypography();
-  const [raw, setRaw] = useState(false);
+  const [sourceToggle, setRaw] = useState(false);
+  const raw = sourceToggle && !terminalSource;
   const [revision, setRevision] = useState(0);
   const screen = term.element
     ?.querySelector(".xterm-screen")
@@ -231,13 +237,34 @@ function TypesetBlock({
                 <div
                   ref={slot === 0 ? node : undefined}
                   className="terminal-rich-content"
-                  style={{ width, visibility: raw ? "hidden" : "visible" }}
+                  style={{
+                    width,
+                    visibility: raw || terminalSource ? "hidden" : "visible",
+                  }}
                 >
                   {content}
                 </div>
+                {terminalSource && !card && (
+                  <pre
+                    className="terminal-rich-source terminal-rich-terminal-source"
+                    // A plain click types into the terminal; a drag still selects.
+                    onClick={() => {
+                      if (window.getSelection()?.isCollapsed !== false)
+                        term.focus();
+                    }}
+                    style={{
+                      width,
+                      fontFamily: terminalFontFamily(settings.terminalFont),
+                      fontSize: settings.terminalSize,
+                      lineHeight: `${cellHeight}px`,
+                    }}
+                  >
+                    {block.text}
+                  </pre>
+                )}
               </div>
               {raw && <pre className="terminal-rich-source">{block.text}</pre>}
-              {visible && (
+              {visible && !terminalSource && (
                 <button
                   className="terminal-rich-source-toggle"
                   title={raw ? "수식·표 조판 보기" : "이 답변 원문 보기"}
@@ -521,9 +548,7 @@ export function TerminalRich({
       ref={layer}
       className="terminal-rich-layer"
       data-frame={frame}
-      inert={raw}
-      aria-hidden={raw || undefined}
-      style={raw ? { opacity: 0 } : undefined}
+      data-terminal-source={raw || undefined}
     >
       {native
         .filter(
@@ -540,21 +565,23 @@ export function TerminalRich({
             info={info}
             fragments={fragments.get(block.id)}
             retainedSlots={selectedFragments.current.get(block.id)}
+            terminalSource={raw}
             onRendered={() => setFrame((value) => value + 1)}
           />
         ))}
+      {/* Cards and diagram fallbacks never cover native text: raw hides them. */}
       <AnswerCard
         blocks={cards}
         term={term}
         info={info}
         onRendered={() => setFrame((value) => value + 1)}
-        hidden={needsDiagramFallback}
+        hidden={raw || needsDiagramFallback}
       />
       {info.agentKind === "codex" && currentSession && !hasDiagramCard && (
         <TerminalDiagramFallback
           key={`${info.id}:${info.hostId}:${currentSession}`}
           info={info}
-          visible={needsDiagramFallback}
+          visible={!raw && needsDiagramFallback}
         />
       )}
     </div>,

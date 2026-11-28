@@ -46,7 +46,7 @@ export const managerTools = [
   {
     name: "harbor_lab_launch",
     description:
-      "Only when the user asks you to delegate joint work: create a NEW Claude and NEW Codex in Harbor and start their lab. You remain manager, separate from both participants. Supply the actual goal, fixed constraints/context, completion criteria and project cwd. Stable requestId retries return the same lab; never change it to retry a timeout. Models/efforts default to each CLI's settings; explicit settings are validated before launch. SSH defaults to direct; tmux requires the user's choice. Native login, trust and command approvals remain native. Participants cannot recursively launch labs. Result 'connecting' is not receipt: use harbor_lab_status to inspect actual delivery/reports, then summarize results for the user. No existing conversations are restarted or attached.",
+      "Only when the user asks you to delegate joint work: create a NEW Claude and NEW Codex in Harbor and start their lab. You remain manager, separate from both participants. Supply the actual goal, fixed constraints/context, completion criteria and project cwd. Stable requestId retries return the same lab; never change it to retry a timeout. Models/efforts default to each CLI's settings; explicit settings are validated before launch. SSH defaults to persistent tmux; use direct SSH only when the user asks. Native login, trust and command approvals remain native. Participants cannot recursively launch labs. Result 'connecting' is not receipt: use harbor_lab_status to inspect actual delivery/reports, then summarize results for the user. No existing conversations are restarted or attached.",
     inputSchema: z.toJSONSchema(managerLaunchSchema, { io: "input" }),
   },
   {
